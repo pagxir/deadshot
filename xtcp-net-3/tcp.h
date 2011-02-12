@@ -43,6 +43,7 @@
 #define TF_FASTRECOVERY  (1 << 6)
 #define TF_WASFRECOVERY  (1 << 7)
 #define TF_RTSEQ1        (1 << 8)
+#define TF_NEEDOUTPUT    (1 << 9)
 
 #define XF_READ      (1 << 0)
 #define XF_WRITE     (1 << 1)

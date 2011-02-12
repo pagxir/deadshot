@@ -48,6 +48,7 @@ int tcp_output(struct tcpcb * tp)
 	int idle, sendalot;
 	char buf[2048];
 	int this_sent = 0;
+	tcp_seq this_snd_nxt = 0;
 	struct tcphdr * ti = (struct tcphdr *)buf;
 
 	idle = (tp->t_flags & TF_LASTIDLE) || (tp->snd_max == tp->snd_una);
@@ -67,6 +68,7 @@ int tcp_output(struct tcpcb * tp)
 
 again:
 	sendalot = 0;
+	this_snd_nxt = tp->snd_nxt;
 	off = tp->snd_nxt - tp->snd_una;
 	win = min(tp->snd_wnd, tp->snd_cwnd);
 	flags = tcp_outflags[tp->t_state];
@@ -251,12 +253,15 @@ sendit:
 	error = sendto(tp->if_dev, buf, ti->ti_len + sizeof(*ti),
 		   	0, (struct sockaddr *)&tp->dst_addr, sizeof(tp->dst_addr));
    	if (error == -1) {
-		assert(WSAGetLastError() != 10035);
-		tp->snd_nxt -= ti->ti_len;
+		assert(WSAGetLastError() == 10035);
+		tp->snd_nxt = this_snd_nxt;
 		assert(tp->snd_nxt >= tp->snd_una);
+		tp->t_flags |= TF_NEEDOUTPUT;
 	   	return -1;
    	}
 
+	tp->t_flags &= ~TF_NEEDOUTPUT;
+	assert(ti->ti_len + sizeof(*ti) == error);
 	this_sent += ti->ti_len;
 	tcpstat.tcps_sndtotal++;
 	if (win > 0 && SEQ_GT(tp->rcv_nxt + win, tp->rcv_adv))
@@ -264,7 +269,7 @@ sendit:
 	tp->last_ack_sent = tp->rcv_nxt;
 	tp->t_flags &= ~(TF_ACKNOW | TF_DELACK);
 
-	if (sendalot && this_sent < 8192)
+	if (sendalot && this_sent < 1440 * 4)
 		goto again;
 
 	return 0;

@@ -478,14 +478,12 @@ trimthenstep6:
 					incr = min(acked, tp->t_maxseg * 1);
 				}
 
-#if 0
 				if (incr == 0 &&
 						SEQ_GT(ti->ti_ack, tp->t_rtseq))
 					incr = 1;
 				if (incr > 0) {
-					tp->snd_cwnd = umin(cw + incr, 8 * 1440);
+					tp->snd_cwnd = cw + incr;
 				}
-#endif
 			}
 skip_upwin:
 
