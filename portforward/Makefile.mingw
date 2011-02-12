@@ -1,0 +1,8 @@
+CXX = g++
+OBJ = xio.o portforward.o
+LDFLAGS = 
+LDLIBS = -lws2_32
+CXXFLAGS = -g
+
+mia_proxy.exe: $(OBJ)
+	$(CXX) $(LDFLAGS) $(OBJ) -o mia_proxy.exe $(LDLIBS)
