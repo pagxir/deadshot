@@ -1,0 +1,113 @@
+diff -rdup ntfs/ntfs_subr.c ntfs-no-kicon/ntfs_subr.c
+--- ntfs/ntfs_subr.c	2010-04-05 18:21:49.000000000 +0000
++++ ntfs-no-kicon/ntfs_subr.c	2010-04-05 18:30:23.000000000 +0000
+@@ -183,10 +183,13 @@ static int
+ ntfs_iconv_l2u(void *handle, const char **inbuf, size_t *inbytes,
+ 		char **outbuf, size_t *outbytes)
+ {
++#if 0
+ 	int retval = 0;
+ 	if (handle == NULL)
++#endif
+ 		return ntfs_iconv_u2w(inbuf, inbytes, outbuf, outbytes);
+ 
++#if 0
+ 	if ((outbuf && outbytes) && (*outbytes && *outbuf)) {
+ 		char *obuf = *outbuf;
+ 		retval = ntfs_iconv->convchr(handle, inbuf, inbytes, outbuf, outbytes);
+@@ -198,17 +201,21 @@ ntfs_iconv_l2u(void *handle, const char 
+ 		}
+ 	}
+ 	return retval;
++#endif
+ }
+ 
+ int ntfs_iconv_u2l(void *handle, const char **inbuf, size_t *inbytes,
+ 		char **outbuf, size_t *outbytes)
+ {
++#if 0
+ 	char text[3];
+ 	char *ptext = NULL;
+ 
+ 	if (handle == NULL)
++#endif
+ 		return ntfs_iconv_w2u(inbuf, inbytes, outbuf, outbytes);
+ 
++#if 0
+ 	if ((inbuf && inbytes) && (*inbuf && *inbytes)) {
+ 		const char *ibuf_end = *inbuf + *inbytes;
+ 		for (const char *ibuf = *inbuf;
+@@ -221,6 +228,7 @@ int ntfs_iconv_u2l(void *handle, const c
+ 		}
+ 	}
+ 	return 0;
++#endif
+ }
+ 
+ /*
+@@ -2220,6 +2228,7 @@ ntfs_toupper_unuse()
+ 	lockmgr(&ntfs_toupper_lock, LK_RELEASE, NULL);
+ } 
+ 
++#if 0
+ int
+ ntfs_u28_init(
+ 	struct ntfsmount *ntmp,
+@@ -2399,3 +2408,4 @@ ntfs_82u(
+ 	return ('?');
+ }
+ 
++#endif
+diff -rdup ntfs/ntfs_vfsops.c ntfs-no-kicon/ntfs_vfsops.c
+--- ntfs/ntfs_vfsops.c	2010-04-05 18:00:38.000000000 +0000
++++ ntfs-no-kicon/ntfs_vfsops.c	2010-04-05 18:32:09.000000000 +0000
+@@ -132,10 +132,12 @@ ntfs_cmount ( 
+ 	ma = mount_argf(ma, "mode", "%d", args.mode);
+ 	ma = mount_argb(ma, args.flag & NTFS_MFLAG_CASEINS, "nocaseins");
+ 	ma = mount_argb(ma, args.flag & NTFS_MFLAG_ALLNAMES, "noallnames");
++#if 0
+ 	if (args.flag & NTFS_MFLAG_KICONV) {
+ 		ma = mount_argsu(ma, "cs_ntfs", args.cs_ntfs, 64);
+ 		ma = mount_argsu(ma, "cs_local", args.cs_local, 64);
+ 	}
++#endif
+ 
+ 	error = kernel_mount(ma, flags);
+ 
+@@ -260,7 +262,9 @@ ntfs_mountfs(devvp, mp, td)
+ 	struct vnode *vp;
+ 	struct g_consumer *cp;
+ 	struct g_provider *pp;
++#if 0
+ 	char *cs_ntfs, *cs_local;
++#endif
+ 
+ 	ronly = (mp->mnt_flag & MNT_RDONLY) != 0;
+ 	DROP_GIANT();
+@@ -337,6 +341,7 @@ ntfs_mountfs(devvp, mp, td)
+ 	ntmp->ntm_cp = cp;
+ 	ntmp->ntm_bo = &devvp->v_bufobj;
+ 
++#if 0
+ 	cs_local = vfs_getopts(mp->mnt_optnew, "cs_local", &error);
+ 	if (error && error != ENOENT)
+ 		goto out;
+@@ -350,6 +355,7 @@ ntfs_mountfs(devvp, mp, td)
+ 		ntfs_u28_init(ntmp, NULL, cs_local, cs_ntfs);
+ 	else
+ 		ntfs_u28_init(ntmp, ntmp->ntm_82u, cs_local, cs_ntfs);
++#endif
+ 
+ 	mp->mnt_data = ntmp;
+ 
+@@ -517,8 +523,10 @@ ntfs_unmount( 
+ 	ntfs_toupper_unuse();
+ 
+ 	dprintf(("ntfs_umount: freeing memory...\n"));
++#if 0
+ 	ntfs_u28_uninit(ntmp);
+ 	ntfs_82u_uninit(ntmp);
++#endif
+ 	mp->mnt_data = NULL;
+ 	MNT_ILOCK(mp);
+ 	mp->mnt_flag &= ~MNT_LOCAL;

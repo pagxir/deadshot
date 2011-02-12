@@ -1,0 +1,21 @@
+# cat /proc/acpi/thermal_zone/THRM/temperature 
+# wpa_supplicant -B -iwlan0 -c/etc/wpa_supplicant.conf
+# modprobe processor
+# modprobe powernow-k8
+# modprobe cpufreq_userspace 
+
+You must check that scaling_available_governors become userspace.
+
+# cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors
+userspace
+
+File scaling_available_frequencies include an available list of CPU frequency. That values can be used as changeable CPU frequency. So, try that CPU frequency value can be changed or not.
+
+ $ cd /sys/devices/system/cpu/cpu0/cpufreq
+ $ cat scaling_available_frequencies
+ 2000000 1800000 1000000
+ $ su
+ #  echo '1000000' > scaling_setspeed
+ # cat /proc/cpuinfo
+ 
+

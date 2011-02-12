@@ -1,0 +1,310 @@
+diff -rc cpufreq.org/hwpstate.c cpufreq/hwpstate.c
+*** cpufreq.org/hwpstate.c	2009-11-07 00:24:48.000000000 +0900
+--- cpufreq/hwpstate.c	2009-11-14 18:04:14.000000000 +0900
+***************
+*** 115,120 ****
+--- 115,121 ----
+  static int	hwpstate_features(driver_t *driver, u_int *features);
+  static int	hwpstate_get_info_from_acpi_perf(device_t dev, device_t perf_dev);
+  static int	hwpstate_get_info_from_msr(device_t dev);
++ static int	hwpstate_adj_fidvid(device_t dev, int pstate, int *freq, int *volts);
+  static int	hwpstate_goto_pstate(device_t dev, int pstate_id);
+  
+  static int	hwpstate_verbose = 0;
+***************
+*** 427,432 ****
+--- 428,434 ----
+  			return (ENXIO);
+  			break;
+  		}
++ 		hwpstate_adj_fidvid(dev, i, &hwpstate_set[i].freq, &hwpstate_set[i].volts);
+  		hwpstate_set[i].pstate_id = i;
+  		/* There was volts calculation, but deleted it. */
+  		hwpstate_set[i].volts = CPUFREQ_VAL_UNKNOWN;
+***************
+*** 464,469 ****
+--- 466,473 ----
+  	hwpstate_set = sc->hwpstate_settings;
+  	for (i = 0; i < count; i++) {
+  		if (i == perf_set[i].spec[0]) {
++ 			hwpstate_adj_fidvid(dev, i, &perf_set[i].freq, 
++ 				&perf_set[i].volts);
+  			hwpstate_set[i].pstate_id = i;
+  			hwpstate_set[i].freq = perf_set[i].freq;
+  			hwpstate_set[i].volts = perf_set[i].volts;
+***************
+*** 482,487 ****
+--- 486,570 ----
+  }
+  
+  static int
++ hwpstate_adj_fidvid(device_t dev, int pstate, int *freq, int *volts)
++ {
++ 	uint64_t msr;
++ 	int fid, did, vid;
++ 	int new_fid, new_vid, new_freq, new_volts, org_freq, org_volts;
++ 	int family;
++ 	int adjvcore, adjfreq;
++ 	char *adjvcore_str = "adjvcoreX";
++ 	char *adjfreq_str = "adjfreqX";
++ 
++ 	family = CPUID_TO_FAMILY(cpu_id);
++ 	
++ 	msr = rdmsr(MSR_AMD_10H_11H_CONFIG + pstate);
++ 	if ((msr & ((uint64_t)1 << 63)) != ((uint64_t)1 << 63)) {
++ 		printf("acpi: msr is not valid.\n");
++ 	}
++ 	did = AMD_10H_11H_CUR_DID(msr);
++ 	fid = AMD_10H_11H_CUR_FID(msr);
++ 	vid = AMD_10H_11H_CUR_VID(msr);
++ 
++ 	/* Define new VID and volts. */
++ 	adjvcore = 0;
++ 	resource_int_value(device_get_name(dev), device_get_unit(dev), 
++ 		"adjvcore", &adjvcore);
++ 	sprintf(adjvcore_str, "adjvcore%d", pstate);
++ 	resource_int_value(device_get_name(dev), device_get_unit(dev), 
++ 		adjvcore_str, &adjvcore);
++ 	new_vid = vid - adjvcore * 10 / 125;
++ 	if (new_vid < 0) {
++ 		new_vid = 0;
++ 		device_printf(dev, "WARNING: P-state%d adjvcore settings are out of renge.\n", pstate);
++ 	}
++ 	org_volts = new_volts = (15500 - 125 * vid) / 10;
++ 	if (adjvcore) {
++ 		msr &= 0xffffffffffff01ff; 
++ 		msr |= ((uint64_t)(new_vid << 9));
++ 		new_volts = (15500 - 125 * new_vid) / 10;
++ 	}
++ 
++ 	/* Define new FID and freq. */
++ 	adjfreq = 0;
++ 	resource_int_value(device_get_name(dev), device_get_unit(dev), 
++ 		"adjfreq", &adjfreq);
++ 	sprintf(adjfreq_str, "adjfreq%d", pstate);
++ 	resource_int_value(device_get_name(dev), device_get_unit(dev), 
++ 		adjfreq_str, &adjfreq);
++ 	new_fid = fid + adjfreq / (100 / (1 << did));
++ 	if (new_fid < 0) {
++ 		new_fid = 0;
++ 		device_printf(dev, "WARNING: P-state%d adjfreq settings are out of range.\n", pstate); 
++ 	}
++ 	org_freq = new_freq = 100 * (fid + 0x10) / (1 << did);
++ 	if (adjfreq) {
++ 		msr &= 0xffffffffffffffc0;
++ 		msr |= (uint64_t)new_fid;
++ 		switch(family) {
++ 		case 0x11:
++ 			new_freq = 100 * (new_fid + 0x08) / (1 << did);
++ 			break;
++ 		case 0x10:
++ 			new_freq = 100 * (new_fid + 0x10) / (1 << did);
++ 			break;
++ 		}
++ 	}
++ 
++ 	/* Setup new VID and FID. */
++ 	if (fid != new_fid || vid != new_vid) {
++ 		device_printf(dev, "P-state%d: %dMHz->%dMHz, %dmV->%dmV\n", 
++ 			pstate, org_freq, new_freq, org_volts, new_volts); 
++ 		if (bootverbose)
++ 			device_printf(dev, "P-state%d: fid=0x%02x->0x%02x, vid=0x%02x->0x%02x\n", pstate, fid, new_fid, vid, new_vid);
++ 		*freq = new_freq;
++ 		*volts = new_volts;
++ 		wrmsr(MSR_AMD_10H_11H_CONFIG + pstate, msr);
++ 	}
++ 	return (0);
++ }
++ 
++ static int
+  hwpstate_detach(device_t dev)
+  {
+  
+diff -rc cpufreq.org/powernow.c cpufreq/powernow.c
+*** cpufreq.org/powernow.c	2009-08-03 17:13:06.000000000 +0900
+--- cpufreq/powernow.c	2009-11-14 16:46:47.000000000 +0900
+***************
+*** 553,564 ****
+  	return (0);
+  }
+  
+  /*
+   * Given a set of pair of fid/vid, and number of performance states,
+   * compute powernow_states via an insertion sort.
+   */
+  static int
+! decode_pst(struct pn_softc *sc, uint8_t *p, int npstates)
+  {
+  	int i, j, n;
+  	struct powernow_state state;
+--- 553,672 ----
+  	return (0);
+  }
+  
++ static int
++ pn_adj_fidvid(device_t dev, struct pn_softc *sc, int pstate, int *fid, int *vid)
++ {
++ 	int new_fid, new_vid;
++ 	int org_freq, new_freq, tmp_freq, org_volts, new_volts;
++ 	int adjvcore, adjfreq;
++ 	char *adjvcore_str = "adjvcoreX", *adjfreq_str = "adjfreqX";
++ 	int rv = 0, i, volts_diff, freq_diff, mult_max = 0;
++ 
++ 	/* Define new VID and volts. */
++ 	adjvcore = 0;
++ 	resource_int_value(device_get_name(dev), device_get_unit(dev), 
++ 		"adjvcore", &adjvcore);
++ 	sprintf(adjvcore_str, "adjvcore%d", pstate);
++ 	resource_int_value(device_get_name(dev), device_get_unit(dev), 
++ 		adjvcore_str, &adjvcore);
++ 	org_volts = sc->vid_to_volts[*vid];
++ 	new_vid = *vid;
++ 	new_volts = org_volts + adjvcore;
++ 	volts_diff = 3000;
++ 	for (i = 0; i < 32; i++) {
++ 		if (new_volts == sc->vid_to_volts[i]) {
++ 			new_vid = i;
++ 			break;
++ 		}
++ 		if (volts_diff > abs(new_volts - sc->vid_to_volts[i])) {
++ 			volts_diff = abs(new_volts - sc->vid_to_volts[i]);
++ 			new_vid = i;
++ 		}
++ 	}
++ 	new_volts = sc-> vid_to_volts[new_vid];
++ 
++ 	/* Define new FID and freq. */
++ 	adjfreq = 0;
++ 	resource_int_value(device_get_name(dev), device_get_unit(dev), 
++ 		"adjfreq", &adjfreq);
++ 	sprintf(adjfreq_str, "adjfreq%d", pstate);
++ 	resource_int_value(device_get_name(dev), device_get_unit(dev), 
++ 		adjfreq_str, &adjfreq);
++ 	new_fid = *fid;
++ 	org_freq = tmp_freq = 0;
++ 	switch (sc->pn_type) {
++ 	case PN7_TYPE:
++ 		org_freq = 100 * pn7_fid_to_mult[*fid] * sc->fsb;
++ 		mult_max = sizeof(pn7_fid_to_mult) / sizeof(int);
++ 		break;
++ 	case PN8_TYPE:
++ 		org_freq = 100 * pn8_fid_to_mult[*fid] * sc->fsb;
++ 		mult_max = sizeof(pn8_fid_to_mult) / sizeof(int);
++ 		break;
++ 	}
++ 	new_freq = org_freq + adjfreq * 1000;
++ 	freq_diff = 10000000;
++ 	for (i = 0; i < mult_max; i++) {
++ 		switch (sc->pn_type) {
++ 		case PN7_TYPE:
++ 			tmp_freq = 100 * pn7_fid_to_mult[i] * sc->fsb;
++ 			break;
++ 		case PN8_TYPE:
++ 			tmp_freq = 100 * pn8_fid_to_mult[i] * sc->fsb;
++ 			break;
++ 		}
++ 		if (new_freq == tmp_freq) {
++ 			new_fid = i;
++ 			break;
++ 		}
++ 		if (freq_diff > abs(new_freq - tmp_freq)) {
++ 			freq_diff = abs(new_freq - tmp_freq);
++ 			new_fid = i;
++ 		}
++ 	}
++ 	switch (sc->pn_type) {
++ 	case PN7_TYPE:
++ 		new_freq = 100 * pn7_fid_to_mult[new_fid] * sc->fsb;
++ 		break;
++ 	case PN8_TYPE:
++ 		new_freq = 100 * pn8_fid_to_mult[new_fid] * sc->fsb;
++ 		break;
++ 	}
++ 
++ 	/* Setup new VID and FID. */
++ 	if (*vid != new_vid || *fid != new_fid) {
++ 		/* fid and vid of pstate0 must be now adjusted. */
++ 		if (pstate == 0)
++ 			switch (sc->pn_type) {
++ 			case PN7_TYPE:
++ 				rv = pn7_setfidvid(sc, new_fid, new_vid);
++ 				break;
++ 			case PN8_TYPE:
++ 				rv = pn8_setfidvid(sc, new_fid, new_vid);
++ 				break;
++ 			}
++ 		if (rv) {
++ 			device_printf(dev, "FID/VID adjustment error! (Over clock is not allowed.)\n");
++ 			return (rv);
++ 		}
++ 
++ 		device_printf(dev, "P-state%d: %dMHz->%dMHz, %dmV->%dmV\n", 
++ 			pstate, org_freq / 1000, new_freq / 1000, 
++ 			org_volts, new_volts); 
++ 		if (bootverbose)
++ 			device_printf(dev, "P-state%d: fid=0x%02x->0x%02x, vid=0x%02x->0x%02x\n", pstate, *fid, new_fid, *vid, new_vid);
++ 		*vid = new_vid;
++ 		*fid = new_fid;
++         }
++         return (0);
++ }
++ 
+  /*
+   * Given a set of pair of fid/vid, and number of performance states,
+   * compute powernow_states via an insertion sort.
+   */
+  static int
+! decode_pst(device_t dev, struct pn_softc *sc, uint8_t *p, int npstates)
+  {
+  	int i, j, n;
+  	struct powernow_state state;
+***************
+*** 573,584 ****
+--- 681,694 ----
+  
+  		switch (sc->pn_type) {
+  		case PN7_TYPE:
++ 			pn_adj_fidvid(dev, sc, i, &state.fid, &state.vid);
+  			state.freq = 100 * pn7_fid_to_mult[state.fid] * sc->fsb;
+  			if ((sc->errata & A0_ERRATA) &&
+  			    (pn7_fid_to_mult[state.fid] % 10) == 5)
+  				continue;
+  			break;
+  		case PN8_TYPE:
++ 			pn_adj_fidvid(dev, sc, i, &state.fid, &state.vid);
+  			state.freq = 100 * pn8_fid_to_mult[state.fid] * sc->fsb;
+  			break;
+  		}
+***************
+*** 744,750 ****
+  				case PN8_TYPE:
+  					break;
+  				}
+! 				return (decode_pst(sc,
+  				    p + sizeof(struct pst_header),
+  				    sc->powernow_max_states));
+  			}
+--- 854,860 ----
+  				case PN8_TYPE:
+  					break;
+  				}
+! 				return (decode_pst(dev, sc,
+  				    p + sizeof(struct pst_header),
+  				    sc->powernow_max_states));
+  			}
+***************
+*** 801,811 ****
+--- 911,923 ----
+  			if ((sc->errata & A0_ERRATA) &&
+  			    (pn7_fid_to_mult[state.fid] % 10) == 5)
+  				continue;
++ 			pn_adj_fidvid(dev, sc, i, &state.fid, &state.vid);
+  			state.freq = 100 * pn7_fid_to_mult[state.fid] * sc->fsb;
+  			break;
+  		case PN8_TYPE:
+  			state.fid = ACPI_PN8_CTRL_TO_FID(ctrl);
+  			state.vid = ACPI_PN8_CTRL_TO_VID(ctrl);
++ 			pn_adj_fidvid(dev, sc, i, &state.fid, &state.vid);
+  			state.freq = 100 * pn8_fid_to_mult[state.fid] * sc->fsb;
+  			break;
+  		}

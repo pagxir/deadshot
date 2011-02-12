@@ -1,0 +1,6 @@
+# $Id: resolv.conf.sample 63 2010-03-31 18:23:01Z mm $
+#
+# The file will be the /etc/resolv.conf file in your image
+#
+#domain com
+#nameserver 192.168.0.254

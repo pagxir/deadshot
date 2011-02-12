@@ -1,0 +1,22 @@
+#!/bin/sh
+# $Id: mdinit 63 2010-03-31 18:23:01Z mm $
+
+# PROVIDE: packages
+# BEFORE: FILESYSTEMS
+# REQUIRE: mountcritlocal
+# KEYWORD: FreeBSD
+
+. /etc/rc.subr
+
+name="mdinit"
+start_cmd="mdinit_start"
+stop_cmd=":"
+
+mdinit_start()
+{
+	MD=`/sbin/mdconfig -a -t vnode -f usr.uzip`
+	/sbin/mount -r /dev/${MD}.uzip /usr
+}
+
+load_rc_config $name
+run_rc_command "$1"

@@ -1,0 +1,49 @@
+acpi_ppc: ACPI Processor Performance Control Module for FreeBSD
+
+- どんなもの?
+  - ACPI を利用して CPU の動作周波数や電圧を動的に制御するものです。
+
+- パッケージ内容
+  - acpi_ppc		カーネルモジュール
+  - chkfreq		CPU 動作周波数簡易測定ツール
+
+- 使用方法
+  - 普通に make すればバイナリが出来上がります。
+  - acpi_ppc.ko を kldload すれば動きます。
+  - sysctl(8) で動作を制御できます。
+  - 動作の細かい点についてはソースファイルのコメントを参照して下さい。
+  - 認識しない場合は以下の項目を確認して下さい。
+    - OS で acpi(4) ドライバが動作していること
+    - BIOS で ACPI 2.0 が有効に設定してあること
+    - BIOS で CPU 性能制御機能が有効に設定してあること
+
+- 対応 OS
+  - FreeBSD 5.2.1-RELEASE 以降で動くと思います。
+    - これより古い 5 系のリリースでは動かない可能性があります。
+  - FreeBSD 4.11-RELEASE 以降でも動くようにしました。
+  - ACPI ドライバが有効になっている必要があります。
+  - OS 動作中の本モジュールのロード・アンロードが可能です。
+  - 現状ではユニプロセッサ環境のみ対応しています。
+
+- 対応方式
+  - I/O ポートベースの制御機構を持ち ACPI 2.0 に対応したもの
+  - AMD K8 Cool'n'Quiet (対応 BIOS が必要)
+  - AMD K7 PowerNow! (対応 BIOS が必要)
+
+- テスト環境
+  - NEC LaVieG TypeJ 2003/01
+    - ULV Mobile Intel Pentium III-M 933MHz (Enhanced SpeedStep)
+    - FreeBSD/i386 5.4-RELEASE-p1 (2005/05/21 時点)
+  - 自作 PC
+    - AMD Athlon 64 3000+ Rev.C0 & ASUSTeK K8V Standard (Cool'n'Quiet)
+    - FreeBSD/amd64 5.4-RELEASE-p1 (2005/05/14 時点)
+
+- chkfreq: 周波数簡易測定ツール
+  - 出力は [Hz] です。
+  - 引数に数値を指定するとその回数だけ測定を繰り返します。
+
+- 注意事項
+  - テスト環境以外では予期しない動作をする可能性があります。
+  - 本プログラムの利用は、利用者の自己責任でお願いします。
+
+/* end of file */

@@ -1,0 +1,46 @@
+acpi_ppc: ACPI Processor Performance Control Module for FreeBSD
+
+- What's this?
+  - dynamic control of CPU frequency and voltage via ACPI 2.0
+
+- Contents of the package
+  - acpi_ppc		kernel module
+  - chkfreq		CPU freqnency checker
+
+- Usage
+  - make && make install
+  - kldload acpi_ppc
+  - controlling by sysctl(8)
+  - for more details, see comments in the source code
+  - check points
+    - enable acpi(4) driver
+    - enable ACPI 2.0 in the BIOS
+    - enable CPU performance control feature in the BIOS
+
+- Supporting OS versions
+  - FreeBSD 5.2.1-RELEASE and later
+  - FreeBSD 4.11-RELEASE and later
+  - currently, only supported uni-processor
+
+- Supporting methods
+  - I/O port access based (ex. Enhanced SpeedStep)
+  - AMD K8 Cool'n'Quiet (required supported BIOS)
+  - AMD K7 PowerNow! (required supported BIOS)
+
+- Tested machines
+  - NEC LaVieG TypeJ 2003/01
+    - ULV Mobile Intel Pentium III-M 933MHz (Enhanced SpeedStep)
+    - FreeBSD/i386 5.4-RELEASE-p1 (at 2005/05/21)
+  - Self-assembled PC
+    - AMD Athlon 64 3000+ Rev.C0 & ASUSTeK K8V Standard (Cool'n'Quiet)
+    - FreeBSD/amd64 5.4-RELEASE-p1 (at 2005/05/14)
+
+- chkfreq: CPU frequency checker
+  - usage: cpufreq [count]
+  - output unit is [Hz]
+
+- Caution
+  - this program is not guaranteed to work as expected
+  - please use at your own risk
+
+/* end of file */

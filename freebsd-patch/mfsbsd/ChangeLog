@@ -1,0 +1,50 @@
+# $Id: ChangeLog 63 2010-03-31 18:23:01Z mm $
+#
+# mfsBSD changelog
+# Copyright (c) 2007-2010 Martin Matuska <mm at FreeBSD.org>
+#
+31.03.2010
+  - New options to zfsinstall (-l -c -4)
+  - Add destroygeom script to clear partitions
+  - Release 1.0
+
+25.11.2009
+  - Introduce prunelist (files to be deleted)
+  - Move away from unstable tmpfs back to tmpmfs
+  - Introduce zfsinstall script (mfsbsd SE)
+
+02.10.2009
+  - Drop FreeBSD-6 support
+  - Load ZFS and tmpfs by default
+  - Introduce new mfsbsd script for kenv variables
+  - Rewrite interfaces script
+  - Disable consoles (leave only v0 and v1)
+  - Mount tmp using tmpfs
+  - Move rootpw to a variable, encrypt the root password
+  - Pre-generate ssh host keys
+  - Other cleanup and fixes
+
+20.08.2009
+  - Switch from doFS.sh to makefs
+
+09.06.2009
+  - Add share/openssl to prune directories
+  - Add more gdb files to removal list
+
+07.05.2009
+  - Enable authorization with ssh keys
+  - Integrate rootpw.conf into rc.conf
+
+14.04.2008
+  - Add missing "make distribution" on CUSTOM install
+
+09.03.2008
+  - Add svn-Id and version strings
+
+26.02.2008
+  - Add .tar.gz creation
+  - Make use of distribution default, use CUSTOM=1 for custom world/kernel
+  - Update documentation
+
+16.01.2008
+  - Add support for building world and kernel
