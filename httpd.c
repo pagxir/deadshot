@@ -164,7 +164,7 @@ int create_response_stream(struct connect_context * cc,
 	FILE * file = NULL;
 	long file_len = 0;
 
-	if (*path == '/')
+	if (*path == '/' && *(path + 1) != 0)
 		file = fopen(path + 1, "rb");
 
 	if (file == NULL) {
@@ -321,11 +321,11 @@ void httpd_new_connection(int client)
 	struct http_context * ctx;
 	struct connect_context * connect_context;
 
-	ctx = malloc(sizeof(struct http_context));
+	ctx = (struct http_context *)malloc(sizeof(struct http_context));
 	ctx->file = client;
 	ctx->flags = TF_RDABLE| TF_WRABLE| TF_TIMEOUT;
 
-	connect_context = malloc(sizeof(struct connect_context));
+	connect_context = (struct connect_context *)malloc(sizeof(struct connect_context));
 	ctx->context = connect_context;
 	ctx->callback = connect_callback;
 	ctx->last_rcv = time(NULL);
@@ -382,7 +382,7 @@ int main(int argc, char * argv[])
 	error = listen(httpd, 5);
 	assert(error == 0);
 
-	httpdctx = malloc(sizeof(struct http_context));
+	httpdctx = (struct http_context *)malloc(sizeof(struct http_context));
 	assert(httpdctx != NULL);
 	httpdctx->file = httpd;
 	httpdctx->next = NULL;
