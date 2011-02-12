@@ -482,7 +482,7 @@ trimthenstep6:
 						SEQ_GT(ti->ti_ack, tp->t_rtseq))
 					incr = 1;
 				if (incr > 0) {
-					tp->snd_cwnd = cw + incr;
+					tp->snd_cwnd = umin(cw + incr, 1440 * 8);
 				}
 			}
 skip_upwin:

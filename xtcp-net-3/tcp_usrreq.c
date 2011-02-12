@@ -242,7 +242,20 @@ int tcp_packet(int dst, const char * buf, size_t len,
 	struct tcpcb * tp =  tcp_last_tcpcb;
 	if (tp != NULL) {
 		tcp_input(tp, dst, buf, len, flags, src_addr);
+		*flags |= (tp->t_flags & XF_NEEDOUTPUT);
 	}
+	return 0;
+}
+
+int tcp_reflush(int * flags)
+{
+	struct tcpcb * tp = tcp_last_tcpcb;
+
+	if (tp != NULL) {
+		 tcp_output(tp); 
+		 *flags |= (tp->t_flags & XF_NEEDOUTPUT);
+	}
+
 	return 0;
 }
 

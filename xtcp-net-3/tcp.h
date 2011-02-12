@@ -48,6 +48,7 @@
 #define XF_READ      (1 << 0)
 #define XF_WRITE     (1 << 1)
 #define XF_ACKNOW    (1 << 2)
+#define XF_NEEDOUTPUT    (1 << 9)
 
 #define T_HZ (1000)
 
