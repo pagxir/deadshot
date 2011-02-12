@@ -157,11 +157,12 @@ int http_xget(const char * url, const char * out)
 	name.sin_port = htons(atoi(porttext));
 	name.sin_addr = inaddr_convert(hostname);
 
-	printf("host: %s\n", hostname);
+	fprintf(stderr, "host: %s\n", hostname);
+	fprintf(stderr, "url_path: %s\n", url_path);
 	err = connect(fd, (struct sockaddr *)&name, sizeof(name));
 	assert(err == 0);
 
-	sprintf(buf, "GET %s HTTP/1.0\r\n\r\n", url_path);
+	sprintf(buf, "GET %s HTTP/1.0\r\nHost:%s\r\n\r\n", url_path, hostname);
 	len = send_full(fd, buf, strlen(buf), 0);
 	assert(len == strlen(buf));
 
