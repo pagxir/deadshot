@@ -8,6 +8,8 @@
 #define IMAGE_NUMBEROF_DIRECTORY_ENTRIES 16
 
 typedef uint32_t DWORD;
+typedef uint32_t ULONG;
+typedef uint16_t USHORT;
 typedef uint16_t WORD;
 typedef uint8_t BYTE;
 
@@ -163,6 +165,33 @@ typedef struct _IMAGE_NT_HEADERS {
   IMAGE_FILE_HEADER FileHeader;     /* 0x04 */
   IMAGE_OPTIONAL_HEADER32 OptionalHeader;   /* 0x18 */
 } IMAGE_NT_HEADERS32, *PIMAGE_NT_HEADERS32;
+
+typedef struct _IMAGE_RESOURCE_DIRECTORY
+{
+    ULONG Characteristics;
+    ULONG TimeDateStamp;
+    USHORT MajorVersion;
+    USHORT MinorVersion;
+    USHORT NumberOfNamedEntries;
+    USHORT NumberOfIdEntries;
+} IMAGE_RESOURCE_DIRECTORY, *PIMAGE_RESOURCE_DIRECTORY;
+
+typedef struct _IMAGE_RESOURCE_DIRECTORY_ENTRY
+{
+    ULONG Name;
+    ULONG OffsetToData;
+} IMAGE_RESOURCE_DIRECTORY_ENTRY, *PIMAGE_RESOURCE_DIRECTORY_ENTRY;
+
+// WINNT.H
+
+typedef struct _IMAGE_RESOURCE_DATA_ENTRY
+{
+    ULONG OffsetToData;
+    ULONG Size;
+    ULONG CodePage;
+    ULONG Reserved;
+} IMAGE_RESOURCE_DATA_ENTRY, *PIMAGE_RESOURCE_DATA_ENTRY;
+
 
 typedef void *HINSTANCE;
 #define LoadLibrary LoadLibraryA

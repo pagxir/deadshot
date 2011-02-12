@@ -6,12 +6,12 @@
 #include "pe32.h"
 #include "pertld.h"
 
-#define IMAGE_FILE_DLL 13
+#define IMAGE_FILE_DLL 0x2000
 
 #define PAGESIZE (4096)
 #define DLL_PROCESS_ATTACH 1
 
-#define VERB(exp) exp
+#define VERB(exp) 
 
 typedef WORD * LPWORD;
 typedef DWORD * LPDWORD;
@@ -30,9 +30,23 @@ struct _pe_object {
 	size_t expsize;
 	PIMAGE_EXPORT_DIRECTORY exptable;
 
+	size_t ressize;
+	PIMAGE_RESOURCE_DIRECTORY restable;
+
 	size_t relsize;
 	char * reltable;
 };
+
+void * resfunc_fixup(const char  * name);
+
+size_t GetProcAddress_fixup(void * hModule, const char * name)
+{
+	void * p = resfunc_fixup(name);
+	if (p != NULL)
+		return (size_t)p;
+
+	return (size_t)GetProcAddress(hModule, name);
+}
 
 static int BindThunkArray(Obj_Entry * obj, char * name, PIMAGE_THUNK_DATA pthunkBind, const PIMAGE_THUNK_DATA pthunkKeep)
 {
@@ -47,6 +61,7 @@ static int BindThunkArray(Obj_Entry * obj, char * name, PIMAGE_THUNK_DATA pthunk
 
 	hModule = LoadLibrary(name);
 	assert(hModule != NULL);
+
 	for (pthunk = pthunkKeep; pthunk->u1.Ordinal; pthunk++, pthunkBind++) {
 		if (IMAGE_ORDINAL_FLAG & pthunk->u1.Ordinal) {
 			index = (0x7FFFFFFF & pthunk->u1.Ordinal);
@@ -55,9 +70,9 @@ static int BindThunkArray(Obj_Entry * obj, char * name, PIMAGE_THUNK_DATA pthunk
 		} else {
 			pimp_by_name = (PIMAGE_IMPORT_BY_NAME)(obj->relocbase + pthunk->u1.Ordinal);
 			sprintf(fnname, "%s", pimp_by_name->Name);
-			pthunkBind->u1.Ordinal = (size_t)GetProcAddress(hModule, (char *)(pimp_by_name->Name));
+			pthunkBind->u1.Ordinal = GetProcAddress_fixup(hModule, (char *)(pimp_by_name->Name));
 		}
-		//VERB(printf("name: %s\n", fnname));
+		VERB(printf("name: %s\n", fnname));
 		assert(pthunkBind->u1.Ordinal != 0);
 	}
 
@@ -120,24 +135,50 @@ static int pe_dlmmap(Obj_Entry * obj, PEImage * image, const IMAGE_NT_HEADERS * 
 
 	obj->relocsize = imgsize;
 	if (hdr_pe->OptionalHeader.AddressOfEntryPoint != 0) {
-#if 1
-		if (hdr_pe->FileHeader.Characteristics & (IMAGE_FILE_DLL << 1))
+		if (hdr_pe->FileHeader.Characteristics & IMAGE_FILE_DLL)
 			obj->dllentry = (obj->relocbase + hdr_pe->OptionalHeader.AddressOfEntryPoint);
 		else
-#endif
 			obj->exeentry = (obj->relocbase + hdr_pe->OptionalHeader.AddressOfEntryPoint);
 	}
 
-	obj->impsize = hdr_pe->OptionalHeader.DataDirectory[1].Size;
-	obj->imptable = (PIMAGE_IMPORT_DESCRIPTOR)(obj->relocbase + hdr_pe->OptionalHeader.DataDirectory[1].VirtualAddress);
-
-	obj->relsize = hdr_pe->OptionalHeader.DataDirectory[5].Size;
-	obj->reltable = (obj->relocbase + hdr_pe->OptionalHeader.DataDirectory[5].VirtualAddress);
+	printf("DllCharacteristics: %x\n", hdr_pe->OptionalHeader.DllCharacteristics);
+	printf("Characteristics: %x\n", hdr_pe->FileHeader.Characteristics);
+	printf("LoaderFlags: %x\n", hdr_pe->OptionalHeader.LoaderFlags);
 
 	obj->expsize = hdr_pe->OptionalHeader.DataDirectory[0].Size;
 	obj->exptable = (PIMAGE_EXPORT_DIRECTORY)(obj->relocbase + hdr_pe->OptionalHeader.DataDirectory[0].VirtualAddress);
 
+	obj->impsize = hdr_pe->OptionalHeader.DataDirectory[1].Size;
+	obj->imptable = (PIMAGE_IMPORT_DESCRIPTOR)(obj->relocbase + hdr_pe->OptionalHeader.DataDirectory[1].VirtualAddress);
+
+	obj->ressize = hdr_pe->OptionalHeader.DataDirectory[2].Size;
+	obj->restable = (PIMAGE_RESOURCE_DIRECTORY)(obj->relocbase + hdr_pe->OptionalHeader.DataDirectory[2].VirtualAddress);
+
+	obj->relsize = hdr_pe->OptionalHeader.DataDirectory[5].Size;
+	obj->reltable = (obj->relocbase + hdr_pe->OptionalHeader.DataDirectory[5].VirtualAddress);
+
 	return 0;
+}
+
+void DumpResource(Obj_Entry * obj)
+{
+	PIMAGE_RESOURCE_DIRECTORY dir = obj->restable;
+#define XX(field) printf("%s: %x\n", #field, dir->field)
+	XX(Characteristics);
+	XX(TimeDateStamp);
+	XX(MajorVersion);
+	XX(MinorVersion);
+	XX(NumberOfNamedEntries);
+	XX(NumberOfIdEntries);
+#undef XX
+
+	PIMAGE_RESOURCE_DIRECTORY_ENTRY dirp = (PIMAGE_RESOURCE_DIRECTORY_ENTRY)(dir + 1);
+	for (int i = 0; i < dir->NumberOfNamedEntries + dir->NumberOfIdEntries; i++) {
+		printf("Name: %x\n", dirp->Name);
+		printf("OffsetToData: %x\n", dirp->OffsetToData);
+	}
+
+	return;
 }
 
 Obj_Entry * peLoadImage(PEImage * image)
@@ -244,7 +285,7 @@ Obj_Entry * peLoadImage(PEImage * image)
 					break;
 
 				case IMAGE_REL_BASED_ABSOLUTE:
-					//VERB(printf("IMAGE_REL_BASED_ABSOLUTE\n"));
+					VERB(printf("IMAGE_REL_BASED_ABSOLUTE\n"));
 					break;
 
 				default:
@@ -262,6 +303,7 @@ Obj_Entry * peLoadImage(PEImage * image)
 		reltbl += reloc_blk->SizeOfBlock;
 	}
 
+	DumpResource(obj);
 	if (peCallDllEntry(obj, DLL_PROCESS_ATTACH))
 		return obj;
 
