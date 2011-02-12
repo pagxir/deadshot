@@ -2,6 +2,8 @@
 #include <assert.h>
 #include <winsock.h>
 
+#include "xreq.h"
+
 int send_full(int fd, const void * buf, size_t len, int flag)
 {
 	int count;
@@ -9,7 +11,7 @@ int send_full(int fd, const void * buf, size_t len, int flag)
 	const char * p = (const char * )buf;
 
 	while (off < len) {
-		count = send(fd, p, len - off, flag);
+		count = xwrite(fd, p, len - off);
 		if (count == -1)
 			break;
 		off += count;
@@ -149,8 +151,7 @@ int http_xget(const char * url, const char * out)
 	partial_url = get_porttext(partial_url, porttext, sizeof(porttext));
 	partial_url = get_url_path(partial_url, url_path, sizeof(url_path));
 
-	//fd = xopen();
-	fd = socket(AF_INET, SOCK_STREAM, 0);
+	fd = xopen();
 	assert(fd != -1);
 
 	name.sin_family = AF_INET;
@@ -159,28 +160,21 @@ int http_xget(const char * url, const char * out)
 
 	fprintf(stderr, "host: %s\n", hostname);
 	fprintf(stderr, "url_path: %s\n", url_path);
-	err = connect(fd, (struct sockaddr *)&name, sizeof(name));
+	err = xconnect(fd, &name, sizeof(name));
 	assert(err == 0);
 
 	sprintf(buf, "GET %s HTTP/1.0\r\nHost:%s\r\n\r\n", url_path, hostname);
 	len = send_full(fd, buf, strlen(buf), 0);
 	assert(len == strlen(buf));
 
-	len = recv(fd, buf, sizeof(buf) - 1, 0);
+	len = xread(fd, buf, sizeof(buf) - 1);
 	while (len > 0) {
 		buf[len] = 0;
 		printf("%s", buf);
-		len = recv(fd, buf, sizeof(buf), 0);
+		len = xread(fd, buf, sizeof(buf) - 1);
 	}
 
-	closesocket(fd);
-
-#if 0
-	xconnect(fd, &name, sizeof(name));
-	xwrite(fd, buf, strlen(buf));
-	xread(fd, buf, sizeof(buf));
 	xclose(fd);
-#endif
 
 	return 0;
 }
