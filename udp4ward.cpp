@@ -1,7 +1,6 @@
 // udp4ward.cpp : Defines the entry point for the console application.
 //
 
-#include "stdafx.h"
 #ifndef WIN32
 #include <time.h>
 #include <errno.h>
@@ -51,7 +50,7 @@ bool operator < (const struct udpiocb & a, const struct udpiocb & b)
 
 static std::set<udpiocb> udpio_list;
 
-int udpio_add(u_long addr, u_short port)
+int udpio_add(u_long addr, u_short d_port, u_short s_port)
 {
 	int error;
 	struct udpiocb iocb;
@@ -59,15 +58,18 @@ int udpio_add(u_long addr, u_short port)
 	int s_udp = socket(PF_INET, SOCK_DGRAM, 0);
 	assert(s_udp != -1);
 	addr_in1.sin_family = AF_INET;
-	addr_in1.sin_port = htons(port);
+	addr_in1.sin_port = htons(s_port);
 	addr_in1.sin_addr.s_addr = htonl(INADDR_ANY);
 	error = bind(s_udp, (struct sockaddr *)&addr_in1, sizeof(addr_in1));
 	assert(error == 0);
 	iocb.flags = UDPF_KEEP;
 	iocb.udpio_fd = s_udp;
-	iocb.udpio_addr = addr_in1;
+	iocb.udpio_addr.sin_family = AF_INET;
+	iocb.udpio_addr.sin_port = htons(d_port);
 	iocb.udpio_addr.sin_addr.s_addr = addr;
 	udpio_list.insert(iocb);
+	printf("local port %d forward to %s:%d\n",
+			s_port, inet_ntoa(iocb.udpio_addr.sin_addr),d_port);
 	return 0;
 }
 
@@ -209,16 +211,32 @@ int main(int argc, char * argv[])
 	int count = 0;
 	for (int i = 1; i < argc; i++) {
 		char * pdot = NULL;
+		int s_port_0, d_port_0;
+		const char * s_port, * d_port;
+
 		strncpy(buf, argv[i], sizeof(buf));
 		buf[sizeof(buf) - 1] = 0;
 		pdot = strchr(buf, ':');
 		if (pdot == NULL)
 			continue;
 		*pdot++ = 0;
-		int port = atoi(pdot);
-		if (port == 0 || port == -1)
+		s_port = d_port = pdot;
+
+		pdot = strchr(pdot, ':');
+		if (pdot != NULL) {
+			*pdot++ = 0;
+			s_port = pdot;
+		}
+
+		s_port_0 = atoi(s_port);
+		if (s_port_0 == 0 || s_port_0 == -1)
 			continue;
-		udpio_add(inet_addr(buf), port);
+
+		d_port_0 = atoi(d_port);
+		if (d_port_0 == 0 || d_port_0 == -1)
+			continue;
+
+		udpio_add(inet_addr(buf), d_port_0, s_port_0);
 		count++;
 	}
 
@@ -227,3 +245,4 @@ int main(int argc, char * argv[])
 	udpio_final();
 	return 0;
 }
+
