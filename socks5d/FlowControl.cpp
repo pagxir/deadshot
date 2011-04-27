@@ -9,7 +9,6 @@
 #include "Network.h"
 #include "SDServer.h"
 #include "FlowControl.h"
-#include "FlowMeasure.h"
 #include "FlowControler.h"
 
 #define LIST_NAME(xx) FlowCtrlIdle_##xx
@@ -28,10 +27,7 @@ static AIOCB stopcall;
 static AIOCB startcall;
 
 static PluginParam FlowControl;
-static LPFN_ACCEPTEX lpfnAcceptEx = NULL;
 static void FlowControlCallback(LPVOID lpVoid);
-
-static CFlowMeasure flow_measure(9);
 static CFlowControler flow_controler;
 
 BOOL FlowCtrlIsIdle(void)

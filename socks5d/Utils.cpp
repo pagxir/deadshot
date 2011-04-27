@@ -7,7 +7,6 @@
 #include <psapi.h>
 
 #include "Utils.h"
-#include "sqlite3.h"
 
 int UTF8CharToOEMChar(char *dst, const char *src, size_t len)
 {
