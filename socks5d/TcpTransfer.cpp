@@ -16,6 +16,10 @@
 #define XYF_RESULTED   0x00000040
 #define XYF_VERSION4   0x00000400
 #define XYF_UDP        0x04000000
+#define XYF_EOF0       0x00001000
+#define XYF_EOF1       0x00002000
+#define XYF_SHUT0      0x00004000
+#define XYF_SHUT1      0x00008000
 
 #pragma comment(lib, "Psapi.lib")
 
@@ -163,7 +167,7 @@ static int TcpTransferInit(void)
 	DS_ASSERT(tcp_fd != -1);
 
 	addr.sin_family = AF_INET;
-	addr.sin_port   = htons(1080);
+	addr.sin_port   = htons(7902);
 	addr.sin_addr.s_addr = INADDR_ANY;
 	error = bind(tcp_fd, (const struct sockaddr *)&addr, sizeof(addr));
 	DS_ASSERT(error == 0);
@@ -231,7 +235,7 @@ int CTcpTransfer::PacketRead(void)
 	if ( AIOCB_ISFINISH(&m_acb) ) {
 		StopTcpTimer();
 		if (m_acb.count == 0)
-			m_killed = 1;
+			m_flags |= XYF_EOF0;
 		m_len += m_acb.count;
 		AIOCB_CLEAR(&m_acb);
 	}
@@ -246,7 +250,7 @@ int CTcpTransfer::PacketRead(void)
 	if ( AIOCB_ISFINISH(&m_pacb) ) {
 		StopTcpTimer();
 		if (m_pacb.count == 0)
-			m_killed = 1;
+			m_flags |= XYF_EOF1;
 		FlowCtrlAddflow(m_pacb.count);
 		m_wlen += m_pacb.count;
 		AIOCB_CLEAR(&m_pacb);
@@ -266,6 +270,11 @@ int CTcpTransfer::PacketRead(void)
 int CTcpTransfer::readMore(void)
 {
 	DWORD result;
+
+	if (m_flags & (XYF_EOF0| XYF_EOF1)) {
+		m_killed = 1;
+		return -1;
+	}
 
 	if (m_killed == 0 && !AIOCB_ISPENDING(&m_acb) && m_len < sizeof(m_buf)) {
 		result = AIO_WSARecv(m_file, m_buf + m_len, sizeof(m_buf) - m_len, &m_acb);
@@ -428,6 +437,7 @@ skip_check:
 #define S_RATE(s) ((s) < 30960? (s): 30960)
 int CTcpTransfer::PacketProcess(PBOOL pchange)
 {
+	int success;
 	int fd1, error;
 	in_addr in_addr1;
 	u_short in_port1;
@@ -612,7 +622,7 @@ int CTcpTransfer::PacketProcess(PBOOL pchange)
 
 	if ((m_flags & XYF_RESULTED) && m_killed == 0) {
 
-		if (m_len == m_off && !AIOCB_ISPENDING(&m_acb)) {
+		if (m_len == m_off && !AIOCB_ISPENDING(&m_acb) && (m_flags & XYF_EOF0) == 0) {
 			m_off = m_len = 0;
 			error = AIO_WSARecv(m_file, m_buf, sizeof(m_buf), &m_acb);
 			if (error == 0 || WSAGetLastError() == WSA_IO_PENDING) {
@@ -623,7 +633,7 @@ int CTcpTransfer::PacketProcess(PBOOL pchange)
 			}
 		}
 
-		if (m_wlen == m_woff && !AIOCB_ISPENDING(&m_pacb)) {
+		if (m_wlen == m_woff && !AIOCB_ISPENDING(&m_pacb) && (m_flags & XYF_EOF1) == 0) {
 			m_woff = m_wlen = 0;
 			if (!FlowCtrlIsIdle()) {
 				FlowCtrlIdle_Reset(&m_fcb, TTCallback, this);
@@ -647,6 +657,11 @@ int CTcpTransfer::PacketProcess(PBOOL pchange)
 				m_killed = 1;
 				return 0;
 			}
+		} else if (m_off == m_len && (m_flags & (XYF_EOF0| XYF_SHUT0)) == XYF_EOF0) {
+			m_flags |= XYF_SHUT0;
+			success = AIO_DisconnectEx(m_pfd, &m_pdiscb);
+			if (success == FALSE && WSAGetLastError() != WSA_IO_PENDING)
+				m_killed = 1;
 		}
 
 		if (m_woff < m_wlen && !AIOCB_ISPENDING(&m_wcb)) {
@@ -657,6 +672,11 @@ int CTcpTransfer::PacketProcess(PBOOL pchange)
 				m_killed = 1;
 				return 0;
 			}
+		} else if (m_woff == m_wlen && (m_flags & (XYF_EOF1| XYF_SHUT1)) == XYF_EOF1) {
+			m_flags |= XYF_SHUT1;
+			success = AIO_DisconnectEx(m_file, &m_discb);
+			if (success == FALSE && WSAGetLastError() != WSA_IO_PENDING)
+				m_killed = 1;
 		}
 	}
 
@@ -694,10 +714,9 @@ int CTcpTransfer::Run(void)
 		return -1;
 	}
 
-	if ( !AIOCB_ISFINISH(&m_discb) ) {
-		success = AIO_DisconnectEx(m_file, &m_discb);
-		if (success == TRUE || WSAGetLastError() == WSA_IO_PENDING)
-			return -1;
+	if ( AIOCB_ISPENDING(&m_discb) ) {
+		/* pending */
+		return -1;
 	}
 
 	if ( AIOCB_ISPENDING(&m_pdiscb) ) {
