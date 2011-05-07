@@ -34,6 +34,9 @@
 struct udpiocb {
 	int flags;
 	int udpio_fd;
+	int cc_file;
+	int cc_count;
+	char cc_packet[2048];
 	time_t last_active;
 	struct sockaddr_in udpio_addr;
 };
@@ -62,8 +65,12 @@ int udpio_add(u_long addr, u_short d_port, u_short s_port)
 	addr_in1.sin_addr.s_addr = htonl(INADDR_ANY);
 	error = bind(s_udp, (struct sockaddr *)&addr_in1, sizeof(addr_in1));
 	assert(error == 0);
+	u_long mode = 1;
+	ioctlsocket(s_udp, FIONBIO, &mode);
 	iocb.flags = UDPF_KEEP;
 	iocb.udpio_fd = s_udp;
+	iocb.cc_file = -1;
+	iocb.cc_count = 0;
 	iocb.udpio_addr.sin_family = AF_INET;
 	iocb.udpio_addr.sin_port = htons(d_port);
 	iocb.udpio_addr.sin_addr.s_addr = addr;
@@ -86,26 +93,28 @@ int udpio_final(void)
 
 int udpio_realloc(const struct sockaddr_in & addr)
 {
+	u_long mode = 1;
 	struct udpiocb iocb;
 	iocb.flags = 0;
 	iocb.udpio_addr = addr;
 	std::set<udpiocb>::iterator iter;
 	iter = udpio_list.find(iocb);
 	if (iter != udpio_list.end()) {
-		iocb = *iter;
-		time(&iocb.last_active);
-		udpio_list.erase(iter);
-		udpio_list.insert(iocb);
-		return iocb.udpio_fd;
+		time((time_t*)&iter->last_active);
+		return iter->udpio_fd;
 	}
 	iocb.udpio_fd = socket(AF_INET, SOCK_DGRAM, 0);
+	ioctlsocket(iocb.udpio_fd, FIONBIO, &mode);
 	time(&iocb.last_active);
+	iocb.cc_file = -1;
+	iocb.cc_count = 0;
 	udpio_list.insert(iocb);
 	return iocb.udpio_fd;
 }
 
 int udpio_event(fd_set * readfds, fd_set * writefds, fd_set * errorfds)
 {
+	int error;
 	int fd, len;
 	char buf[4096];
 	int addr_len1;
@@ -113,14 +122,44 @@ int udpio_event(fd_set * readfds, fd_set * writefds, fd_set * errorfds)
 	std::set<udpiocb>::iterator iter;
 	iter = udpio_list.begin();
 	while (iter != udpio_list.end()) {
-		if (FD_ISSET(iter->udpio_fd, readfds)) {
-			addr_len1 = sizeof(addr_in1);
-			len = recvfrom(iter->udpio_fd, buf, sizeof(buf), 0,
-					(struct sockaddr *)&addr_in1, &addr_len1);
-			fd = udpio_realloc(addr_in1);
-			sendto(fd, buf, len, 0, (struct sockaddr *)&(iter->udpio_addr),
-					sizeof(iter->udpio_addr));
+		int read_continue = 0;
+
+		if (iter->cc_count > 0) {
+			if (FD_ISSET(iter->cc_file, writefds)) {
+			   	error = sendto(iter->cc_file, iter->cc_packet, iter->cc_count,
+					   	0, (struct sockaddr *)&(iter->udpio_addr), sizeof(iter->udpio_addr));
+				if (error == -1) {
+					break;
+				}
+
+				*(int*)&iter->cc_count = 0;
+				*(int*)&iter->cc_file = -1;
+				read_continue = 1;
+			}
+		} 
+		
+		if (read_continue == 1 ||
+				(iter->cc_count == 0 && FD_ISSET(iter->udpio_fd, readfds))) {
+		   	for ( ; ; ) {
+			   	addr_len1 = sizeof(addr_in1);
+			   	len = recvfrom(iter->udpio_fd, buf, sizeof(buf), 0,
+					   	(struct sockaddr *)&addr_in1, &addr_len1);
+			   	if (len == -1) {
+				   	break;
+			   	}
+			   
+				fd = udpio_realloc(addr_in1);
+			   	error = sendto(fd, buf, len, 0, 
+						(struct sockaddr *)&(iter->udpio_addr), sizeof(iter->udpio_addr));
+			   	if (error == -1) {
+				   	memcpy((char *)iter->cc_packet, buf, len);
+				   	*(int*)&iter->cc_count = len;
+				   	*(int*)&iter->cc_file = fd;
+				   	break;
+			   	}
+		   	}
 		}
+
 		++iter;
 	}
 	return 0;
@@ -150,12 +189,19 @@ int udpio_fd_set(fd_set * readfds, fd_set * writefds, fd_set * errorfds)
 {
 	int fd_max = 0;
 	std::set<udpiocb>::const_iterator iter;
+
 	iter = udpio_list.begin();
 	while (iter != udpio_list.end()) {
-		FD_SET(iter->udpio_fd, readfds);
-		fd_max = (fd_max < iter->udpio_fd? iter->udpio_fd: fd_max);
+		if (iter->cc_count == 0) {
+			FD_SET(iter->udpio_fd, readfds);
+			fd_max = (fd_max < iter->udpio_fd? iter->udpio_fd: fd_max);
+		} else {
+			FD_SET(iter->cc_file, writefds);
+			fd_max = (fd_max < iter->cc_file? iter->cc_file: fd_max);
+		}
 		++iter;
 	}
+
 	return fd_max;
 }
 
@@ -178,7 +224,7 @@ int udp_switch(void)
 		struct timeval timeout = {1, 1};
 		count = select(max_fd + 1, &readfds, &writefds, &errorfds, &timeout);
 		if (count == -1) {
-			printf("select error: %d \n", count);
+			printf("select error: %d %u\n", count, WSAGetLastError());
 			continue;
 		}
 
@@ -193,7 +239,6 @@ int udp_switch(void)
 			c_active = udpio_list.size();
 		}
 
-		printf("udpio event\n");
 		udpio_event(&readfds, &writefds, &errorfds);
 	}
 	return 0;
