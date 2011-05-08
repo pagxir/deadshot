@@ -33,6 +33,8 @@ int ticks = 0;
 int pipe(int fildes[]);
 static struct xreq_stat stat = {0};
 static struct tcpcb * fd_table[MAX_LINK] = {0};
+u_short tcp_port = 0;
+u_long  tcp_addr = 0;
 
 static int update_ticks(void)
 {
@@ -41,21 +43,17 @@ static int update_ticks(void)
 }
 
 static int xreq_select(struct fd_set * readfds, struct timeval * timeout,
-		struct xreq_stat * stat, int * outflags)
+		struct xreq_stat * stat)
 {
 	int count;
 	int fd, pipefd;
 	int max_fd = 0;
-	struct fd_set writefds;
 
 	FD_ZERO(readfds);
-	FD_ZERO(&writefds);
 
 	max_fd = fd = stat->xs_file;
 	assert(fd != -1);
 	FD_SET(fd, readfds);
-	if (*outflags & XF_NEEDOUTPUT)
-		FD_SET(fd, &writefds);
 
 	pipefd = stat->xs_piperd;
 	assert(pipefd != -1);
@@ -63,14 +61,9 @@ static int xreq_select(struct fd_set * readfds, struct timeval * timeout,
 
 	pthread_mutex_unlock(&stat->xs_mutex);
 	max_fd = umax(max_fd, pipefd);
-	count = select(max_fd + 1, readfds, &writefds, NULL, timeout);
+	count = select(max_fd + 1, readfds, NULL, NULL, timeout);
 	pthread_mutex_lock(&stat->xs_mutex);
 	update_ticks();
-
-	if (*outflags & XF_NEEDOUTPUT) {
-		if (count <= 0 || !FD_ISSET(fd, &writefds))
-			*outflags &= ~XF_NEEDOUTPUT;
-	}
 
 	assert(count >= 0);
 	return count;
@@ -84,7 +77,6 @@ static int drop_data(int fd)
 
 static void * xreq_thread(void * thr_args)
 {
-	int flags = 0;
 	struct fd_set readfds;
 	struct timeval t_out;
 	struct xreq_stat * stat;
@@ -96,16 +88,15 @@ static void * xreq_thread(void * thr_args)
 	stat->xs_slowto = ticks + 100;
 	while (stat->xs_quit == 0 || !tcp_empty()) {
 		int count;
-		int outflags;
 		char packet[2048];
 
+		int flags;
 		socklen_t dst_len;
 		struct sockaddr_in dst_addr;
 
 		t_out.tv_sec = 0;
 		t_out.tv_usec = 100000;
-		outflags = flags;
-		count = xreq_select(&readfds, &t_out, stat, &outflags);
+		count = xreq_select(&readfds, &t_out, stat);
 
 		flags = 0;
 
@@ -145,10 +136,6 @@ static void * xreq_thread(void * thr_args)
 			tcp_fasttimeo(&flags);
 			flags &= ~XF_ACKNOW;
 		}
-
-		if (outflags & XF_NEEDOUTPUT) {
-			tcp_reflush(&flags);
-		}
 	}
 	pthread_mutex_unlock(&stat->xs_mutex);
 
@@ -177,6 +164,8 @@ int xreq_init(u_short port)
 	stat.xs_flags = 0;
 	srand(ticks);
 	tcp_iss = rand();
+	tcp_port = 1234;
+	tcp_addr = (rand() << 16) | rand();
 	pthrid = &stat.xs_thrid;
 	pthread_cond_init(&stat.xs_cond, NULL);
 	pthread_mutex_init(&stat.xs_mutex, NULL);

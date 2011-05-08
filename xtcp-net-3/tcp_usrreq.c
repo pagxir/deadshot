@@ -15,6 +15,8 @@
 
 int tcp_rexmit_min = TCPTV_MIN;
 struct tcpcb * tcp_last_tcpcb = 0;
+extern u_short tcp_port;
+extern u_long  tcp_addr;
 
 struct tcpcb * tcp_create(int if_fd)
 {
@@ -23,6 +25,8 @@ struct tcpcb * tcp_create(int if_fd)
 	memset(tp, 0, sizeof(*tp));
 
 	tp->if_dev = if_fd;
+	tp->ts_port = tcp_port++;
+	tp->ts_addr = tcp_addr;
 	tp->t_state = TCPS_CLOSED;
 	tp->t_srtt  = TCPTV_SRTTBASE;
 	tp->t_rxtcur = TCPTV_RTOBASE;
@@ -242,20 +246,7 @@ int tcp_packet(int dst, const char * buf, size_t len,
 	struct tcpcb * tp =  tcp_last_tcpcb;
 	if (tp != NULL) {
 		tcp_input(tp, dst, buf, len, flags, src_addr);
-		*flags |= (tp->t_flags & XF_NEEDOUTPUT);
 	}
-	return 0;
-}
-
-int tcp_reflush(int * flags)
-{
-	struct tcpcb * tp = tcp_last_tcpcb;
-
-	if (tp != NULL) {
-		 tcp_output(tp); 
-		 *flags |= (tp->t_flags & XF_NEEDOUTPUT);
-	}
-
 	return 0;
 }
 

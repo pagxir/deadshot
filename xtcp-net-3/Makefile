@@ -5,7 +5,7 @@ LDLIBS = -lws2_32
 CFLAGS = -g -I.
 CXXFLAGS = -g -I.
 
-all: http_xget demo_client demo_server
+all: demo_client demo_server http_xget
 demo_client: demo_client.o $(OBJECTS)
 	$(CC) -o demo_client $(LDFLAGS) $(OBJECTS) demo_client.o $(LDLIBS)
 

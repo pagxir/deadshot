@@ -3,6 +3,8 @@
 #include <winsock2.h>
 
 #include "tcp.h"
+#include "event.h"
+#include "timer.h"
 #include "rgnbuf.h"
 #include "tcp_var.h"
 #include "tcp_timer.h"
@@ -20,8 +22,8 @@ static int TCP_PAWS_IDLE = 24 * 24 * 60 * 60 * T_HZ;
 static void tcp_xmit_timer(struct tcpcb * tp, int rtt);
 static void tcp_newreno_partial_ack(struct tcpcb * tp, struct tcphdr * ti);
 
-void tcp_input(struct tcpcb * tp, int dst, const char * buf,
-		size_t len, int * flags, const struct sockaddr_in * src_addr)
+void tcp_input(struct tcpcb * tp, int dst,
+	   	const char * buf, size_t len, const struct sockaddr_in * src_addr)
 {
 	int tilen;
 	int tiflags;
@@ -57,7 +59,7 @@ void tcp_input(struct tcpcb * tp, int dst, const char * buf,
 	tiwin = ti->ti_win;
 
 	tp->t_rcvtime = ticks;
-	tp->t_timer[TCPT_KEEP] = (ticks + tcp_keepidle);
+	callout_reset(&tp->t_timer_keep, tcp_keepidle);
 
 	if (tiflags & TH_SYN) {
 		ts_val = ntohl((u_long) ti->ti_tsval);
@@ -117,11 +119,11 @@ void tcp_input(struct tcpcb * tp, int dst, const char * buf,
 				tp->t_dupacks = 0;
 
 				if (tp->snd_una == tp->snd_max)
-					tp->t_timer[TCPT_REXMT] = 0;
-				else if (tp->t_timer[TCPT_PERSIST] == 0)
-					tp->t_timer[TCPT_REXMT] = (ticks + tp->t_rxtcur);
+					drop_event(&tp->t_timer_rexmt);
+				else if ( evt_inactive(&tp->t_timer_persist) )
+					callout_reset(&tp->t_timer_rexmt, tp->t_rxtcur);
 
-				*flags |= XF_WRITE;
+				tcp_wwakeup(tp);
 				if (rgn_len(tp->rgn_snd)) {
 					(void) tcp_output(tp);
 				}
@@ -134,11 +136,12 @@ void tcp_input(struct tcpcb * tp, int dst, const char * buf,
 			tcpstat.tcps_rcvpack++;
 			tcpstat.tcps_rcvbyte += tilen;
 			rgn_put(tp->rgn_rcv, dat, tilen);
-			*flags |= XF_READ;
+			tcp_rwakeup(tp);
 			if (tp->t_flags & TF_DELACK) {
-				*flags |= XF_ACKNOW;
+				tcp_prepare_acknow(tp);
 			} else {
 				tp->t_flags |= TF_DELACK;
+				tcp_prepare_delack(tp);
 			}
 			tp->snd_wl1 = ti->ti_seq;
 			return;
@@ -172,7 +175,7 @@ void tcp_input(struct tcpcb * tp, int dst, const char * buf,
 			tp->td_port = ti->ti_src;
 			tp->td_addr = ti->ti_srcc;
 			tp->t_state = TCPS_SYN_RECEIVED;
-			tp->t_timer[TCPT_KEEP] = (ticks + TCPTV_KEEP_INIT);
+			callout_reset(&tp->t_timer_keep, TCPTV_KEEP_INIT);
 			tcp_rcvseqinit(tp);
 			tcp_sendseqinit(tp);
 			memcpy(&tp->dst_addr, src_addr, sizeof(tp->dst_addr));
@@ -189,8 +192,9 @@ void tcp_input(struct tcpcb * tp, int dst, const char * buf,
 			}
 
 			if ((tiflags & (TH_RST| TH_ACK)) == (TH_RST| TH_ACK)) {
-				*flags |= (XF_READ| XF_WRITE);
 				tp->t_state = TCPS_CLOSED;
+				tcp_rwakeup(tp);
+				tcp_wwakeup(tp);
 			}
 
 			if (tiflags & TH_RST) {
@@ -209,7 +213,7 @@ void tcp_input(struct tcpcb * tp, int dst, const char * buf,
 					tp->snd_nxt = tp->snd_una;
 			}
 
-			tp->t_timer[TCPT_REXMT] = 0;
+			drop_event(&tp->t_timer_rexmt);
 			tp->irs = ti->ti_seq;
 			tp->td_port = ti->ti_src;
 			tp->td_addr = ti->ti_srcc;
@@ -221,14 +225,15 @@ void tcp_input(struct tcpcb * tp, int dst, const char * buf,
 				fprintf(stderr, "TCPS_SYN_SENT -> TCPS_ESTABLISHED\n");
 				if (tp->t_rtttime)
 					tcp_xmit_timer(tp, (ticks - tp->t_rtttime));
-				*flags |= XF_WRITE;
+				tcp_connected(tp);
+				tcp_wwakeup(tp);
 			} else {
 				tp->t_state = TCPS_SYN_RECEIVED;
 				fprintf(stderr, "TCPS_SYN_SENT -> TCPS_SYN_RECEIVED\n");
 			}
 trimthenstep6:
 			ti->ti_seq++;
-			if (tilen > tp->rcv_wnd) {
+			if ((size_t)tilen > tp->rcv_wnd) {
 				todrop = tilen - tp->rcv_wnd;
 				tilen = (short)tp->rcv_wnd;
 				tiflags &= ~TH_FIN;
@@ -319,15 +324,17 @@ trimthenstep6:
 	}
 
 	if (tiflags & TH_RST) {
-		*flags |= (XF_READ| XF_WRITE);
 		tp->t_state = TCPS_CLOSED;
+		tcp_wwakeup(tp);
+		tcp_rwakeup(tp);
 		goto dropit;
 	}
 
 	if (tiflags & TH_SYN) {
 		fprintf(stderr, "bad SYN: %d\n", tp->t_state);
-		*flags |= (XF_READ| XF_WRITE);
 		tp->t_state = TCPS_CLOSED;
+		tcp_rwakeup(tp);
+		tcp_wwakeup(tp);
 		goto dropit;
 	}
 
@@ -344,10 +351,11 @@ trimthenstep6:
 				goto dropitwithreset;
 			tcpstat.tcps_connects++;
 			tp->t_state = TCPS_ESTABLISHED;
+			tcp_connected(tp);
 			fprintf(stderr, "TCPS_SYN_RECEIVED -> TCPS_ESTABLISHED\n");
-			tp->t_timer[TCPT_KEEP] = (ticks + tcp_keepidle);
+			callout_reset(&tp->t_timer_keep, tcp_keepidle);
 			tp->snd_wl1 = ti->ti_seq - 1;
-			*flags |= XF_WRITE;
+			tcp_wwakeup(tp);
 		case TCPS_ESTABLISHED:
 		case TCPS_FIN_WAIT_1:
 		case TCPS_FIN_WAIT_2:
@@ -358,7 +366,7 @@ trimthenstep6:
 			if (SEQ_LEQ(ti->ti_ack, tp->snd_una)) {
 				if (tilen == 0 && tiwin == tp->snd_wnd) {
 					tcpstat.tcps_rcvduppack++;
-					if (tp->t_timer[TCPT_REXMT] == 0 ||
+					if (evt_inactive(&tp->t_timer_rexmt) ||
 							ti->ti_ack != tp->snd_una)
 						tp->t_dupacks = 0;
 					else if (++tp->t_dupacks > tcprexmtthresh ||
@@ -381,7 +389,7 @@ trimthenstep6:
 						tp->t_flags |= TF_FASTRECOVERY;
 						tp->snd_recover = tp->snd_max;
 						tp->snd_ssthresh = win * tp->t_maxseg;
-						tp->t_timer[TCPT_REXMT] = 0;
+						drop_event(&tp->t_timer_rexmt);
 						tp->t_rtttime = 0;
 						tp->snd_nxt = ti->ti_ack;
 						tp->snd_cwnd = tp->t_maxseg;
@@ -439,7 +447,6 @@ trimthenstep6:
 
 			if (SEQ_GT(ti->ti_ack, tp->snd_max)) {
 				tcpstat.tcps_rcvacktoomuch++;
-				assert(0);
 				goto dropitafterack;
 			}
 
@@ -462,10 +469,10 @@ trimthenstep6:
 			tcp_xmit_timer(tp, (ticks - ts_ecr + 1));
 
 			if (ti->ti_ack == tp->snd_max) {
-				tp->t_timer[TCPT_REXMT] = 0;
+				drop_event(&tp->t_timer_rexmt);
 				needoutput = 1;
-			} else if (tp->t_timer[TCPT_PERSIST] == 0)
-				tp->t_timer[TCPT_REXMT] = (ticks + tp->t_rxtcur);
+			} else if ( evt_inactive(&tp->t_timer_persist) )
+				callout_reset(&tp->t_timer_rexmt, tp->t_rxtcur);
 
 			if (acked == 0)
 				goto step6;
@@ -488,9 +495,10 @@ trimthenstep6:
 						SEQ_GT(ti->ti_ack, tp->t_rtseq))
 					incr = 1;
 				if (incr > 0) {
-					tp->snd_cwnd = cw + incr;
+					tp->snd_cwnd = cw + incr;//, 7 * TCP_MSS);
 				}
 			}
+			goto skip_upwin;
 skip_upwin:
 
 			if (acked > rgn_len(tp->rgn_snd)) {
@@ -503,7 +511,7 @@ skip_upwin:
 				ourfinisacked = 0;
 				needoutput = 1;
 			}
-			*flags |= XF_WRITE;
+			tcp_wwakeup(tp);
 
 			if (((tp->t_flags & TF_FASTRECOVERY) == 0) &&
 					SEQ_GT(tp->snd_una, tp->snd_recover) &&
@@ -523,7 +531,7 @@ skip_upwin:
 			switch (tp->t_state) {
 				case TCPS_FIN_WAIT_1:
 					if (ourfinisacked) {
-						tp->t_timer[TCPT_2MSL] = (ticks + tcp_maxidle);
+						callout_reset(&tp->t_timer_2msl, tcp_maxidle);
 						tp->t_state = TCPS_FIN_WAIT_2;
 						fprintf(stderr, "TCPS_FIN_WAIT_1 -> TCPS_FIN_WAIT_2\n");
 					}
@@ -534,7 +542,7 @@ skip_upwin:
 						tp->t_state = TCPS_TIME_WAIT;
 						fprintf(stderr, "TCPS_CLOSING -> TCPS_TIME_WAIT\n");
 						tcp_canceltimers(tp);
-						tp->t_timer[TCPT_2MSL] = (ticks + 2 * TCPTV_MSL);
+						callout_reset(&tp->t_timer_2msl, 2 * TCPTV_MSL);
 					}
 					break;
 
@@ -542,15 +550,13 @@ skip_upwin:
 					if (ourfinisacked) {
 						fprintf(stderr, "TCPS_LAST_ACK -> TCPS_CLOSED\n");
 						tp->t_state = TCPS_CLOSED;
-						if (tp->t_flags & TF_DETACH) {
-							tcp_detach(tp);
-						}
+						tcp_disconnect(tp);
 						goto dropit;
 					}
 					break;
 
 				case TCPS_TIME_WAIT:
-					tp->t_timer[TCPT_2MSL] = (ticks + 2 * TCPTV_MSL);
+					callout_reset(&tp->t_timer_2msl, 2 * TCPTV_MSL);
 					goto dropitafterack;
 					break;
 			}
@@ -587,16 +593,17 @@ dodata:
 				rgn_frgcnt(tp->rgn_rcv) == 0 &&
 				tp->t_state >= TCPS_ESTABLISHED) {
 			if (tp->t_flags & TF_DELACK) {
-				*flags |= XF_ACKNOW;
+				tcp_prepare_acknow(tp);
 			} else {
 				tp->t_flags |= TF_DELACK;
+				tcp_prepare_delack(tp);
 			}
 			rgn_put(tp->rgn_rcv, dat, tilen);
 			tp->rcv_nxt += tilen;
 			tiflags = (ti->ti_flags & TH_FIN);
 			tcpstat.tcps_rcvpack ++;
 			tcpstat.tcps_rcvbyte += tilen;
-			*flags |= XF_READ;
+			tcp_rwakeup(tp);
 		} else if (tilen) {
 			if (SEQ_GT(ti->ti_seq, tp->rcv_nxt)) {
 				int off = (ti->ti_seq - tp->rcv_nxt);
@@ -606,7 +613,7 @@ dodata:
 				rgn_put(tp->rgn_rcv, dat, tilen);
 				tp->rcv_nxt += rgn_reass(tp->rgn_rcv);
 				tp->rcv_nxt += tilen;
-				*flags |= XF_READ;
+			   	tcp_rwakeup(tp);
 			}
 			tiflags = rgn_frgcnt(tp->rgn_rcv)? 0: tiflags;
 			tp->t_flags |= TF_ACKNOW;
@@ -626,25 +633,25 @@ dodata:
 			case TCPS_ESTABLISHED:
 				fprintf(stderr, "TCPS_ESTABLISHED -> TCPS_CLOSE_WAIT\n");
 				tp->t_state = TCPS_CLOSE_WAIT;
-				*flags |= XF_READ;
+			   	tcp_rwakeup(tp);
 				break;
 
 			case TCPS_FIN_WAIT_1:
 				fprintf(stderr, "TCPS_FIN_WAIT_1 -> TCPS_CLOSING\n");
 				tp->t_state = TCPS_CLOSING;
-				*flags |= XF_READ;
+			   	tcp_rwakeup(tp);
 				break;
 
 			case TCPS_FIN_WAIT_2:
 				fprintf(stderr, "TCPS_FIN_WAIT_2 -> TCPS_TIME_WAIT\n");
 				tp->t_state = TCPS_TIME_WAIT;
 				tcp_canceltimers(tp); 
-				tp->t_timer[TCPT_2MSL] = (ticks + 2 * TCPTV_MSL);
-				*flags |= XF_READ;
+				callout_reset(&tp->t_timer_2msl, 2 * TCPTV_MSL);
+			   	tcp_rwakeup(tp);
 				break;
 
 			case TCPS_TIME_WAIT:
-				tp->t_timer[TCPT_2MSL] = (ticks + 2 * TCPTV_MSL);
+				callout_reset(&tp->t_timer_2msl, 2 * TCPTV_MSL);
 				break;
 		}
 	}
@@ -683,7 +690,7 @@ static void tcp_newreno_partial_ack(struct tcpcb * tp, struct tcphdr * ti)
 	tcp_seq onxt = tp->snd_nxt;
 	u_long ocwnd = tp->snd_cwnd;
 
-	tp->t_timer[TCPT_REXMT] = 0;
+	drop_event(&tp->t_timer_rexmt);
 	tp->t_rtttime = 0;
 	tp->snd_nxt = ti->ti_ack;
 

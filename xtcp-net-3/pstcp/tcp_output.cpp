@@ -3,6 +3,8 @@
 #include <winsock2.h>
 
 #include "tcp.h"
+#include "event.h"
+#include "timer.h"
 #include "rgnbuf.h"
 #include "tcp_var.h"
 
@@ -28,12 +30,12 @@ int tcp_setpersist(struct tcpcb * tp)
 {
 	int persist_time = 0;
 	register int t = ((tp->t_srtt >> 2) + tp->t_rttvar) >> 1;
-	assert(tp->t_timer[TCPT_REXMT] == 0);
+	assert( evt_inactive(&tp->t_timer_rexmt) );
 
 	TCPT_RANGESET(persist_time,
 			t * tcp_backoff[tp->t_rxtshift],
 			TCPTV_PERSMIN, TCPTV_PERSMAX);
-	tp->t_timer[TCPT_PERSIST] = (persist_time + ticks);
+	callout_reset(&tp->t_timer_persist, persist_time);
 
 	if (tp->t_rxtshift < TCP_MAXRXTSHIFT)
 		tp->t_rxtshift++;
@@ -52,6 +54,13 @@ int tcp_output(struct tcpcb * tp)
 	int this_sent = 0;
 	tcp_seq this_snd_nxt = 0;
 	struct tcphdr * ti = (struct tcphdr *)buf;
+
+#if 0
+	if ( tcp_busying() ) {
+		tcp_devbusy(tp);
+		return -1;
+	}
+#endif
 
 	idle = (tp->t_flags & TF_LASTIDLE) || (tp->snd_max == tp->snd_una);
 	if (idle && ticks - tp->t_rcvtime >= tp->t_rxtcur) {
@@ -82,7 +91,7 @@ again:
 				flags &= ~TH_FIN;
 			win = 1;
 		} else {
-			tp->t_timer[TCPT_PERSIST] = 0;
+			drop_event(&tp->t_timer_persist);
 			tp->t_rxtshift = 0;
 		}
 	}
@@ -92,10 +101,10 @@ again:
 	if (len < 0) {
 		len = 0;
 		if (win == 0) {
-			tp->t_timer[TCPT_REXMT] = 0;
+			drop_event(&tp->t_timer_rexmt);
 			tp->snd_nxt = tp->snd_una;
 			tp->t_rxtshift = 0;
-			if (tp->t_timer[TCPT_PERSIST] == 0)
+			if ( evt_inactive(&tp->t_timer_persist) )
 				tcp_setpersist(tp);
 		}
 	}
@@ -149,12 +158,15 @@ again:
 			((tp->t_flags & TF_SENTFIN) == 0 || tp->snd_nxt == tp->snd_una))
 		goto sendit;
 
-	if (rgn_len(tp->rgn_snd) && tp->t_timer[TCPT_REXMT] == 0 &&
-			tp->t_timer[TCPT_PERSIST] == 0) {
+	if (rgn_len(tp->rgn_snd) &&
+		   evt_inactive(&tp->t_timer_rexmt) &&
+		   evt_inactive(&tp->t_timer_persist)) {
 		tp->t_rxtshift = 0;
 		tcp_setpersist(tp);
 	}
 
+	drop_event(&tp->t_event_devbusy);
+	tp->t_flags &= ~TF_DEVBUSY;
 	return 0;
 
 sendit:
@@ -188,7 +200,8 @@ sendit:
 			tp->snd_nxt == tp->snd_max)
 		tp->snd_nxt--;
 
-	if (len || (flags & (TH_SYN | TH_FIN)) || tp->t_timer[TCPT_PERSIST])
+	if (len || (flags & (TH_SYN | TH_FIN)) || 
+			!evt_inactive(&tp->t_timer_persist))
 		ti->ti_seq = htonl(tp->snd_nxt);
 	else
 		ti->ti_seq = htonl(tp->snd_max);
@@ -211,7 +224,7 @@ sendit:
 		win = (long) (tp->rcv_adv - tp->rcv_nxt);
 	ti->ti_win = htons((u_short)win);
 
-	if (tp->t_force == 0 || tp->t_timer[TCPT_PERSIST] == 0) {
+	if (tp->t_force == 0 || evt_inactive(&tp->t_timer_persist)) {
 		tcp_seq startseq = tp->snd_nxt;
 
 		if (flags & (TH_SYN | TH_FIN)) {
@@ -233,11 +246,11 @@ sendit:
 			}
 		}
 
-		if (tp->t_timer[TCPT_REXMT] == 0 &&
+		if (evt_inactive(&tp->t_timer_rexmt) &&
 				tp->snd_nxt != tp->snd_una) {
-			tp->t_timer[TCPT_REXMT] = (ticks + tp->t_rxtcur);
-			if (tp->t_timer[TCPT_PERSIST]) {
-				tp->t_timer[TCPT_PERSIST] = 0;
+			callout_reset(&tp->t_timer_rexmt, tp->t_rxtcur);
+			if ( !evt_inactive(&tp->t_timer_persist) ) {
+				drop_event(&tp->t_timer_persist);
 				tp->t_rxtshift = 0;
 			}
 		}
@@ -261,6 +274,7 @@ sendit:
    	if (error == -1) {
 		tp->snd_nxt -= tilen;
 		assert(tp->snd_nxt >= tp->snd_una);
+		tcp_devbusy(tp);
 	   	return -1;
    	}
 
@@ -269,11 +283,21 @@ sendit:
 	if (win > 0 && SEQ_GT(tp->rcv_nxt + win, tp->rcv_adv))
 		tp->rcv_adv = tp->rcv_nxt + win;
 	tp->last_ack_sent = tp->rcv_nxt;
-	tp->t_flags &= ~(TF_ACKNOW | TF_DELACK);
+	tp->t_flags &= ~(TF_ACKNOW | TF_DELACK | TF_PREDELACKED);
+	drop_event(&tp->t_event_delack);
 
-	if (sendalot && this_sent < 1440 * 4)
+	if (sendalot && this_sent < TCP_MSS * 2)
 		goto again;
 
+#if 0
+	if (sendalot) {
+		tcp_devbusy(tp);
+		return -1;
+	}
+#endif
+
+	drop_event(&tp->t_event_devbusy);
+	tp->t_flags &= ~TF_DEVBUSY;
 	return 0;
 }
 
@@ -287,7 +311,13 @@ int tcp_respond(struct tcpcb * tp, struct tcphdr * orig, int tilen, int flags)
 	ti->ti_magic = MAGIC_UDP_TCP;
 	ti->ti_ack = htonl(orig->ti_seq + tilen);
 	ti->ti_seq = htonl(orig->ti_ack);
+	ti->ti_src = orig->ti_dst;
+	ti->ti_srcc = tp->ts_addr;
+	ti->ti_dst  = orig->ti_src;
 	ti->ti_flags = flags;
+	ti->ti_win   = 0;
+	ti->ti_tsecr = htonl(orig->ti_tsval);
+	ti->ti_tsval = htonl(orig->ti_tsecr);
 
 	error = sendto(tp->if_dev, buf, sizeof(*ti),
 		   	0, (struct sockaddr *)&tp->dst_addr, sizeof(tp->dst_addr));

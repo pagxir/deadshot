@@ -168,11 +168,8 @@ int http_xget(const char * url, const char * out)
 	assert(len == strlen(buf));
 
 	len = xread(fd, buf, sizeof(buf) - 1);
-	while (len > 0) {
-		buf[len] = 0;
-		printf("%s", buf);
+	while (len > 0)
 		len = xread(fd, buf, sizeof(buf) - 1);
-	}
 
 	xclose(fd);
 
@@ -201,7 +198,7 @@ int main(int argc, char * argv[])
 	}
 
 	WSAStartup(0x101, &data);
-	// xreq_init(1234);
+	xreq_init(1234);
 	for (i = 1; i < argc; i++) {
 		char * line = argv[i];
 
@@ -212,7 +209,7 @@ int main(int argc, char * argv[])
 
 		http_xget(line, filename);
 	}
-	// xreq_clean();
+	xreq_clean();
 	WSACleanup();
 
 	return 0;

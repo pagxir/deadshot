@@ -2,6 +2,7 @@
 #define _TCP_H_
 
 #include "dtype.h"
+#include "event.h"
 
 #define TCP_NSTATES     11
 #define TCPS_CLOSED             0 
@@ -31,6 +32,8 @@
 #define TH_FIN    (1 << 2)
 #define TH_SYN    (1 << 3)
 #define TH_PUSH   (1 << 4)
+#define TH_NATP   (1 << 5)
+#define TH_EXTB   (1 << 7)
 
 #define TCP_MAXWIN 65535
 #define TCP_ISSINCR  0x01000000
@@ -44,10 +47,10 @@
 #define TF_WASFRECOVERY  (1 << 7)
 #define TF_RTSEQ1        (1 << 8)
 #define TF_NEEDOUTPUT    (1 << 9)
-
-#define XF_READ      (1 << 0)
-#define XF_WRITE     (1 << 1)
-#define XF_ACKNOW    (1 << 2)
+#define TF_NOFDREF       (1 << 10)
+#define TF_PROTOREF      (1 << 11)
+#define TF_PREDELACKED   (1 << 12)
+#define TF_DEVBUSY       (1 << 13)
 
 #define T_HZ (1000)
 
@@ -69,10 +72,13 @@ struct tcphdr {
 };
 
 struct tcpcb {
+	int tle_flags;
+	struct tcpcb * tle_next;
+	struct tcpcb ** tle_prev;
+
 	short t_state;
 	short t_rxtshift;
 	u_long t_rxtcur;
-	u_long t_timer[TCPT_NTIMERS];
 	short t_dupacks;
 	u_short t_maxseg;
 	char t_force;
@@ -113,14 +119,24 @@ struct tcpcb {
 	u_long  max_sndwnd;
 	tcp_seq last_ack_sent;
 
+	event_t t_timer_keep;
+	event_t t_timer_2msl;
+	event_t t_timer_rexmt;
+	event_t t_timer_persist;
+	event_t t_event_delack;
+	event_t t_event_devbusy;
+
 	struct rgnbuf * rgn_rcv;
 	struct rgnbuf * rgn_snd;
 
 	int if_dev;
+	int t_error;
 	u_short ts_port;
 	u_long  ts_addr;
 	u_short td_port;
 	u_long  td_addr;
+	event_t * r_event;
+	event_t * w_event;
 	struct sockaddr_in dst_addr;
 };
 
@@ -140,38 +156,25 @@ static u_char   tcp_outflags[TCP_NSTATES] = {
 
 extern int tcp_rexmit_slop;
 extern struct tcp_stat tcpstat;
-struct tcpcb * tcp_create(int if_fd);
+int tcp_busying(void);
+void tcp_devbusy(struct tcpcb * tp);
+void tcp_rwakeup(struct tcpcb * tp);
+void tcp_wwakeup(struct tcpcb * tp);
+struct tcpcb * tcp_newtcpcb(int device);
 
-int tcp_empty(void);
-int tcp_fasttimeo(int * flags);
-int tcp_slowtimeo(int * flags);
-int tcp_packet(int, const char *, size_t, int *, const struct sockaddr_in *, size_t);
-
-int tcp_listen(struct tcpcb * tp);
-int tcp_shutdown(struct tcpcb * tp);
-int tcp_connected(struct tcpcb * tp);
-int tcp_connect(struct tcpcb * , const struct sockaddr_in * , size_t);
-
-int tcp_writable(struct tcpcb * tp);
-int tcp_write(struct tcpcb * tp, const void * buf, size_t count);
-
-int tcp_readable(struct tcpcb * tp);
-int tcp_read(struct tcpcb * tp, void * buf, size_t count);
+int tcp_packet(int, const char *, size_t, const struct sockaddr_in *, size_t);
 int tcp_respond(struct tcpcb * tp, struct tcphdr * hdr, int tilen, int flags);
+void tcp_input(struct tcpcb *, int, const char *, size_t, const struct sockaddr_in *);
 
 int tcp_attach(struct tcpcb * tp);
-int tcp_detach(struct tcpcb * tp);
-int tcp_destroy(struct tcpcb * tp);
+int tcp_output(struct tcpcb * tp);
 int tcp_setpersist(struct tcpcb * tp);
+int tcp_disconnect(struct tcpcb * tp);
+int tcp_connected(struct tcpcb * tp);
 
 extern int tcp_maxidle;
 extern int tcp_iss, ticks;
 extern int tcp_backoff[] ;
 
-int tcp_output(struct tcpcb * tp);
-void tcp_input(struct tcpcb *, int, const char *,
-		size_t, int *, const struct sockaddr_in *);
-
-extern struct tcpcb * tcp_last_tcpcb;
 #endif
 
