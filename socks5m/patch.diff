@@ -1,0 +1,352 @@
+diff -rdup socks5mp/Makefile socks5m/Makefile
+--- socks5mp/Makefile	Tue Nov 30 00:28:34 2010
++++ socks5m/Makefile	Tue Nov 30 00:28:14 2010
+@@ -1,9 +1,15 @@
+ CXX = cl
+ LD  = link
+-CFLAGS =  /D "WIN32" /D "NDEBUG" /D "_CONSOLE" /D "_MBCS" /D "__WIN32__" 
+-CXXFLAGS = /MD /Zi /c /FoRelease/ /FdRelease/ $(CFLAGS)
+-LDFLAGS  = /subsystem:console /machine:I386 /pdb:socks5m.pdb /debug /incremental:no
+-LDLIBS   = ws2_32.lib mswsock.lib advapi32.lib
++CRT = C:\Applications\VC2008EE\WDK\Include\crt
++STL = C:\Applications\VC2008EE\WDK\Include\api\crt\stl60
++CFLAGS =  /D "WIN32" /D "NDEBUG" /D "_CONSOLE" /D "_MBCS" /D "__WIN32__" \
++		  /O2 /Oi /Os /GT /GL /FD /MT /GS- /GR-  /c /Zi /TP /Gy /TP /I $(CRT) /I $(STL) 
++CXXFLAGS = /Zi /c /FoRelease/ /FdRelease/ $(CFLAGS) 
++VC80LIB = C:\Applications\VC2008EE\WDK\Lib
++CRTLIB = C:\Applications\VC2008EE\WDK\Lib
++LDFLAGS  = /subsystem:console /nodefaultlib /libpath:$(VC80LIB) /libpath:$(CRTLIB) /machine:I386 /pdb:socks5m.pdb /debug /incremental:no
++LDLIBS   = ws2_32.lib mswsock.lib advapi32.lib kernel32.lib msvcrt.lib msvcrt_winxp.obj libcpmt.lib
++
+ VPATH += Release
+ 
+ .PHONY: all
+@@ -17,7 +23,9 @@ socks5m.exe: Release Server.obj Network.
+ Release:
+ 	mkdir Release
+ 
+-.SUFFIXES: .cpp .obj
++.SUFFIXES: .c .cpp .obj
++.c.obj:
++	$(CXX) $(CXXFLAGS) $^
+ .cpp.obj:
+ 	$(CXX) $(CXXFLAGS) $^
+ 
+diff -rdup socks5mp/Network.cpp socks5m/Network.cpp
+--- socks5mp/Network.cpp	Tue Nov 30 00:28:30 2010
++++ socks5m/Network.cpp	Tue Nov 30 00:28:02 2010
+@@ -8,12 +8,14 @@
+ #pragma warning(disable: 4996) 
+ 
+ static BOOL bIsRunning = TRUE;
++static HANDLE gQuitPortHandle = INVALID_HANDLE_VALUE;
+ static LPFN_ACCEPTEX lpAcceptEx = NULL;
+ static LPFN_CONNECTEX lpConnectEx = NULL;
+ 
+ int NDSQuitCall(void)
+ {
+ 	bIsRunning = FALSE;
++	PostQueuedCompletionStatus(gQuitPortHandle, 0, 0, NULL); 
+ 	return 0;
+ }
+ 
+@@ -61,6 +63,7 @@ typedef BOOL (PASCAL *LPFN_CONNECTEX)(SO
+ #define SO_UPDATE_CONNECT_CONTEXT   0x7010
+ #endif
+ 
++
+ int setblockopt(int fd, int block)
+ {
+ 	u_long blockopt = !block;
+@@ -103,7 +106,7 @@ void rate_cacl(size_t nbytes, int adj_ha
+ 		char rate_buf[32], size_buf[32];
+ 		total >>= 1;
+ 		last_time = t_now;
+-		fprintf(stderr, "rate: %s %3d %3d %s\r",
++		printf("rate: %s %3d %3d %s\r",
+ 				CountToText(rate_buf, total), half_link,
+ 				full_link, CountToText(size_buf, transfered));
+ 	}
+@@ -171,6 +174,9 @@ struct xiocb {
+ 	DWORD xio_rd_flags;
+ 	struct XIOCBCTX xio_rdover;
+ 	struct XIOCBCTX xio_wrover;
++
++	const char * xio_header;
++	FILE * xio_logfile;
+ };
+ 
+ struct proxycb {
+@@ -197,6 +203,7 @@ struct proxycb {
+ 	char   xy_rcv_buf[81920];
+ 	size_t xy_snd_len;
+ 	char   xy_snd_buf[81920];
++	FILE * log_file;
+ };
+ 
+ 
+@@ -289,6 +296,23 @@ int xio_call(struct xiocb * cb)
+ 	return 0;
+ }
+ 
++void cache_append(struct xiocb * cb, size_t iosize)
++{
++   	WSABUF wsabufs[2];
++   	size_t len = iosize;
++   	size_t off = (cb->xio_off + cb->xio_len) % cb->xio_size;
++
++	if (cb->xio_logfile != NULL) {
++	   	iovec_fill(wsabufs, cb->xio_buf, cb->xio_size, len, off);
++
++		for (int i = 0; i < 2; i++) {
++		   	if (wsabufs[0].len == 0)
++				continue;
++		   	fwrite(wsabufs[i].buf, wsabufs[i].len, 1, cb->xio_logfile);
++		}
++	}
++}
++
+ int xio_wakeup(struct xiocb * cb, struct XIOCBCTX * over, size_t iosize, int err_flags)
+ {
+ 	if (over == &cb->xio_rdover) {
+@@ -296,6 +320,7 @@ int xio_wakeup(struct xiocb * cb, struct
+ 		cb->xio_flags &= ~XIO_READING;
+ 		if (iosize == 0)
+ 			cb->xio_flags |= XIO_REOF;
++		cache_append(cb, iosize);
+ 		cb->xio_len += iosize;
+ 		rate_cacl(iosize, 0, 0);
+ 	} else if (over == &cb->xio_wrover) {
+@@ -369,6 +394,8 @@ int proxy_notify(struct xiocb * cbp)
+ 	if ((pcb->xy_s2d.xio_flags & test_flags) == 0 &&
+ 			(pcb->xy_d2s.xio_flags & test_flags) == 0) {
+ 		rate_cacl(0, 0, -1);
++		if (pcb->log_file)
++			fclose(pcb->log_file);
+ 		delete pcb;
+ 		return  -1;
+ 	}
+@@ -378,6 +405,33 @@ int proxy_notify(struct xiocb * cbp)
+ 
+ int proxy_xioing(struct proxycb *cb)
+ {
++   	char buf[1024];
++
++	if (cb->log_file == NULL) {
++#if 0
++		sprintf(buf, "http_trace-%08d-%08x.txt", GetTickCount(), cb);
++		cb->log_file = fopen(buf, "ab");
++#endif
++	}
++
++   	if (cb->log_file != NULL) {
++		int error;
++		time_t now;
++		struct sockaddr_in addr_in1 = {0};
++		int addr_len = sizeof(addr_in1);
++
++		time(&now);
++		fprintf(cb->log_file, "time: %d\r\n", now);
++
++		error = getpeername(cb->fd_dst, (struct sockaddr*)&addr_in1, &addr_len);
++		fprintf(cb->log_file, "server: %s:%d\r\n",
++			   	inet_ntoa(addr_in1.sin_addr), htons(addr_in1.sin_port));
++
++		error = getpeername(cb->fd_src, (struct sockaddr*)&addr_in1, &addr_len);
++		fprintf(cb->log_file, "client: %s\r\n\r\n",
++			   	inet_ntoa(addr_in1.sin_addr), htons(addr_in1.sin_port));
++	}
++
+ 	cb->xy_d2s.xio_buf = cb->xy_snd_buf;
+ 	cb->xy_d2s.xio_fdr = cb->fd_dst;
+ 	cb->xy_d2s.xio_fdw = cb->fd_src;
+@@ -386,6 +440,8 @@ int proxy_xioing(struct proxycb *cb)
+ 	cb->xy_d2s.xio_size = sizeof(cb->xy_snd_buf);
+ 	cb->xy_d2s.xio_notify = proxy_notify;
+ 	cb->xy_d2s.xio_udata = cb;
++	cb->xy_d2s.xio_header = "Server";
++	cb->xy_d2s.xio_logfile = cb->log_file;
+ 	xio_add(&cb->xy_d2s);
+ 
+ 	cb->xy_s2d.xio_buf = cb->xy_rcv_buf;
+@@ -397,6 +453,8 @@ int proxy_xioing(struct proxycb *cb)
+ 	if (cb->xy_flags & XYF_DELAY)
+ 		cb->xy_s2d.xio_flags |= XIO_DELAY;
+ 	cb->xy_s2d.xio_notify = proxy_notify;
++	cb->xy_s2d.xio_header = "Client";
++	cb->xy_s2d.xio_logfile = cb->log_file;
+ 	xio_add(&cb->xy_s2d);
+ 	return 0;
+ }
+@@ -609,6 +667,8 @@ skip_check:
+ 		}
+ 		if ((cb->xy_flags & XYF_UDPREADING) == 0) {
+ 		   	rate_cacl(0, -1, 0);
++		   	if (cb->log_file)
++			   	fclose(cb->log_file);
+ 		   	delete cb;
+ 		}
+ 	}
+@@ -844,9 +904,8 @@ void proxy_post(struct XIOCBCTX * ctx, s
+ 		NASSERT (test_flags == XYF_READING);
+ 		cb->xy_flags &= ~XYF_READING;
+ 		cb->xy_rcv_len += iosize;
+-		if (iosize == 0) {
++		if (iosize == 0)
+ 			cb->xy_flags |= XYF_EOF;
+-		}
+ 		cb->xy_flags &= ~XYF_READMORE;
+ 	}
+ 	if (ctx == &cb->xy_write) {
+@@ -917,6 +976,8 @@ void proxy_post(struct XIOCBCTX * ctx, s
+ 		}
+ 		if ((cb->xy_flags & XYF_UDPREADING) == 0) {
+ 		   	rate_cacl(0, -1, 0);
++		   	if (cb->log_file)
++			   	fclose(cb->log_file);
+ 		   	delete cb;
+ 		}
+ 	}
+@@ -938,6 +999,7 @@ int proxy_accept(int listen1)
+ 
+ 	cb->fd_src = fd1;
+ 	cb->fd_dst = listen1;
++	cb->log_file = NULL;
+ 
+ 	XY_OVER_INIT(&cb->xy_read, cb, proxy_post);
+ 	XY_OVER_INIT(&cb->xy_write, cb, proxy_post);
+@@ -960,10 +1022,10 @@ DWORD proxy_event(HANDLE hPort, int list
+ 	XIOCBCTX * ctx = NULL;
+ 	LPOVERLAPPED io_data = NULL;
+ 
+-	success = GetQueuedCompletionStatus(hPort, &ioSize, &key, &io_data, 1000);
++	success = GetQueuedCompletionStatus(hPort, &ioSize, &key, &io_data, INFINITE);
+ 
+ 	if (io_data == NULL) {
+-		NASSERT (success == FALSE);
++		/* NASSERT (success == FALSE); */
+ 		return 0;
+ 	}
+ 
+@@ -1009,7 +1071,7 @@ int NDSMainCall(BOOL IsInterActive)
+ 	error = listen(listen1, 5);
+ 	NASSERT(error == 0);
+ 
+-	hPort = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 0);
++	gQuitPortHandle = hPort = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 0);
+ 	NASSERT(hPort != NULL);
+ 
+ 	HANDLE handle = CreateIoCompletionPort((HANDLE)listen1, hPort, NDSMAGIC, 0);
+@@ -1032,3 +1094,5 @@ int NDSMainCall(BOOL IsInterActive)
+ 	WSACleanup();
+ 	return 0;
+ }
++
++//FILE _iob[3];
+diff -rdup socks5mp/Server.cpp socks5m/Server.cpp
+--- socks5mp/Server.cpp	Tue Nov 30 00:28:46 2010
++++ socks5m/Server.cpp	Tue Nov 30 00:28:08 2010
+@@ -4,11 +4,14 @@
+ #include <string.h>
+ #include <windows.h>
+ #include <dbghelp.h>
++#include <string>
+ 
+ #include "Network.h"
+ 
+ #define NDSSERVER "NDSServer"
+ 
++static HANDLE gNSMainEvent;
++static HANDLE gNSMainHandle;
+ static SERVICE_STATUS ssStatus;
+ static SERVICE_STATUS_HANDLE sshStatusHandle;
+ typedef BOOL WINAPI FN_MiniDumpWriteDump(HANDLE,
+@@ -21,9 +24,10 @@ static void CALLBACK ServerCtrl(DWORD dw
+ 	switch (dwCtrlCode) 
+ 	{
+ 		case SERVICE_CONTROL_STOP:
+-			ssStatus.dwCurrentState = SERVICE_STOP_PENDING;
+-			SetServiceStatus(sshStatusHandle, &ssStatus);
+ 			NDSQuitCall();
++			WaitForSingleObject(gNSMainHandle, INFINITE);
++			ssStatus.dwCurrentState = SERVICE_STOPPED;
++			SetServiceStatus(sshStatusHandle, &ssStatus);
+ 			break;
+ 
+ 		case SERVICE_CONTROL_INTERROGATE:
+@@ -42,18 +46,11 @@ void CALLBACK ServerWrapper(DWORD argc, 
+ 	sshStatusHandle = RegisterServiceCtrlHandler(TEXT(NDSSERVER), ServerCtrl);
+ 	memset(&ssStatus, 0, sizeof(ssStatus));
+ 	ssStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
+-	ssStatus.dwControlsAccepted = SERVICE_ACCEPT_STOP;
++	ssStatus.dwControlsAccepted = SERVICE_ACCEPT_STOP| SERVICE_ACCEPT_PAUSE_CONTINUE;
+ 
+ 	ssStatus.dwCurrentState = SERVICE_START_PENDING;
+ 	SetServiceStatus(sshStatusHandle, &ssStatus);
+-
+-	ssStatus.dwCurrentState = SERVICE_RUNNING;
+-	SetServiceStatus(sshStatusHandle, &ssStatus);
+-
+-	NDSMainCall(FALSE);
+-
+-	ssStatus.dwCurrentState = SERVICE_STOPPED;
+-	SetServiceStatus(sshStatusHandle, &ssStatus);
++	SetEvent(gNSMainEvent);
+ }
+ 
+ static SERVICE_TABLE_ENTRY service_table_entrys[] = 
+@@ -71,6 +68,15 @@ void ShowInformation(void)
+ 	exit(-1);
+ }
+ 
++DWORD CALLBACK NSMainThread(LPVOID lParam)
++{
++	HANDLE hEvent = (HANDLE)lParam;
++	WaitForSingleObject(hEvent, INFINITE);
++
++	ssStatus.dwCurrentState = SERVICE_RUNNING;
++	SetServiceStatus(sshStatusHandle, &ssStatus);
++	return NDSMainCall(FALSE);
++}
+ 
+ LONG WINAPI CrashDumpHandle(struct _EXCEPTION_POINTERS * lpExceptionInfo)
+ {
+@@ -113,18 +119,24 @@ LONG WINAPI CrashDumpHandle(struct _EXCE
+ 
+ int main(int argc, char * argv[])
+ {
+-	BOOL success = FALSE;
++	DWORD id;
++	BOOL  success = FALSE;
+ 	SetUnhandledExceptionFilter(CrashDumpHandle);
+ 
+ 	if (argc > 1 && !strcmp(argv[1], "--version"))
+ 		ShowInformation();
+ 
+-	if (argc > 1 && !strcmp(argv[1], "--debug"))
+-		NDSMainCall(TRUE);
+-
+-	if (argc > 1)
++	if (argc > 1 && strcmp(argv[1], "--debug"))
+ 		return -1;
+ 
+-	success = StartServiceCtrlDispatcher(service_table_entrys);
++	gNSMainEvent = CreateEvent(NULL, FALSE, FALSE, "Global\\socks5m");
++	gNSMainHandle = CreateThread(NULL, 0, NSMainThread, gNSMainEvent, 0, &id);
++	printf("ThreadId: %d\n", id);
++	success = argc > 1? TRUE: StartServiceCtrlDispatcher(service_table_entrys);
++	SetEvent(gNSMainEvent);
++	WaitForSingleObject(gNSMainHandle, INFINITE);
++	CloseHandle(gNSMainHandle);
++
+ 	return success? 0: GetLastError();
+ }
++
+diff -rdup socks5mp/build.bat socks5m/build.bat
+--- socks5mp/build.bat	Tue Nov 30 00:28:48 2010
++++ socks5m/build.bat	Tue Nov 30 00:28:22 2010
+@@ -1,3 +1,3 @@
+-call C:\Applications\MSVC6\VC98\Bin\VCVARS32.BAT
++call C:\Applications\VC2008EE\VC2008\bin\vcvars32.bat
+ make
+ pause
