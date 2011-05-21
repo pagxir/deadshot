@@ -15,6 +15,8 @@
 #define XYF_AUTHED     0x00000020
 #define XYF_RESULTED   0x00000040
 #define XYF_VERSION4   0x00000400
+#define XYF_VERSION5   0x00000800
+#define XYF_VERSION0   0x00010000
 #define XYF_UDP        0x04000000
 #define XYF_EOF0       0x00001000
 #define XYF_EOF1       0x00002000
@@ -196,7 +198,7 @@ static CTcpTransfer ** tcp_tailer = &tcp_header;
 CTcpTransfer::CTcpTransfer(int file)
 :m_file(file), m_killed(0), m_pfd(-1)
 {
-	m_flags = 0;
+	m_flags = XYF_VERSION0;
 	m_next = NULL;
 	m_prev = NULL;
 
@@ -271,12 +273,12 @@ int CTcpTransfer::readMore(void)
 {
 	DWORD result;
 
-	if (m_flags & (XYF_EOF0| XYF_EOF1)) {
+	if ((m_flags & (XYF_EOF0| XYF_EOF1)) || m_len >= sizeof(m_buf)) {
 		m_killed = 1;
 		return -1;
 	}
 
-	if (m_killed == 0 && !AIOCB_ISPENDING(&m_acb) && m_len < sizeof(m_buf)) {
+	if (m_killed == 0 && !AIOCB_ISPENDING(&m_acb)) {
 		result = AIO_WSARecv(m_file, m_buf + m_len, sizeof(m_buf) - m_len, &m_acb);
 		if (result == 0 || WSAGetLastError() == WSA_IO_PENDING) {
 			ResetTcpTimer();
@@ -435,128 +437,126 @@ skip_check:
 #endif
 
 #define S_RATE(s) ((s) < 30960? (s): 30960)
+
+static u_char resp[] = {
+	0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+};
+
+static u_char resp_v4[] = {
+	0x00, 0x5A, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00
+};
+
 int CTcpTransfer::PacketProcess(PBOOL pchange)
 {
+	int namlen;
+	int nmethod;
 	int success;
+	int xyf_flags;
 	int fd1, error;
+	struct hostent * host;
 	in_addr in_addr1;
 	u_short in_port1;
+
+	char hostname[256];
 	struct sockaddr_in addr_in1;
 
-	if ((XYF_AUTHED & m_flags) == 0) {
-		if (m_len > 0 && m_buf[0] != 0x4 && m_buf[0] != 0x5)
-			m_killed = 1;
+	if (XYF_VERSION0 & m_flags) {
+
 		if (m_len == 0)
 			return readMore();
+
+		switch (m_buf[0])
+		{
+			case 0x4:
+				m_flags &= ~XYF_VERSION0;
+				m_flags |= XYF_VERSION4;
+				break;
+
+			case 0x5:
+				m_flags &= ~XYF_VERSION0;
+				m_flags |= XYF_VERSION5;
+				break;
+		}
 	}
 
-	if ((XYF_AUTHED & m_flags) == 0 &&
-		m_len > 0 && m_buf[0] == 0x4) {
-		if (m_len > 2 && m_buf[1] != 0x1) {
-			m_killed = 1;
-			return 0;
-		}
+	if (m_flags & XYF_VERSION5) {
 
-		char * pfin = m_len < 9? NULL: (char *)memchr(m_buf + 8, 0, m_len - 8);
-		if (m_len < 9 || pfin == NULL) {
-			if (m_len >= sizeof(m_buf)) {
-				m_killed = 1;
-			} else {
+		if ((m_flags & XYF_AUTHED) == 0) {
+
+			if (m_len < 2)
 				return readMore();
+
+			if (m_buf[0] != 0x5) {
+				m_killed = 1;
+				return 0;
 			}
-			return 0;
+
+			nmethod = (m_buf[1] & 0xFF);
+			if (nmethod + 2 < int(m_len))
+				return readMore();
+
+			if (!memchr(m_buf + 2, 0x0, nmethod))
+				return readMore();
+
+			m_buf[1] = 0;
+			DS_ASSERT(m_wlen + 2 < sizeof(m_wbuf));
+			memcpy(m_wbuf + m_wlen, m_buf, 2);
+			m_wlen += 2;
+
+			m_len -= (2 + nmethod);
+			memmove(m_buf, &m_buf[2 + nmethod], m_len);
+			
+			m_flags |= XYF_AUTHED;
+			*pchange = TRUE;
 		}
 
-		memcpy(&in_addr1, &m_buf[4], sizeof(in_addr1));
-		memcpy(&in_port1, &m_buf[2], sizeof(in_port1));
-		m_len -= (++pfin - m_buf);
+		int xyf_flags = XYF_AUTHED | XYF_CONNECTING;
+		if ((xyf_flags & m_flags) == XYF_AUTHED) {
+			if (m_len < 4)
+				return readMore();
 
-		fd1 = socket(AF_INET, SOCK_STREAM, 0);
-		DS_ASSERT(fd1 != -1);
+			if (m_buf[0] != 0x05 || m_buf[2] != 0) {
+				m_killed = 1;
+				return 0;
+			}
 
-		memset(&addr_in1, 0, sizeof(addr_in1));
-		addr_in1.sin_family = AF_INET;
-		addr_in1.sin_port   = htons(0);
-		addr_in1.sin_addr.s_addr = INADDR_ANY;
-		error = bind(fd1, (struct sockaddr *)&addr_in1, sizeof(addr_in1));
-		error = AssociateDeviceWithCompletionPort(HANDLE(fd1), 0);
-		DS_ASSERT(error != 0);
+			if (m_buf[1] != 0x01 /*&& m_buf[1] != 0x03*/) {
+				m_killed = 1;
+				return 0;
+			}
 
-		addr_in1.sin_family = AF_INET;
-		addr_in1.sin_port   = in_port1;
-		addr_in1.sin_addr   = in_addr1;
-		error = AIO_ConnectEx(fd1, (struct sockaddr *)&addr_in1, sizeof(addr_in1), 0, 0, &m_pwcb);
-		if (error == FALSE && WSAGetLastError() != ERROR_IO_PENDING) {
-			closesocket(fd1);
-			m_killed = 1;
-			fd1 = -1;
-		}
+			switch (m_buf[3]) {
+				case 0x01:
+					memcpy(&in_addr1, &m_buf[4], sizeof(in_addr1));
+					memcpy(&in_port1, &m_buf[8], sizeof(in_port1));
+					m_len -= 10;
+					memmove(m_buf, &m_buf[10], m_len);
+					break;
 
-		m_flags |= XYF_AUTHED;
-		m_flags |= XYF_VERSION4;
-		m_flags |= XYF_CONNECTING;
-		m_pfd = fd1;
-	}
+				case 0x03:
+					namlen = (m_buf[4] & 0xFF);
+					if (m_len < namlen + 7)
+						return readMore();
+					memcpy(hostname, m_buf + 5, namlen);
+					memcpy(&in_port1, &m_buf[5 + namlen], sizeof(in_port1));
+					hostname[namlen] = 0;
+					m_len -= (7 + namlen);
+					memmove(m_buf, m_buf + 7 + namlen, m_len);
 
-#if 0
-	u_long googlehk = ntohl(inet_addr("64.233.0.0"));
-	u_long curraddr = ntohl(addr1.s_addr);
-	if (googlehk == (0xFFFF0000 & curraddr))
-		cb->xy_flags |= XYF_DELAY;
-#endif
+					host = gethostbyname(hostname);
+					if (host == NULL) {
+						m_killed = 1;
+						return -1;
+					}
 
-	int nmethod;
-	if ((m_flags & XYF_AUTHED) == 0 &&
-		m_len > 0 && m_buf[0] == 0x5) {
+					memcpy(&in_addr1, host->h_addr, sizeof(in_addr1));
+					break;
 
-		nmethod = (m_buf[1] & 0xFF);
-		if (m_len < 2 || (nmethod + 2) < int(m_len)) {
-			return readMore();
-		}
+				default:
+					m_killed = 1;
+					return 0;
+			}
 
-		if (memchr(m_buf + 2, 0x0, nmethod) == NULL) {
-			return readMore();
-		}
-
-		m_buf[1] = 0;
-		DS_ASSERT(m_wlen + 2 < sizeof(m_wbuf));
-		memcpy(m_wbuf + m_wlen, m_buf, 2);
-		m_wlen += 2;
-
-		m_len -= (2 + nmethod);
-		memmove(m_buf, &m_buf[2 + nmethod], m_len);
-
-		m_flags |= XYF_AUTHED;
-		*pchange = TRUE;
-	}
-	
-	u_char pro_seq[] = { 0x05, 0x01, 0x00, 0x01 };
-	u_char pro_seq_udp[] = { 0x05, 0x03, 0x00, 0x01 };
-	int xyf_flags = XYF_AUTHED | XYF_CONNECTING;
-	if ((xyf_flags & m_flags) == XYF_AUTHED) {
-
-		size_t cmplen = m_len < 4? m_len: 4;
-		if (memcmp(pro_seq, m_buf, cmplen) &&
-				memcmp(pro_seq_udp, m_buf, cmplen)) {
-			return readMore();
-		}
-
-		if (m_len  < 10) {
-			return readMore();
-		}
-
-		if (memcmp(pro_seq, m_buf, cmplen)) {
-			m_flags |= XYF_UDP;
-		}
-
-		m_len -= 10;
-		memmove(m_buf, &m_buf[10], m_len);
-		memcpy(&in_addr1, &m_buf[4], sizeof(in_addr1));
-		memcpy(&in_port1, &m_buf[8], sizeof(in_port1));
-
-		if (m_flags & XYF_UDP) {
-			m_flags |= (XYF_CONNECTED | XYF_CONNECTING);
-		} else {
 			fd1 = socket(AF_INET, SOCK_STREAM, 0);
 			DS_ASSERT(fd1 != -1);
 
@@ -581,43 +581,133 @@ int CTcpTransfer::PacketProcess(PBOOL pchange)
 			printf("xio is connecting: %s\n", inet_ntoa(addr_in1.sin_addr));
 			m_flags |= XYF_CONNECTING;
 			m_pfd = fd1;
-		}
-	}
-
-	u_char resp[] = {
-		0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-	};
-
-	u_char resp_v4[] = {
-		0x00, 0x5A, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00
-	};
-
-	xyf_flags = XYF_CONNECTING | XYF_CONNECTED | XYF_RESULTED;
-	if ((m_flags & xyf_flags) == (XYF_CONNECTING| XYF_CONNECTED)) {
-		int addr_len =  sizeof(addr_in1);
-		error = getsockname(m_pfd, (struct sockaddr*)&addr_in1, &addr_len);
-		if (error == 0) {
-			in_port1 = addr_in1.sin_port;
-			memcpy(&resp[8], &in_port1, sizeof(in_port1));
+			*pchange = TRUE;
 		}
 
-		error = getsockname(m_file, (struct sockaddr*)&addr_in1, &addr_len);
-		if (error == 0) {
-			in_addr1 = addr_in1.sin_addr;
-			memcpy(&resp[4], &in_addr1, sizeof(in_addr1));
-		}
+		xyf_flags = XYF_CONNECTING | XYF_CONNECTED | XYF_RESULTED;
+		if ((m_flags & xyf_flags) == (XYF_CONNECTING| XYF_CONNECTED)) {
+			int addr_len =  sizeof(addr_in1);
+			error = getsockname(m_pfd, (struct sockaddr*)&addr_in1, &addr_len);
+			if (error == 0) {
+				in_port1 = addr_in1.sin_port;
+				memcpy(&resp[8], &in_port1, sizeof(in_port1));
+			}
 
-		if (m_flags & XYF_VERSION4) {
-			DS_ASSERT(m_wlen + 8 < sizeof(m_wbuf));
-			memcpy(m_wbuf + m_wlen, resp_v4, 8);
-			m_wlen += 8;
-		} else {
+			error = getsockname(m_file, (struct sockaddr*)&addr_in1, &addr_len);
+			if (error == 0) {
+				in_addr1 = addr_in1.sin_addr;
+				memcpy(&resp[4], &in_addr1, sizeof(in_addr1));
+			}
+
 			DS_ASSERT(m_wlen + 10 < sizeof(m_wbuf));
 			memcpy(m_wbuf + m_wlen, resp, 10);
 			m_wlen += 10;
+
+			m_flags |= XYF_RESULTED;
+			*pchange = TRUE;
+		}
+	}
+
+	if (m_flags & XYF_VERSION4) {
+		if ((XYF_AUTHED & m_flags) == 0) {
+			if (m_len <= 2)
+				return readMore();
+
+			if (m_buf[1] != 0x01) {
+				m_killed = 1;
+				return 0;
+			}
+
+			if (m_len < 9)
+				return readMore();
+
+			char * pfin = (char *)memchr(m_buf + 8, 0, m_len - 8);
+			if (pfin == NULL) {
+				if (m_len >= sizeof(m_buf)) {
+					m_killed = 1;
+					return 0;
+				}
+				return readMore();
+			}
+
+			pfin++;
+			memcpy(&in_addr1, &m_buf[4], sizeof(in_addr1));
+			memcpy(&in_port1, &m_buf[2], sizeof(in_port1));
+			if (in_addr1.s_addr == 0 && m_buf + m_len > pfin) {
+				char * pfin1 = (char *)memchr(pfin, 0, m_buf + m_len - pfin);
+				if (pfin1 == NULL) {
+					if (m_len >= sizeof(m_buf)) {
+						m_killed = 1;
+						return 0;
+					}
+					return readMore();
+				}
+				host = gethostbyname(pfin);
+				if (host == NULL) {
+					m_killed = 1;
+					return 0;
+				}
+				memcpy(&addr_in1, *host->h_addr_list, sizeof(addr_in1));
+				pfin = ++pfin1;
+			}
+			m_len -= (pfin - m_buf);
+			memmove(m_buf, pfin, m_len);
+
+			fd1 = socket(AF_INET, SOCK_STREAM, 0);
+			DS_ASSERT(fd1 != -1);
+
+			addr_in1.sin_family = AF_INET;
+			addr_in1.sin_port   = htons(0);
+			addr_in1.sin_addr.s_addr  = htonl(INADDR_ANY);
+			error = bind(fd1, (struct sockaddr *)&addr_in1, sizeof(addr_in1));
+			DS_ASSERT(error == 0);
+
+			error = AssociateDeviceWithCompletionPort(HANDLE(fd1), 0);
+			DS_ASSERT(error != 0);
+
+			addr_in1.sin_family = AF_INET;
+			addr_in1.sin_port   = in_port1;
+			addr_in1.sin_addr   = in_addr1;
+			error = AIO_ConnectEx(fd1, (struct sockaddr *)&addr_in1, sizeof(addr_in1), 0, 0, &m_pwcb);
+			if (error == FALSE && WSAGetLastError() != ERROR_IO_PENDING) {
+				closesocket(fd1);
+				m_killed = 1;
+				fd1 = -1;
+			}
+
+			m_flags |= XYF_CONNECTING;
+			m_flags |= XYF_AUTHED;
+			m_pfd = fd1;
+			*pchange = TRUE;
 		}
 
-		m_flags |= XYF_RESULTED;
+		xyf_flags = XYF_CONNECTING | XYF_CONNECTED | XYF_RESULTED;
+		if ((m_flags & xyf_flags) == (XYF_CONNECTING| XYF_CONNECTED)) {
+			int addr_len =  sizeof(addr_in1);
+			error = getsockname(m_pfd, (struct sockaddr*)&addr_in1, &addr_len);
+			if (error == 0) {
+				in_port1 = addr_in1.sin_port;
+				memcpy(&resp[8], &in_port1, sizeof(in_port1));
+			}
+
+			error = getsockname(m_file, (struct sockaddr*)&addr_in1, &addr_len);
+			if (error == 0) {
+				in_addr1 = addr_in1.sin_addr;
+				memcpy(&resp[4], &in_addr1, sizeof(in_addr1));
+			}
+
+			DS_ASSERT(m_wlen + 8 < sizeof(m_wbuf));
+			memcpy(m_wbuf + m_wlen, resp_v4, 8);
+			m_wlen += 8;
+
+			m_flags |= XYF_RESULTED;
+			*pchange = TRUE;
+		}
+	}
+
+	if (m_flags & XYF_VERSION0) {
+		m_killed = 1;
+		return 0;
 	}
 
 	if ((m_flags & XYF_RESULTED) && m_killed == 0) {
@@ -680,12 +770,13 @@ int CTcpTransfer::PacketProcess(PBOOL pchange)
 		}
 	}
 
+
 	return 0;
 }
 
 int CTcpTransfer::Run(void)
 {
-	BOOL change, success;
+	BOOL change;
 
 	PacketRead();
 	do {
