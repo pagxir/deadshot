@@ -287,6 +287,41 @@ int png_transfer_filter(char * data, size_t height, size_t width)
 				}
 				break;
 
+			case 3:
+				curpixel = curline;
+				priorpixel = preline;
+
+				*curpixel = *curpixel + (0 + *priorpixel) / 2;
+				curpixel++, priorpixel++;
+
+				*curpixel = *curpixel + (0 + *priorpixel) / 2;
+				curpixel++, priorpixel++;
+
+				*curpixel = *curpixel + (0 + *priorpixel) / 2;
+				curpixel++, priorpixel++;
+
+				*curpixel = *curpixel + (0 + *priorpixel) / 2;
+				curpixel++, priorpixel++;
+
+				for (j = 1; j < width; j++) {
+					*curpixel = *curpixel + 
+						(*(curpixel - 4) + *priorpixel) / 2;
+					curpixel++, priorpixel++;
+
+					*curpixel = *curpixel + 
+						(*(curpixel - 4) + *priorpixel) / 2;
+					curpixel++, priorpixel++;
+
+					*curpixel = *curpixel + 
+						(*(curpixel - 4) + *priorpixel) / 2;
+					curpixel++, priorpixel++;
+
+					*curpixel = *curpixel + 
+						(*(curpixel - 4) + *priorpixel) / 2;
+					curpixel++, priorpixel++;
+				}
+				break;
+
 			case 4:
 				curpixel = curline;
 				priorpixel = preline;
