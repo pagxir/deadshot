@@ -3,91 +3,9 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "base64.h"
+
 int __line_break = 76;
-
-static char base64chars[65] = {
-	"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-};
-
-struct b64_enc_up {
-	int enc_total;
-	int enc_finish;
-	int enc_bitcnt;
-	int enc_bitvalues;
-
-	int enc_last_in;
-	int enc_last_out;
-};
-
-struct b64_enc_up * b64_enc_init(struct b64_enc_up * b64p)
-{
-	b64p->enc_total = 0;
-	b64p->enc_finish = 0;
-	b64p->enc_bitcnt = 0;
-	b64p->enc_bitvalues = 0;
-
-	b64p->enc_last_in = 0;
-	b64p->enc_last_out = 0;
-	return b64p;
-}
-
-size_t b64_enc_trans(struct b64_enc_up *b64p,
-		void *dst, size_t l_dst, const void *src, size_t l_src)
-{
-	size_t orig_dst = l_dst;
-	size_t orig_src = l_src;
-
-	int index;
-	uint8_t * dst1 = (uint8_t *)dst;
-	const uint8_t * src1 = (const uint8_t *)src;
-
-	while (l_src > 0 && l_dst > 0) {
-		l_src --;
-		b64p->enc_bitcnt += 8;
-		b64p->enc_bitvalues <<= 8;
-		b64p->enc_bitvalues |= *src1++;
-
-		while (b64p->enc_bitcnt >= 6 && l_dst > 0) {
-			b64p->enc_total++;
-			b64p->enc_bitcnt -= 6;
-			index = (b64p->enc_bitvalues >> b64p->enc_bitcnt);
-			*dst1++ = base64chars[index & 0x3F];
-			l_dst --;
-		}
-	}
-
-dec_flush:
-	if (b64p->enc_finish) {
-		while (b64p->enc_bitcnt > 0 && l_dst > 0) {
-			b64p->enc_total++;
-			if (b64p->enc_bitcnt < 6)
-				b64p->enc_bitcnt = 6;
-			b64p->enc_bitcnt -= 6;
-			index = (b64p->enc_bitvalues >> b64p->enc_bitcnt);
-			*dst1++ = base64chars[index & 0x3F];
-			l_dst --;
-		}
-
-		if (l_dst > 0) {
-			while (l_dst > 0 &&
-					(b64p->enc_total & 0x3)) {
-				b64p->enc_total++;
-				*dst1++ = '=';
-				l_dst --;
-			}
-		}
-	}
-
-	b64p->enc_last_in = (orig_src - l_src);
-	b64p->enc_last_out = (orig_dst - l_dst);
-	return 0;
-}
-
-int b64_enc_finish(struct b64_enc_up *b64p, void *dst, size_t l_dst)
-{
-	b64p->enc_finish = 1;
-	return b64_enc_trans(b64p, dst, l_dst, 0, 0);
-}
 
 size_t fwrite_format(const void * buf, size_t size,
 		size_t count, FILE * file, size_t off)
@@ -143,10 +61,11 @@ int base64transfer(FILE * infile, FILE * outfile)
 
 int main(int argc, char * argv[])
 {
+	int i;
 	char buf[1024];
 	FILE * fpin, * fpout;
 
-	for (int i = 1; i < argc; i++) {
+	for (i = 1; i < argc; i++) {
 		if (argv[i][0] != '-')
 			continue;
 		if (!strcmp(argv[i], "-76"))
@@ -157,7 +76,7 @@ int main(int argc, char * argv[])
 			__line_break = 0x7FFFFFFF;
 	}
 
-	for (int i = 1; i < argc; i++) {
+	for (i = 1; i < argc; i++) {
 		if (argv[i][0] == '-')
 			continue;
 		strncpy(buf, argv[i], sizeof(buf));
