@@ -49,6 +49,8 @@ struct s4_ctx {
 	char sc_s2d_buf[64 * 1024];
 };
 
+static struct sockaddr_in target_addr;
+
 int dumphex(char *buf, int len)
 {
 #if 0
@@ -97,7 +99,6 @@ void s4ctx_close(struct xiocb * xiocbp)
 void s4ctx_init(struct s4_ctx * ctx, int s_fd)
 {
 	int error;
-	struct sockaddr_in addr_in1;
 
 	memset(ctx, 0, sizeof(struct s4_ctx));
 	ctx->sc_src_fd = s_fd;
@@ -115,11 +116,13 @@ void s4ctx_init(struct s4_ctx * ctx, int s_fd)
 
 	ctx->sc_dst_fd = socket(PF_INET, SOCK_STREAM, 0);
    	setblockopt(ctx->sc_dst_fd, 0);
+#if 0
    	memset(&addr_in1, 0, sizeof(addr_in1));
    	addr_in1.sin_family = PF_INET;
-   	addr_in1.sin_port   = htons(1080);
-   	addr_in1.sin_addr.s_addr   = htonl(INADDR_LOOPBACK);
-   	error = connect(ctx->sc_dst_fd, (struct sockaddr*)&addr_in1, sizeof(addr_in1));
+   	addr_in1.sin_port   = htons(8080);
+   	addr_in1.sin_addr.s_addr   = inet_addr("172.25.0.237");
+#endif
+   	error = connect(ctx->sc_dst_fd, (struct sockaddr*)&target_addr, sizeof(target_addr));
 
 	ctx->sc_s2d.xio_fdr = ctx->sc_src_fd;
 	ctx->sc_s2d.xio_fdw = ctx->sc_dst_fd;
@@ -150,6 +153,34 @@ int monitor_init(void)
 	return monitor;
 }
 
+void read_config_address(struct sockaddr_in * addr, const char * cfgstr)
+{
+	int i;
+	char host[16];
+	const char * colon;
+   
+	i = 0;
+	while (*cfgstr != 0 &&
+		   	*cfgstr != ':') {
+		if (i + 1 < sizeof(host))
+			host[i++] = *cfgstr;
+		cfgstr++;
+	}
+
+	addr->sin_family = AF_INET;
+
+	colon = cfgstr;
+	if (*colon == ':' && colon[1] != 0)
+		addr->sin_port = htons(atoi(colon + 1));
+	else
+		addr->sin_port = htons(8080);
+
+	host[i] = 0;
+	addr->sin_addr.s_addr = inet_addr(host);
+
+	printf("target %s:%d\n", inet_ntoa(addr->sin_addr), htons(addr->sin_port));
+}
+
 int main(int argc, char *argv[])
 {
 	int error;
@@ -173,11 +204,12 @@ int main(int argc, char *argv[])
 
 	l_fd = socket(AF_INET, SOCK_STREAM, 0);
 	setsockopt(l_fd, SOL_SOCKET, SO_REUSEADDR, (char*)&reuse, sizeof(reuse));
+	read_config_address(&target_addr, argv[1]);
 
 	memset(&addr_in1, 0, sizeof(addr_in1));
 	addr_in1.sin_family = AF_INET;
 	addr_in1.sin_port   = htons(8080);
-	addr_in1.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	addr_in1.sin_addr.s_addr = htonl(INADDR_ANY);
 	error = bind(l_fd, (struct sockaddr *)&addr_in1, sizeof(addr_in1));
 	assert (error == 0);
 
