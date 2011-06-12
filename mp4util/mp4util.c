@@ -42,12 +42,20 @@ struct mp4_trak_info {
 	int ti_nlength[ST_MAX];
 	int ti_ncounter[ST_MAX];
 	struct mp4_box_info *ti_stboxs[ST_MAX];
+
+	int ti_duration_tkhd;
+	int *ti_duration_tkhdp;
+	int ti_duration_mdhd;
+	int *ti_duration_mdhdp;
 };
 
 struct mp4_merg_info {
 	int mi_nitem;
 	int mi_nbytes;
 	int mi_nitem2;
+	int mi_duration_tkhd;
+	int mi_duration_mdhd;
+
 	char *mi_base;
 	char *mi_buff;
 };
@@ -65,6 +73,59 @@ struct mp4_file_info {
 	struct mp4_box_info *fi_mdatp;
 	struct mp4_box_info *fi_header;
 	struct mp4_box_info **fi_tailer;
+
+	int fi_duration;
+	int *fi_durationp;
+};
+
+struct mp4_mvhd_info {
+	int mi_size;
+	int mi_type; //mvhd
+	char mi_version;
+	char mi_flags[3];
+	int mi_create_time;
+	int mi_modificate_time;
+	int mi_time_scale;
+	int mi_duration; // time duration
+	int mi_rate;
+	char mi_volume[2];
+	char mi_reserved[10];
+	char mi_matrix[36];
+	char mi_pre_defined[24];
+	int mi_next_trackid;
+};
+
+struct mp4_tkhd_info {
+	int mi_size;
+	int mi_type;
+	char mi_version;
+	char mi_flags[3];
+	int mi_create_time;
+	int mi_modificate_time;
+	int mi_trackid;
+	int mi_reserved;
+	int mi_duration; //time duration
+	int mi_reserved1[2];
+	short mi_layer;
+	short mi_alernate_group;
+	short mi_volume;
+	short mi_reserved2;
+	char mi_matrix[36];
+	int mi_width;
+	int mi_height;
+};
+
+struct mp4_mdhd_info {
+	int mi_size;
+	int mi_type;
+	char mi_version;
+	char mi_flags[3];
+	int mi_create_time;
+	int mi_modificate_time;
+	int mi_time_scale;
+	int mi_duration; // duration time
+	char mi_language[2];
+	char mi_pre_defined[2];
 };
 
 static int
@@ -350,6 +411,31 @@ mp4_file_parse(struct mp4_file_info *fip, struct cantainer *canp)
 				assert(fip->fi_mdatp == NULL);
 			   	fip->fi_mdatp = boxp;
 			}
+
+			if (!memcmp("mvhd", pfix.magic, 4)) {
+				struct mp4_mvhd_info *mip;
+				mip = (struct mp4_mvhd_info *)boxp->bi_buffer;
+				fip->fi_duration = htonl(mip->mi_duration);
+				fip->fi_durationp = &mip->mi_duration;
+			}
+
+			if (!memcmp("tkhd", pfix.magic, 4)) {
+				struct mp4_tkhd_info *tip;
+				struct mp4_trak_info *trakp;
+				tip = (struct mp4_tkhd_info *)boxp->bi_buffer;
+			   	trakp = (struct mp4_trak_info *)&fip->fi_traks[fip->fi_trako];
+				trakp->ti_duration_tkhd = htonl(tip->mi_duration);
+				trakp->ti_duration_tkhdp = &tip->mi_duration;
+			}
+
+			if (!memcmp("mdhd", pfix.magic, 4)) {
+				struct mp4_mdhd_info *mip;
+				struct mp4_trak_info *trakp;
+				mip = (struct mp4_mdhd_info *)boxp->bi_buffer;
+			   	trakp = (struct mp4_trak_info *)&fip->fi_traks[fip->fi_trako];
+				trakp->ti_duration_mdhd = htonl(mip->mi_duration);
+				trakp->ti_duration_mdhdp = &mip->mi_duration;
+			}
 		}
 
 		cantainer_close(canp1);
@@ -371,6 +457,8 @@ mp4_merge_trak1(struct mp4_merg_info *mip, struct mp4_trak_info *tip)
 	int i;
 
 	for (i = 0; i < ST_MAX; i++) {
+		mip[i].mi_duration_tkhd += tip->ti_duration_tkhd;
+		mip[i].mi_duration_mdhd += tip->ti_duration_mdhd;
 	   	mip[i].mi_nitem += tip->ti_ncounter[i];
 	   	mip[i].mi_nbytes += tip->ti_nlength[i];
 	}
@@ -527,6 +615,7 @@ mp4_file_merge(size_t count, struct mp4_file_info *fips, char *paths[])
 	int adjoff;
 	int mdatoff;
 	int mdatsiz;
+	int moovlen;
 	long sthd[4];
 	int trak_flags[10];
 	struct mp4_file_info *fip;
@@ -535,10 +624,12 @@ mp4_file_merge(size_t count, struct mp4_file_info *fips, char *paths[])
    	struct mp4_merg_info *mip;
 	struct mp4_merg_info mergs[10][ST_MAX];
 
+	moovlen = 0;
 	memset(mergs, 0, sizeof(mergs));
 	for (i = 0; i < count; i++) {
 		fip = fips + i;
 		ntrak = fip->fi_trako;
+		moovlen += fip->fi_duration;
 		for (j = 0; j < ntrak; j++) {
 		   	trak_flags[j] = fip->fi_traks[j].ti_flags;
 			mp4_merge_trak1(mergs[j], fip->fi_traks + j);
@@ -601,10 +692,14 @@ mp4_file_merge(size_t count, struct mp4_file_info *fips, char *paths[])
 		long *valup;
 
 		fip = fips;
+		*fip->fi_durationp = htonl(moovlen);
 
 		for (j = 0; j < ntrak; j++) {
 			mip = mergs[j];
 			tip = fip->fi_traks + j;
+
+			*tip->ti_duration_tkhdp = htonl(mip->mi_duration_tkhd);
+			*tip->ti_duration_mdhdp = htonl(mip->mi_duration_mdhd);
 
 			for (i = 1; i < ST_MAX; i++) {
 			   	boxp = tip->ti_stboxs[i];
