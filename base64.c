@@ -140,10 +140,10 @@ int b64_enc_trans(struct b64_enc_up *b64p,
 
 	if (b64p->enc_finish && l_dst > 0) {
 		if (b64p->enc_bitcnt > 0) {
-			b64p->enc_total++;
-			b64p->enc_bitcnt = 0;
-			index = (b64p->enc_bitvalues);
+		   	index = (b64p->enc_bitvalues << (6 - b64p->enc_bitcnt));
 			*dst1++ = base64chars[index & 0x3F];
+			b64p->enc_bitcnt = 0;
+			b64p->enc_total++;
 			l_dst --;
 		}
 
