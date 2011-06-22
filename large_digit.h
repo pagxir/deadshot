@@ -13,16 +13,22 @@ class large_digit {
 	private:
 		int m_nlen;
 		int m_flag;
-		store_t m_mem[128];
+		store_t m_mem[16 + 1];
 		store_t *m_pbuf;
 
 	public:
+		void salt(void);
+		bool bit(long idx) const;
 		store_t value(void) const;
 		large_digit(store_t value);
 
 	public:
 		large_digit(void);
 		~large_digit(void);
+
+	public:
+		large_digit &operator |= (const large_digit &ld);
+		large_digit &operator &= (const large_digit &ld);
 
 	public:
 		large_digit(const large_digit &use);
@@ -56,7 +62,7 @@ class large_digit {
 };
 
 void read_large_digit(large_digit &ld, const char *buf);
-void write_large_digit(large_digit &ld, char *outp);
+void write_large_digit(large_digit ld, char *outp);
 
 #endif
 

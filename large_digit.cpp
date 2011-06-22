@@ -1,4 +1,7 @@
-#include "stdafx.h"
+#include <ctype.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
 #include <assert.h>
 
 #include "large_digit.h"
@@ -55,6 +58,37 @@ store_t large_digit::value(void) const
 {
 	assert(m_nlen > 0);
 	return *m_pbuf;
+}
+
+void large_digit::salt(void)
+{
+	int i;
+	int salt0;
+
+	for (i = 0; i < m_nlen; i++) {
+		salt0 = rand();
+		m_pbuf[i] = salt0;
+#if 0
+		salt0 = rand();
+		m_pbuf[i] |= (salt0 << 16);
+#endif
+	}
+
+	return;
+}
+
+bool large_digit::bit(long idx) const
+{
+	int byof;
+	int biof;
+	
+	if (idx < m_nlen * muchbit(store_t)) {
+		byof = idx / muchbit(store_t);
+		biof = idx % muchbit(store_t);
+		return (m_pbuf[byof] & (1 << biof));
+	}
+	
+	return 0;
 }
 
 large_digit::large_digit(store_t value)
@@ -372,6 +406,33 @@ large_digit &large_digit::operator >>= (long shift)
 	return *this;
 }
 
+large_digit &large_digit::operator &= (const large_digit &use)
+{
+	int i;
+	int min;
+
+	min = (use.m_nlen < m_nlen)? use.m_nlen: m_nlen;
+	for (i = 0; i < min; i++)
+		m_pbuf[i] &= use.m_pbuf[i];
+
+	for (i = min; i < m_nlen; i++)
+		m_pbuf[i] = 0;
+
+	return *this;
+}
+
+large_digit &large_digit::operator |= (const large_digit &use)
+{
+	int i;
+	int min;
+
+	min = (use.m_nlen < m_nlen)? use.m_nlen: m_nlen;
+	for (i = 0; i < min; i++)
+		m_pbuf[i] |= use.m_pbuf[i];
+
+	return *this;
+}
+
 large_digit &large_digit::operator <<= (long shift)
 {
 	int i, index;
@@ -419,14 +480,15 @@ void read_large_digit(large_digit &ld, const char *inp)
 	}
 }
 
-void write_large_digit(large_digit &ld, char *outp)
+void write_large_digit(large_digit ld, char *outp)
 {
 	char t;
 	char *keep = outp;
+	static char _ch_map[] = "0123456789ABCDEF";
 
 	while (ld != 0) {
-		*outp++ = (ld % 10).value() + '0';
-		ld /= 10;
+		*outp++ = _ch_map[(ld % 16).value()];
+		ld /= 16;
 	}
 	*outp = 0;
 
