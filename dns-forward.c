@@ -12,7 +12,7 @@ struct dns_query_packet {
 };
 
 const char * dns_extract_name(char * name, size_t namlen,
-	   	const char * dnsp, const char * finp)
+		const char * dnsp, const char * finp)
 {
 	int partlen;
 	char nouse = '.';
@@ -24,21 +24,21 @@ const char * dns_extract_name(char * name, size_t namlen,
 	partlen = (unsigned char)*dnsp++;
 	while (partlen) {
 		if (dnsp + partlen > finp)
-		   	return finp;
+			return finp;
 
 		if (namlen > partlen + 1) {
-		   	memcpy(name, dnsp, partlen);
+			memcpy(name, dnsp, partlen);
 			namlen -= partlen;
 			name += partlen;
-		   	dnsp += partlen;
+			dnsp += partlen;
 
 			lastdot = name;
 			*name++ = '.';
 			namlen--;
-	   	}
-	   
+		}
+
 		if (dnsp == finp)
-		   	return finp;
+			return finp;
 		partlen = (unsigned char)*dnsp++;
 	}
 
@@ -47,14 +47,14 @@ const char * dns_extract_name(char * name, size_t namlen,
 }
 
 const char * dns_extract_value(void * valp, size_t size,
-	   	const char * dnsp, const char * finp)
+		const char * dnsp, const char * finp)
 {
 	if (dnsp + size > finp)
 		return finp;
-   
+
 	memcpy(valp, dnsp, size);
-   	dnsp += size;
-   	return dnsp;
+	dnsp += size;
+	return dnsp;
 }
 
 char * dns_copy_name(char *outp, const char * name)
@@ -76,7 +76,7 @@ char * dns_copy_name(char *outp, const char * name)
 		*outp++ = *name++;
 		count++;
 	}
-   
+
 	*lastdot = count;
 	*outp++ = 0;
 
@@ -89,10 +89,42 @@ char * dns_copy_value(char *outp, void * valp, size_t count)
 	return (outp + count);
 }
 
+int do_remote_dns_query(const char *domain, u_long *buf, size_t count)
+{
+	int fd;
+	int error;
+	struct sockaddr_in in_addr1;
+
+	fd = socket(AF_INET, SOCK_STREAM, 0);
+	if (fd == -1)
+		return -1;
+
+	in_addr1.sin_family = AF_INET;
+	in_addr1.sin_port   = htons(8567);
+	in_addr1.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+	error = connect(fd, (struct sockaddr *)&in_addr1, sizeof(in_addr1));
+	if (error == -1) {
+		closesocket(fd);
+		return -1;
+	}
+
+	error = send(fd, domain, strlen(domain), 0);
+	if (error != strlen(domain)) {
+		closesocket(fd);
+		return -1;
+	}
+
+	error = recv(fd, (char *)buf,  count * sizeof(u_long), 0);
+
+	closesocket(fd);
+	return error;
+}
+
 int dns_query(char * s_buf, size_t size, const char * buf, size_t len)
 {
 	int outlen;
-   	char *outp;
+	char *outp;
 	char name[1024];
 	const char *queryp;
 	const char *finishp;
@@ -131,11 +163,11 @@ int dns_query(char * s_buf, size_t size, const char * buf, size_t len)
 			dnsp->q_ancount == 0 &&
 			dnsp->q_nscount == 0 &&
 			dnsp->q_arcount == 0) {
-	   	queryp = (char *)(dnsp + 1);
-	   	finishp = buf + len;
-	   	queryp = dns_extract_name(name, sizeof(name), queryp, finishp);
-	   	queryp = dns_extract_value(&type, sizeof(type), queryp, finishp);
-	   	queryp = dns_extract_value(&dnscls, sizeof(dnscls), queryp, finishp);
+		queryp = (char *)(dnsp + 1);
+		finishp = buf + len;
+		queryp = dns_extract_name(name, sizeof(name), queryp, finishp);
+		queryp = dns_extract_value(&type, sizeof(type), queryp, finishp);
+		queryp = dns_extract_value(&dnscls, sizeof(dnscls), queryp, finishp);
 
 		printf("\nlen %d\n", len);
 		printf("qustion %d\n", dnsp->q_qdcount);
@@ -148,17 +180,17 @@ int dns_query(char * s_buf, size_t size, const char * buf, size_t len)
 			type = htons(1);
 
 		if (ntohs(type) == 28 && ntohs(dnscls) == 1) {
-		   	dnsoutp = (struct dns_query_packet *)s_buf;
-		   	dnsoutp->q_flags = ntohs(0x8183);
-		   	dnsoutp->q_ident = dnsp->q_ident;
-		   	dnsoutp->q_qdcount = ntohs(1);
-		   	dnsoutp->q_ancount = ntohs(0);
-		   	dnsoutp->q_nscount = ntohs(0);
-		   	dnsoutp->q_arcount = ntohs(0);
+			dnsoutp = (struct dns_query_packet *)s_buf;
+			dnsoutp->q_flags = ntohs(0x8183);
+			dnsoutp->q_ident = dnsp->q_ident;
+			dnsoutp->q_qdcount = ntohs(1);
+			dnsoutp->q_ancount = ntohs(0);
+			dnsoutp->q_nscount = ntohs(0);
+			dnsoutp->q_arcount = ntohs(0);
 
 			outp = (char *)(dnsoutp + 1);
 			outlen = queryp - (const char *)(dnsp + 1);
-		   	memcpy(outp, dnsp + 1, outlen);
+			memcpy(outp, dnsp + 1, outlen);
 			outp += outlen;
 
 #if 0
@@ -178,35 +210,38 @@ int dns_query(char * s_buf, size_t size, const char * buf, size_t len)
 		} else if (ntohs(type) == 1 && ntohs(dnscls) == 1) {
 			int i;
 			struct hostent * hp;
-		   	dnsoutp = (struct dns_query_packet *)s_buf;
-		   	dnsoutp->q_flags = ntohs(0x8180);
-		   	dnsoutp->q_ident = dnsp->q_ident;
-		   	dnsoutp->q_qdcount = ntohs(1);
-		   	dnsoutp->q_nscount = ntohs(0);
-		   	dnsoutp->q_arcount = ntohs(0);
+			dnsoutp = (struct dns_query_packet *)s_buf;
+			dnsoutp->q_flags = ntohs(0x8180);
+			dnsoutp->q_ident = dnsp->q_ident;
+			dnsoutp->q_qdcount = ntohs(1);
+			dnsoutp->q_nscount = ntohs(0);
+			dnsoutp->q_arcount = ntohs(0);
 
 			outp = (char *)(dnsoutp + 1);
 			outlen = queryp - (const char *)(dnsp + 1);
-		   	memcpy(outp, dnsp + 1, outlen);
+			memcpy(outp, dnsp + 1, outlen);
 			outp += outlen;
 
-			hp = gethostbyname(name);
-			for (i = 0; hp && hp->h_addr_list[i]; i++) {
-			   	outp = dns_copy_name(outp, name);
-			   	outp = dns_copy_value(outp, &type, sizeof(type));
-			   	outp = dns_copy_value(outp, &dnscls, sizeof(dnscls));
+
+			u_long h_addr_list[20];
+			int error = do_remote_dns_query(name, h_addr_list, 20);
+
+			for (i = 0; error != -1 && i < error / 4; i++) {
+				outp = dns_copy_name(outp, name);
+				outp = dns_copy_value(outp, &type, sizeof(type));
+				outp = dns_copy_value(outp, &dnscls, sizeof(dnscls));
 
 				int ttl = htonl(3600);
-			   	unsigned short dnslen = htons(4);
-			   	unsigned long dnsaddr = htonl(INADDR_LOOPBACK);
+				unsigned short dnslen = htons(4);
+				unsigned long dnsaddr = htonl(INADDR_LOOPBACK);
 
-				memcpy(&dnsaddr, hp->h_addr_list[i], sizeof(dnsaddr));
+				memcpy(&dnsaddr, &h_addr_list[i], sizeof(dnsaddr));
 				outp = dns_copy_value(outp, &ttl, sizeof(ttl));
-			   	outp = dns_copy_value(outp, &dnslen, sizeof(dnslen));
-			   	outp = dns_copy_value(outp, &dnsaddr, sizeof(dnsaddr));
+				outp = dns_copy_value(outp, &dnslen, sizeof(dnslen));
+				outp = dns_copy_value(outp, &dnsaddr, sizeof(dnsaddr));
 			}
 
-		   	dnsoutp->q_ancount = ntohs(i);
+			dnsoutp->q_ancount = ntohs(i);
 			return (outp - s_buf);
 		}
 	}
@@ -235,9 +270,9 @@ int main(int argc, char * argv[])
 	assert(error == 0);
 
 	do {
-	   	in_len1 = sizeof(in_addr1);
-	   	count = recvfrom(sockfd, buf, sizeof(buf), 0,
-			   	(struct sockaddr *)&in_addr1, &in_len1);
+		in_len1 = sizeof(in_addr1);
+		count = recvfrom(sockfd, buf, sizeof(buf), 0,
+				(struct sockaddr *)&in_addr1, &in_len1);
 		if (count < 12)
 			continue;
 		count = dns_query(s_buf, sizeof(s_buf), buf, count);
@@ -247,7 +282,7 @@ int main(int argc, char * argv[])
 				(struct sockaddr *)&in_addr1, in_len1);
 		if (count == -1)
 			fprintf(stderr, "sendto: %d\n", WSAGetLastError());
-	   	fprintf(stderr, "sendto: len = %d\n", count);
+		fprintf(stderr, "sendto: len = %d\n", count);
 	} while (1);
 
 	closesocket(sockfd);
