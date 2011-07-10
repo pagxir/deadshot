@@ -5,7 +5,8 @@
 #define LDF_SIGN        2
 #define LDF_CARRY       4
 #define LDF_BORROW      8
-#define LDF_OWERFLOW 0x10
+#define LDF_NEGATIVE 0x10
+#define LDF_OWERFLOW 0x20
 
 typedef unsigned long store_t;
 
@@ -19,7 +20,7 @@ class large_digit {
 	public:
 		void salt(void);
 		bool bit(long idx) const;
-		store_t value(void) const;
+		store_t digit(int idx) const;
 		large_digit(store_t value);
 
 	public:

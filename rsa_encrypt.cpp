@@ -109,6 +109,7 @@ large_digit edura(large_digit a, large_digit b)
 			x += dx * n;
 			a %= b;
 		}
+
 	} while ((a - 1) % b != 0);
 
 	v = (a - 1) / b;
@@ -151,14 +152,13 @@ static bool rabin(const large_digit &ld)
 	}
 
 	for (i = 0; i < 200; i++) {
+		if (ld <= aprime[i]) {
+			break;
+		}
+
 		if (ld % aprime[i] == 0) {
 			goto failure;
 		}
-#if 0
-		if (ld < aprime[i]) {
-			break;
-		}
-#endif
 	}
 
 	result = true;
@@ -196,7 +196,7 @@ static bool egcd(large_digit m, large_digit r)
 }
 
 static void print_rsa_key(const large_digit &e,
-	const large_digit &d, const large_digit &n)
+		const large_digit &d, const large_digit &n)
 {
 	char ebuf[1024], dbuf[1024], nbuf[1024];
 	write_large_digit(e, ebuf);
@@ -217,8 +217,6 @@ int  main(void)
 	large_digit e, d, n;
 	large_digit p, q, psi;
 
-	srand(time(NULL));
-
 	prime_product(p);
 	prime_product(q);
 	while (p == q) {
@@ -229,9 +227,7 @@ int  main(void)
 	n = p * q;
 	psi = (p - 1) * (q - 1);
 
-	printf("key generate!\n");
-	rand_product(e);
-	e %= psi;
+	e = 3;
 	while (egcd(psi, e)) {
 		rand_product(e);
 		e %= psi;
@@ -278,4 +274,3 @@ int  main(void)
 
 	return 0;
 }
-
