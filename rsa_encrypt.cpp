@@ -30,7 +30,7 @@ _uint32 aprime[200] = {
 	1163, 1171, 1181, 1187, 1193, 1201, 1213, 1217, 1223, 1229
 };
 
-const large_digit RSA_SIGN = large_digit(1) << 256;
+const large_digit RSA_SIGN = large_digit(1) << (64);
 const large_digit RSA_GOOD = (RSA_SIGN >> 1) + 1;
 const large_digit RSA_MASK = (RSA_SIGN - 1);
 
@@ -92,7 +92,7 @@ large_digit edura(large_digit a, large_digit b)
 
 	do {
 		if (a == b ||
-				a == 0 || b == 0) {
+				!a || !b) {
 			break;
 		}
 
@@ -110,7 +110,7 @@ large_digit edura(large_digit a, large_digit b)
 			a %= b;
 		}
 
-	} while ((a - 1) % b != 0);
+	} while (!!((a - 1) % b));
 
 	v = (a - 1) / b;
 	X = (x + v * dx);
@@ -131,7 +131,7 @@ static bool rabin(const large_digit &ld)
 	while (m.bit(r++));
 	m >>= (--r);
 
-	for (k = 0; k < 5; k++) {
+	for (k = 0; k < 3; k++) {
 		rand_product(a);
 		a %= (ld - 2);
 		a += 2;
@@ -151,6 +151,7 @@ static bool rabin(const large_digit &ld)
 		}
 	}
 
+#if 0
 	for (i = 0; i < 200; i++) {
 		if (ld <= aprime[i]) {
 			break;
@@ -160,6 +161,7 @@ static bool rabin(const large_digit &ld)
 			goto failure;
 		}
 	}
+#endif
 
 	result = true;
 
@@ -184,27 +186,32 @@ static void prime_product(large_digit &prime)
 
 static bool egcd(large_digit m, large_digit r)
 {
-	large_digit u;
+	large_digit t;
 
-	while (m % r != 0) {
-		u = m % r;
-		m = r;
-		r = u;
+	for ( ; ; ) {
+		t = m % r;
+		if (!t)
+			return r != 1;
+
+		m = r % t;
+		if (!m)
+			return t != 1;
+
+		r = t % m;
+		if (!r)
+			return m != 1;
 	}
 
-	return (r != 1);
+	return false;
 }
 
 static void print_rsa_key(const large_digit &e,
-		const large_digit &d, const large_digit &n)
+	const large_digit &d, const large_digit &n)
 {
 	char ebuf[1024], dbuf[1024], nbuf[1024];
-	write_large_digit(e, ebuf);
-	write_large_digit(d, dbuf);
-	write_large_digit(n, nbuf);
 
-	printf("encrypt key: e = %s, n = %s\n", ebuf, nbuf);
-	printf("decrypt key: d = %s, n = %s\n", dbuf, nbuf);
+	printf("encrypt key: e = %s, n = %s\n", e.write_digit(ebuf, 1024), n.write_digit(nbuf, 1024));
+	printf("decrypt key: d = %s, n = %s\n", d.write_digit(dbuf, 1024), nbuf);
 	return;
 }
 
@@ -217,6 +224,8 @@ int  main(void)
 	large_digit e, d, n;
 	large_digit p, q, psi;
 
+	//srand(time(NULL));
+
 	prime_product(p);
 	prime_product(q);
 	while (p == q) {
@@ -227,7 +236,11 @@ int  main(void)
 	n = p * q;
 	psi = (p - 1) * (q - 1);
 
-	e = 3;
+	char buf[1024];
+	printf("p = %s\n", p.write_digit(buf, 1000));
+	printf("q = %s\n", q.write_digit(buf, 1000));
+
+	e = 65537;
 	while (egcd(psi, e)) {
 		rand_product(e);
 		e %= psi;
@@ -255,9 +268,9 @@ int  main(void)
 			u = expr_mod(v, d, n);
 			if (m != u) {
 				char mbuf[1024], ubuf[1024], vbuf[1024];
-				write_large_digit(m, mbuf);
-				write_large_digit(u, ubuf);
-				write_large_digit(v, vbuf);
+				m.write_digit(mbuf, sizeof(mbuf));
+				u.write_digit(ubuf, sizeof(ubuf));
+				v.write_digit(vbuf, sizeof(vbuf));
 				printf ("m = %s, u = %s, v = %s\n", mbuf, ubuf, vbuf);
 				abort();
 			}
