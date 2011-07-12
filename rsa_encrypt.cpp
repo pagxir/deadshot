@@ -225,6 +225,20 @@ int  main(void)
 	large_digit p, q, psi;
 
 	//srand(time(NULL));
+#if 0
+	p = 0xFFFFFF70;
+	q = 0xFFFFFF01;
+	char www[1000];
+	n = p * q;
+	printf("n1 = %s\n", n.write_digit(www, 1000));
+	n = n * 0xFF00FF09;
+	printf("n = %s\n", n.write_digit(www, 1000));
+	e = large_digit(0xFF008899) * large_digit(0x81212121);
+	printf("e = %s\n", e.write_digit(www, 1000));
+	n = n * e;
+	printf("n = %s\n", n.write_digit(www, 1000));
+	return 0;
+#endif
 
 	prime_product(p);
 	prime_product(q);

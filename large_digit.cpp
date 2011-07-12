@@ -11,22 +11,56 @@
 #define IMAX(a, b) ((a) < (b)? (b): (a))
 #define IMIN(a, b) ((a) < (b)? (a): (b))
 
-void store_clear(store_t *p, size_t l)
-{
-	memset(p, 0, l * sizeof(*p));
-	return;
-}
-
-void store_copy(store_t *d, store_t *s, size_t l)
+inline void store_copy(store_t *d, store_t *s, size_t l)
 {
 	memcpy(d, s, l * sizeof(*d));
 	return;
 }
 
-void store_move(store_t *d, store_t *s, size_t l)
+inline void store_move(store_t *d, store_t *s, size_t l)
 {
 	memmove(d, s, l * sizeof(*d));
 	return;
+}
+
+inline void store_clear(store_t *p, size_t l)
+{
+	memset(p, 0, l * sizeof(*p));
+	return;
+}
+
+inline size_t len_strip(store_t *p, size_t l)
+{
+	store_t *e;
+
+	e = p + l;
+	while (e > p) {
+		if (*--e)
+			break;
+		l--;
+	}
+
+	return l;
+}
+
+inline size_t bic_init(void)
+{
+	int bic = 0;
+	int biv = RAND_MAX;
+
+	while (biv > 0) {
+		biv >>= 8;
+		bic++;
+	}
+
+	return bic;
+}
+
+inline store_t am_sum(store_t a,
+	   	store_t b, store_t *sp)
+{
+	*sp = (a + b);
+	return store_t(*sp < a);
 }
 
 large_digit::large_digit(void)
@@ -44,17 +78,12 @@ large_digit::~large_digit()
 void large_digit::salt(void)
 {
 	int salt0;
-	int mc, rc, bic;
-	int biv = RAND_MAX;
+	size_t mc, rc;
 	char *pmem = (char *)m_mem;
+	static const int bic = bic_init();
 
-	rc = bic = 0;
-	while (biv > 0) {
-		biv >>= 8;
-		bic++;
-	}
-
-	mc = sizeof(m_mem);
+	rc = 0;
+	mc = m_nlen = countof(m_mem);
 	while (mc > 0) {
 		if (rc == 0) {
 			salt0 = rand();
@@ -63,39 +92,59 @@ void large_digit::salt(void)
 
 		*pmem++ = salt0;
 		salt0 >>= 8;
-		rc--; mc--;
+		rc--; 
+		mc--;
 	}
 
-	m_nlen = countof(m_mem);
-	while (m_nlen > 0 && 
-		!m_pbuf[m_nlen - 1])
-		m_nlen--;
-
+	m_nlen = len_strip(m_pbuf, m_nlen);
 	return;
 }
 
-bool large_digit::bit(long idx) const
+bool large_digit::bit(size_t index) const
 {
-	size_t byof, biof;
+   	size_t bimask;
+	size_t nstore;
 
-	if (size_t(idx) < m_nlen * muchbit(store_t)) {
-		byof = idx / muchbit(store_t);
-		biof = idx % muchbit(store_t);
-		return (m_pbuf[byof] & (1 << biof))? true: false;
+	if (index < m_nlen * NBITSTORE) {
+		bimask = BIMASK(index);
+		nstore = NSTORE(index);
+		return 0 != (m_pbuf[nstore] & bimask);
 	}
 
 	return false;
 }
 
-store_t large_digit::digit(int idx) const
+store_t large_digit::digit(size_t index) const
 {
-	if (idx < m_nlen)
-		return m_pbuf[idx];
+	int negf;
 
-	if (m_flag & LDF_NEGATIVE)
-		return ~store_t(0);
+	if (index < m_nlen)
+		return m_pbuf[index];
 
-	return store_t(0);
+	negf = m_flag & LDF_NEGATIVE;
+	return (negf? ~store_t(0): store_t(0));
+}
+
+store_t large_digit::am(store_t x, store_t *w, size_t j, size_t nlen) const
+{
+	size_t i = 0;
+	store_t c = 0;
+   	store_t xh = HISTORE(x);
+   	store_t xl = LOSTORE(x);
+
+	while (nlen-- > 0) {
+		store_t mm, c1, c2, ll;
+	   	store_t l = LOSTORE(m_pbuf[i]);
+	   	store_t h = HISTORE(m_pbuf[i]);
+		c1 = am_sum(xh * l, h * xl, &mm);
+		c2 = am_sum(l * xl, RESTORE(mm), &l);
+		c2 += am_sum(l, w[j], &ll);
+		c2 += am_sum(c, ll, &w[j]);
+		c = h * xh + c2 + HISTORE(mm) + RESTORE(c1);
+	   	i++, j++;
+   	}
+
+	return c;
 }
 
 large_digit::large_digit(store_t value)
@@ -141,38 +190,51 @@ large_digit large_digit::operator - (const large_digit &use) const
 	return large_digit(*this) -= use;
 }
 
+/* multiply */
 large_digit large_digit::operator * (const large_digit &use) const
-{	
-	char buf[1024];
-	store_t value;
-	int i, j, shift;
-	large_digit result = 0;
+{
+	int i, nlen;
+	large_digit retval;
+	store_t *pbuf = retval.m_pbuf;
 
-	shift = 0;
-	for (i = 0; i < m_nlen; i++) {
-		if (m_pbuf[i] == store_t(0)) {
-			shift += muchbit(store_t);
-			continue;
-		}
+	i = m_nlen;
+	nlen = i + use.m_nlen;
 
-		value = m_pbuf[i];
-		for (j = 0; j < muchbit(store_t); j++) {
-			if (value & 1ul) {
-				result.increase(use, shift);
-			}
-			value >>= 1;
-			shift++;
-		}
-	}
+	while (--i >= 0)
+		retval.m_pbuf[i] = 0;
 
-	return result;
+	for (i = 0; i < use.m_nlen; i++)
+		pbuf[i + m_nlen] = am(use.m_pbuf[i], pbuf, i, m_nlen);
+
+	retval.m_nlen = len_strip(retval.m_pbuf, nlen);
+#if 0
+	char a[1000], b[1000], c[1000];
+	printf("%s * %s = %s\n",
+		   	write_digit(a, 1000),
+			use.write_digit(b, 1000),
+			retval.write_digit(c, 1000));
+#endif
+	return retval;
 }
 
 large_digit large_digit::operator / (const large_digit &use) const
 {
 	int shift;
+	int hibit1, hibit2;
 	large_digit result;
 	large_digit remainer(*this);
+
+#if 0
+	hibit1 = m_nlen * muchbit(store_t);
+	while (hibit1 > 0 && !bit(hibit1 - 1))hibit1--;
+
+	hibit2 = use.m_nlen * muchbit(store_t);
+	while (hibit2 > 0 && !use.bit(hibit2 - 1))hibit2--;
+
+	shift = hibit1 - hibit2;
+	if (shift < 0)
+		return remainer;
+#endif
 
 	shift = 0;
 	do {
@@ -205,7 +267,21 @@ large_digit large_digit::operator / (const large_digit &use) const
 large_digit large_digit::operator % (const large_digit &use) const
 {
 	int shift;
+	int hibit1, hibit2;
+	large_digit result;
 	large_digit remainer(*this);
+
+#if 0
+	hibit1 = m_nlen * muchbit(store_t);
+	while (hibit1 > 0 && !bit(hibit1 - 1))hibit1--;
+
+	hibit2 = use.m_nlen * muchbit(store_t);
+	while (hibit2 > 0 && !use.bit(hibit2 - 1))hibit2--;
+
+	shift = hibit1 - hibit2;
+	if (shift < 0)
+		return remainer;
+#endif
 
 	shift = 0;
 	do {
