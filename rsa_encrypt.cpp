@@ -30,7 +30,7 @@ _uint32 aprime[200] = {
 	1163, 1171, 1181, 1187, 1193, 1201, 1213, 1217, 1223, 1229
 };
 
-const large_digit RSA_SIGN = large_digit(1) << (64);
+const large_digit RSA_SIGN = large_digit(1) << (256);
 const large_digit RSA_GOOD = (RSA_SIGN >> 1) + 1;
 const large_digit RSA_MASK = (RSA_SIGN - 1);
 
@@ -49,7 +49,7 @@ large_digit mul_mod(const large_digit &a,
 	v = a % n;
 	u = b % n;
 
-	while (u != 0 && v != 0) {
+	while (u.sign() != 0  && v.sign() != 0) {
 		if (u.bit(0)) {
 			t = r + v;
 			r = t % n;
@@ -92,7 +92,7 @@ large_digit edura(large_digit a, large_digit b)
 
 	do {
 		if (a == b ||
-				!a || !b) {
+				a.sign() == 0 || b.sign() == 0) {
 			break;
 		}
 
@@ -110,7 +110,7 @@ large_digit edura(large_digit a, large_digit b)
 			a %= b;
 		}
 
-	} while (!!((a - 1) % b));
+	} while (((a - 1) % b).sign());
 
 	v = (a - 1) / b;
 	X = (x + v * dx);
@@ -190,15 +190,15 @@ static bool egcd(large_digit m, large_digit r)
 
 	for ( ; ; ) {
 		t = m % r;
-		if (!t)
+		if (t.sign() == 0)
 			return r != 1;
 
 		m = r % t;
-		if (!m)
+		if (m.sign() == 0)
 			return t != 1;
 
 		r = t % m;
-		if (!r)
+		if (r.sign() == 0)
 			return m != 1;
 	}
 
@@ -225,6 +225,7 @@ int  main(void)
 	large_digit p, q, psi;
 
 	//srand(time(NULL));
+
 #if 0
 	p = 0xFFFFFF70;
 	q = 0xFFFFFF01;
@@ -286,7 +287,7 @@ int  main(void)
 				u.write_digit(ubuf, sizeof(ubuf));
 				v.write_digit(vbuf, sizeof(vbuf));
 				printf ("m = %s, u = %s, v = %s\n", mbuf, ubuf, vbuf);
-				abort();
+				assert(0);
 			}
 
 			printf("i = %d, j = %d\n", ij, jj);
