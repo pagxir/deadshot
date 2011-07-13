@@ -25,19 +25,22 @@ class large_digit
 	private:
 		int m_nlen;
 		int m_flag;
-		store_t m_mem[32 + 1];
+		store_t m_mem[128 + 1];
 		store_t *m_pbuf;
 
 	public:
 		int sign(void) const;
-		bool bit(size_t index) const;
-		bool operator !(void) const;
+		size_t nbits(void) const;
+
+	public:
+		int bit(size_t index) const;
 		store_t digit(size_t index) const;
 		void read_digit(const char *str);
 		char *write_digit(char *str, size_t len) const;
+		int compare(const large_digit &use) const;
 
 	public:
-		void salt(void);
+		void salt(size_t nbits);
 		large_digit(void);
 		~large_digit(void);
 		large_digit(store_t value);
@@ -94,7 +97,6 @@ class large_digit
 		large_digit &operator %= (const large_digit &use);
 
 	private:
-		int compare(const large_digit &use) const;
 		store_t am(store_t x, store_t *w, size_t j, size_t nlen) const;
 	
 		void increase(const large_digit &ld, long shift);

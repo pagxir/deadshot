@@ -103,7 +103,7 @@ int large_digit::sign(void) const
 	return m_nlen? 1: 0;
 }
 
-void large_digit::salt(void)
+void large_digit::salt(size_t nbits)
 {
 	int salt0;
 	size_t mc, rc;
@@ -111,7 +111,10 @@ void large_digit::salt(void)
 	static const int bic = bic_init();
 
 	rc = 0;
-	mc = m_nlen = countof(m_mem);
+	m_nlen = (nbits / NBITSTORE);
+	m_nlen = IMIN(m_nlen, countof(m_mem));
+
+	mc = m_nlen * NBITSTORE / 8;
 	while (mc > 0) {
 		if (rc == 0) {
 			salt0 = rand();
@@ -128,7 +131,7 @@ void large_digit::salt(void)
 	return;
 }
 
-bool large_digit::bit(size_t index) const
+int large_digit::bit(size_t index) const
 {
 	size_t bimask;
 	size_t nstore;
@@ -195,6 +198,18 @@ large_digit::large_digit(const large_digit &use)
 	if (m_nlen > countof(m_mem))
 		m_nlen = countof(m_mem);
 	store_copy(m_pbuf, use.m_pbuf, m_nlen);
+}
+
+size_t large_digit::nbits(void) const
+{
+	store_t digit0;
+
+	if (m_nlen > 0) { 
+		digit0 = digit(m_nlen - 1);
+	   	return (m_nlen - 1) * NBITSTORE + bit_nlen(digit0);
+	}
+
+	return 0;
 }
 
 int large_digit::compare(const large_digit &use) const
@@ -266,9 +281,7 @@ large_digit large_digit::operator * (const large_digit &use) const
 
 large_digit large_digit::operator / (const large_digit &use) const
 {
-	int shift, padding;
 	int hibit1, hibit2;
-	store_t digit1, digit2;
 	large_digit result, remainer(*this);
 
 	if (m_nlen == 0)
@@ -277,12 +290,10 @@ large_digit large_digit::operator / (const large_digit &use) const
 	if (use.m_nlen == 0)
 		return result;
 
-	digit2 = use.digit(use.m_nlen - 1);
-	hibit2 = (use.m_nlen - 1) * NBITSTORE + bit_nlen(digit2);
+	hibit2 = use.nbits();
 
 	do {
-		digit1 = remainer.digit(remainer.m_nlen - 1);
-		hibit1 = (remainer.m_nlen - 1) * NBITSTORE + bit_nlen(digit1);
+		hibit1 = remainer.nbits();
 
 		if (hibit1 >= hibit2) {
 			remainer.decrease(use, hibit1 - hibit2);
@@ -306,9 +317,7 @@ large_digit large_digit::operator / (const large_digit &use) const
 
 large_digit large_digit::operator % (const large_digit &use) const
 {
-	int shift, padding;
 	int hibit1, hibit2;
-	store_t digit1, digit2;
 	large_digit result, remainer(*this);
 
 	if (m_nlen == 0)
@@ -317,12 +326,10 @@ large_digit large_digit::operator % (const large_digit &use) const
 	if (use.m_nlen == 0)
 		return remainer;
 
-	digit2 = use.digit(use.m_nlen - 1);
-	hibit2 = (use.m_nlen - 1) * NBITSTORE + bit_nlen(digit2);
+	hibit2 = use.nbits();
 
 	do {
-		digit1 = remainer.digit(remainer.m_nlen - 1);
-		hibit1 = (remainer.m_nlen - 1) * NBITSTORE + bit_nlen(digit1);
+		hibit1 = remainer.nbits();
 
 		if (hibit1 >= hibit2)
 			remainer.decrease(use, hibit1 - hibit2);

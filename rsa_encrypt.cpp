@@ -4,6 +4,7 @@
 #include <assert.h>
 
 #include "large_digit.h"
+#define RSA_NBIT  512
 
 typedef unsigned long _uint32;
 
@@ -30,54 +31,34 @@ _uint32 aprime[200] = {
 	1163, 1171, 1181, 1187, 1193, 1201, 1213, 1217, 1223, 1229
 };
 
-const large_digit RSA_SIGN = large_digit(1) << (256);
+const large_digit RSA_SIGN = large_digit(1) << (RSA_NBIT >> 1);
 const large_digit RSA_GOOD = (RSA_SIGN >> 1) + 1;
 const large_digit RSA_MASK = (RSA_SIGN - 1);
 
 static void rand_product(large_digit &rnd)
 {
-	rnd.salt();
+	rnd.salt(RSA_NBIT);
 	return;
 }
 
 large_digit mul_mod(const large_digit &a,
 		const large_digit &b, const large_digit &n)
 {
-	large_digit t, u, v;
-	large_digit r = 0;
-
-	v = a % n;
-	u = b % n;
-
-	while (u.sign() != 0  && v.sign() != 0) {
-		if (u.bit(0)) {
-			t = r + v;
-			r = t % n;
-			u -= 1;
-		} else {
-			t = v << 1;
-			v = t % n;
-			u >>= 1;
-		}
-	}
-
-	return r;
+	return a * b % n;
 }
 
 large_digit expr_mod(const large_digit &x,
-		large_digit r, const large_digit &n)
+		const large_digit &r, const large_digit &n)
 {
+	int nbits;
 	large_digit v = x;
 	large_digit u = 1;
 
-	while (r > 0) {
-		if (r.bit(0)) {
-			u = mul_mod (u, v, n);
-			r -= 1;
-		} else {
-			v = mul_mod (v, v, n);
-			r >>= 1;
-		}
+	nbits = r.nbits();
+	for (int i = 0; i < nbits; i++) {
+		if (r.bit(i))
+		   	u = mul_mod (u, v, n);
+		v = mul_mod (v, v, n);
 	}
 
 	return u;
@@ -85,36 +66,44 @@ large_digit expr_mod(const large_digit &x,
 
 large_digit edura(large_digit a, large_digit b)
 {
+	int delta;
+	large_digit d;
 	large_digit n, v, X, Y;
 	large_digit dx, x, dy, y;
 
 	x = 1, dx = 0, y = 1, dy = 0;
 
 	do {
-		if (a == b ||
-				a.sign() == 0 || b.sign() == 0) {
+		if (!a.sign() || !b.sign()) {
 			break;
 		}
 
-		if (a < b)	{
+		delta = a.compare(b);
+		if (delta == 0) {
+			break;
+		}
+
+		if (delta < 0)	{
 			n = b / a;
 			dx += n * x;
 			y += dy * n;
 			b %= a;
+			delta = -1;
 		}
 
-		if (b < a && b > 1)	{
+		if (b > 1)	{
 			n = a / b;
 			dy += n * y;
 			x += dx * n;
 			a %= b;
 		}
 
-	} while (((a - 1) % b).sign());
+		d = (a - 1) % b;
+	} while (d.sign());
 
 	v = (a - 1) / b;
 	X = (x + v * dx);
-	Y = (y * v + dy);
+	/* Y = (y * v + dy); */
 
 	return X;
 }
@@ -224,22 +213,7 @@ int  main(void)
 	large_digit e, d, n;
 	large_digit p, q, psi;
 
-	//srand(time(NULL));
-
-#if 0
-	p = 0xFFFFFF70;
-	q = 0xFFFFFF01;
-	char www[1000];
-	n = p * q;
-	printf("n1 = %s\n", n.write_digit(www, 1000));
-	n = n * 0xFF00FF09;
-	printf("n = %s\n", n.write_digit(www, 1000));
-	e = large_digit(0xFF008899) * large_digit(0x81212121);
-	printf("e = %s\n", e.write_digit(www, 1000));
-	n = n * e;
-	printf("n = %s\n", n.write_digit(www, 1000));
-	return 0;
-#endif
+	srand(time(NULL));
 
 	prime_product(p);
 	prime_product(q);
