@@ -10,6 +10,7 @@
 #define countof(arr) (sizeof(arr) / sizeof(arr[0]))
 #define IMAX(a, b) ((a) < (b)? (b): (a))
 #define IMIN(a, b) ((a) < (b)? (a): (b))
+#define U64(x) uint64_t(x)
 
 inline void store_copy(store_t *d, store_t *s, size_t l)
 {
@@ -160,19 +161,14 @@ store_t large_digit::am(store_t x, store_t *w, size_t j, size_t nlen) const
 {
 	size_t i = 0;
 	store_t c = 0;
-	store_t xh = HISTORE(x);
-	store_t xl = LOSTORE(x);
 
 	while (nlen-- > 0) {
-		store_t mm, c1, c2, ll;
-		store_t l = LOSTORE(m_pbuf[i]);
-		store_t h = HISTORE(m_pbuf[i]);
-		c1 = am_sum(xh * l, h * xl, &mm);
-		c2 = am_sum(l * xl, RESTORE(mm), &l);
-		c2 += am_sum(l, w[j], &ll);
-		c2 += am_sum(c, ll, &w[j]);
-		c = h * xh + c2 + HISTORE(mm) + RESTORE(c1);
-		i++, j++;
+		uint64_t d9;
+		d9 = U64(m_pbuf[i]) * U64(x) + U64(c) + U64(w[j]);
+		assert(j < countof(m_mem));
+		w[j++] = d9;
+		c = (d9 >> NBITSTORE);
+		i++;
 	}
 
 	return c;
@@ -206,7 +202,7 @@ size_t large_digit::nbits(void) const
 
 	if (m_nlen > 0) { 
 		digit0 = digit(m_nlen - 1);
-	   	return (m_nlen - 1) * NBITSTORE + bit_nlen(digit0);
+		return (m_nlen - 1) * NBITSTORE + bit_nlen(digit0);
 	}
 
 	return 0;
@@ -279,70 +275,156 @@ large_digit large_digit::operator * (const large_digit &use) const
 	return retval;
 }
 
+/* divider */
 large_digit large_digit::operator / (const large_digit &use) const
 {
-	int hibit1, hibit2;
-	large_digit result, remainer(*this);
+	int j, i, ys;
+	uint64_t qd;
+	store_t y0, *pbuf;
+	int hibit1, hibit2, nsh;
+	large_digit r(*this), y(use);
 
-	if (m_nlen == 0)
-		return result;
-
-	if (use.m_nlen == 0)
-		return result;
-
-	hibit2 = use.nbits();
-
-	do {
-		hibit1 = remainer.nbits();
-
-		if (hibit1 >= hibit2) {
-			remainer.decrease(use, hibit1 - hibit2);
-			result.increase(hibit1 - hibit2);
-		}
-
-		while (remainer.sign() < 0 && hibit1 > hibit2) {
-			remainer.increase(use, --hibit1 - hibit2);
-			result.decrease(hibit1 - hibit2);
-		}
-
-	} while (hibit1 > hibit2);
-
-	if (remainer.sign() < 0) {
-		remainer.increase(use, 0);
-		result.decrease(0);
+	if (m_nlen == 0) {
+		/* zero */
+		return r;
 	}
 
-	return result;
+	if (use.m_nlen == 0) {
+		/* over flow */
+		return r;
+	}
+
+	if (m_nlen < use.m_nlen) {
+		/* remainer */
+		return r;
+	}
+
+	pbuf = r.m_pbuf;
+	hibit2 = y.nbits();
+	nsh = (hibit2 % NBITSTORE);
+	if (nsh > 0) {
+		r <<= (NBITSTORE - nsh);
+		y <<= (NBITSTORE - nsh);
+	}
+
+	i = r.m_nlen;
+	j = r.m_nlen - y.m_nlen;
+	ys = y.m_nlen;
+	y0 = y.digit(ys - 1);
+
+	large_digit t1, t2;
+	t1 = (y << (j * NBITSTORE));
+	if (r >= t1) {
+		assert(r.m_nlen < countof(m_mem));
+		pbuf[r.m_nlen++] = 1;
+		r -= t1;
+	}
+
+	t2.increase(ys * NBITSTORE);
+	y = t2 - y;
+
+	while (y.m_nlen < ys)
+		y.m_pbuf[y.m_nlen++] = 0;
+
+	while (j-- > 0) {
+		uint64_t qd = ~store_t(0);
+		assert(i > 0);
+		assert(i <= countof(m_mem));
+		if (pbuf[--i] != y0) {
+			qd = (U64(pbuf[i]) << NBITSTORE);
+			qd = qd + (i > 0? pbuf[i - 1]: 0);
+			qd = (qd / y0);
+		}
+
+		pbuf[i] += y.am(store_t(qd), pbuf, j, ys);
+		while (pbuf[i] < qd) {
+			assert(r.m_pbuf);
+			r.decrease(y, j * NBITSTORE);
+			qd--;
+		}
+	}
+
+	return (r >> (ys * NBITSTORE));
 }
 
+/* remainer */
 large_digit large_digit::operator % (const large_digit &use) const
 {
-	int hibit1, hibit2;
-	large_digit result, remainer(*this);
+	int j, i, ys;
+	uint64_t qd;
+	store_t y0, *pbuf;
+	int hibit1, hibit2, nsh;
+	large_digit r(*this), y(use);
 
-	if (m_nlen == 0)
-		return remainer;
+	if (m_nlen == 0) {
+		/* zero */
+		return r;
+	}
 
-	if (use.m_nlen == 0)
-		return remainer;
+	if (use.m_nlen == 0) {
+		/* over flow */
+		return r;
+	}
 
-	hibit2 = use.nbits();
+	if (m_nlen < use.m_nlen) {
+		/* remain */
+		return r;
+	}
 
-	do {
-		hibit1 = remainer.nbits();
+	pbuf = r.m_pbuf;
+	hibit2 = y.nbits();
+	nsh = (hibit2 % NBITSTORE);
+	if (nsh > 0) {
+		r <<= (NBITSTORE - nsh);
+		y <<= (NBITSTORE - nsh);
+	}
 
-		if (hibit1 >= hibit2)
-			remainer.decrease(use, hibit1 - hibit2);
+	i = r.m_nlen;
+	j = r.m_nlen - y.m_nlen;
+	ys = y.m_nlen;
+	y0 = y.digit(ys - 1);
 
-		while (remainer.sign() < 0 && hibit1 > hibit2)
-			remainer.increase(use, --hibit1 - hibit2);
+	large_digit t1, t2;
+	t1 = (y << (j * NBITSTORE));
+	if (r >= t1) {
+		assert(r.m_nlen < countof(m_mem));
+		pbuf[r.m_nlen++] = 1;
+		r -= t1;
+	}
 
-	} while (hibit1 > hibit2);
+	t2.increase(ys * NBITSTORE);
+	y = t2 - y;
 
-	if (remainer.sign() < 0)
-		remainer.increase(use, 0);
+	while (y.m_nlen < ys)
+		y.m_pbuf[y.m_nlen++] = 0;
 
-	return remainer;
+	while (j-- > 0) {
+		uint64_t qd = ~store_t(0);
+		assert(i > 0);
+		assert(i <= countof(m_mem));
+		if (pbuf[--i] != y0) {
+			qd = (U64(pbuf[i]) << NBITSTORE);
+			qd = qd + (i > 0? pbuf[i - 1]: 0);
+			qd = (qd / y0);
+		}
+
+		pbuf[i] += y.am(store_t(qd), pbuf, j, ys);
+		while (pbuf[i] < qd) {
+			assert(r.m_pbuf);
+			r.decrease(y, j * NBITSTORE);
+			assert(r.m_pbuf);
+			qd--;
+		}
+	}
+
+	r.m_nlen = ys;
+	if (nsh != 0) {
+		/* recover back */
+		r >>= (NBITSTORE - nsh);
+	}
+
+	r.m_nlen = len_strip(r.m_pbuf, r.m_nlen);
+	return r;
 }
 
 large_digit large_digit::operator << (long shift) const
@@ -560,7 +642,7 @@ large_digit &large_digit::operator <<= (long shift)
 	store_t bitvalues;
 
 	if (shift >=  muchbit(m_mem)) {
-		fprintf(stderr, "over flow\n");
+		fprintf(stderr, "over flow: %d\n", shift);
 		m_nlen = 0;
 		return *this;
 	}
@@ -600,8 +682,11 @@ void large_digit::read_digit(const char *inp)
 
 	while (*inp) {
 		if (isdigit(*inp)) {
-			ld *= 10;
+			ld <<= 4;
 			ld += (*inp - '0');
+		} else if (isxdigit(*inp)) {
+			ld <<= 4;
+			ld += (tolower(*inp) - 'a' + 10);
 		}
 		inp ++;
 	}
@@ -647,6 +732,11 @@ void large_digit::increase(const large_digit &ld, long shift)
 	if (nlen > countof(m_mem)) {
 		//printf("warn: %d\n", nlen);
 		nlen = countof(m_mem);
+	}
+
+	if (cntval > m_nlen) {
+		assert(cntval < countof(m_mem));
+		memset(m_pbuf + m_nlen, 0, (cntval - m_nlen) * sizeof(store_t));
 	}
 
 	for (i = cntval; i < nlen; i++) {
@@ -711,13 +801,18 @@ void large_digit::increase(long shift)
 	bitval = shift % muchbit(store_t);
 	cntval = shift / muchbit(store_t);
 
-	nlen = IMAX(m_nlen, cntval + (bitval > 0));
+	nlen = IMAX(m_nlen, cntval + 1);
 
 	keep = (1ul << bitval);
 	if (nlen > countof(m_mem))
 		nlen = countof(m_mem);
 
 	carry = 0;
+	if (cntval > m_nlen) {
+		assert(cntval < countof(m_mem));
+		memset(m_pbuf + m_nlen, 0, (cntval - m_nlen) * sizeof(store_t));
+	}
+
 	for (i = cntval; i < nlen; i++) {
 		sum = carry + digit(i);
 		carry = (sum < carry);
@@ -783,6 +878,11 @@ void large_digit::decrease(const large_digit &ld, long shift)
 	if (nlen > countof(m_mem)) {
 		//printf("warn: %d\n", nlen);
 		nlen = countof(m_mem);
+	}
+
+	if (cntval > m_nlen) {
+		assert(cntval < countof(m_mem));
+		memset(m_pbuf + m_nlen, 0, (cntval - m_nlen) * sizeof(store_t));
 	}
 
 	for (i = cntval; i < nlen; i++) {
@@ -854,6 +954,11 @@ void large_digit::decrease(long shift)
 	keep = (1ul << bitval);
 
 	carry = 1;
+	if (cntval > m_nlen) {
+		assert(cntval < countof(m_mem));
+		memset(m_pbuf + m_nlen, 0, (cntval - m_nlen) * sizeof(store_t));
+	}
+
 	for (i = cntval; i < nlen; i++) {
 		sum = carry + digit(i);
 		carry = (sum < carry);
