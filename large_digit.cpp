@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <assert.h>
 
+#include <stdint.h>
 #include "large_digit.h"
 
 #define muchbit(typ) (sizeof(typ) << 3)

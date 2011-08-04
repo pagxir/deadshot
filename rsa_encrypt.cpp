@@ -3,8 +3,19 @@
 #include <stdlib.h>
 #include <assert.h>
 
+#include <stdint.h>
 #include "large_digit.h"
-#define RSA_NBIT  512
+
+#define RSA_NBIT  768
+
+
+#define DWORD uint32_t
+DWORD GetTickCount(void)
+{ 
+	struct timespec ts1;
+	clock_gettime(CLOCK_MONOTONIC, &ts1);
+	return ts1.tv_sec * 1000 + ts1.tv_nsec / 1000000;
+}
 
 typedef unsigned long _uint32;
 
@@ -120,7 +131,7 @@ static bool rabin(const large_digit &ld)
 	while (m.bit(r++));
 	m >>= (--r);
 
-	for (k = 0; k < 3; k++) {
+	for (k = 0; k < 5; k++) {
 		rand_product(a);
 		a %= (ld - 2);
 		a += 2;
@@ -140,7 +151,7 @@ static bool rabin(const large_digit &ld)
 		}
 	}
 
-#if 0
+#if 1
 	for (i = 0; i < 200; i++) {
 		if (ld <= aprime[i]) {
 			break;
@@ -160,12 +171,16 @@ failure:
 
 static void prime_product(large_digit &prime)
 {
-	rand_product(prime);
+	prime.salt(RSA_NBIT / 2);
 	prime &= RSA_MASK;
 	prime |= RSA_GOOD;
 
 	while (!rabin(prime)) {
-		rand_product(prime);
+#if 0
+		char buf[1024];
+		printf("failure, retry: %s!\n", prime.write_digit(buf, 100));
+#endif
+		prime.salt(RSA_NBIT / 2);
 		prime &= RSA_MASK;
 		prime |= RSA_GOOD;
 	}
@@ -214,7 +229,17 @@ int  main(void)
 	large_digit p, q, psi;
 
 	srand(time(NULL));
+	
+#if 0
+	large_digit d1, d2;
+	d1.read_digit("48702C12C0FC3EC2456769127A09C444");
+	d2.read_digit("BC72B98A8FE6392F");
 
+	d1 % d2;
+	return 0;
+#endif
+
+	DWORD keygen_start = GetTickCount();
 	prime_product(p);
 	prime_product(q);
 	while (p == q) {
@@ -237,6 +262,8 @@ int  main(void)
 
 	d = edura(e, psi);
 	print_rsa_key(e, d, n);
+	DWORD keygen_finish = GetTickCount();
+	printf("time use: %d\n", keygen_finish - keygen_start);
 	getchar();
 
 	i = n;
@@ -253,8 +280,11 @@ int  main(void)
 			m |= 1;
 			m %= n;
 
+			DWORD crypt0 = GetTickCount();
 			v = expr_mod(m, e, n);
+			DWORD crypt1 = GetTickCount();
 			u = expr_mod(v, d, n);
+			DWORD crypt2 = GetTickCount();
 			if (m != u) {
 				char mbuf[1024], ubuf[1024], vbuf[1024];
 				m.write_digit(mbuf, sizeof(mbuf));
@@ -264,7 +294,7 @@ int  main(void)
 				assert(0);
 			}
 
-			printf("i = %d, j = %d\n", ij, jj);
+			printf("i = %d, j = %d et = %d, dt = %d\n", ij, jj, crypt1 - crypt0, crypt2 - crypt1);
 			t >>= 1;
 			jj++;
 		}

@@ -18,14 +18,14 @@
 #define RESTORE(store)     ((store) << NBITHALF)
 #define LOSTORE(store)     ((store) & HALFMASK)
 
-typedef unsigned long store_t;
+typedef unsigned int store_t;
 
 class large_digit
 {
 	private:
 		int m_nlen;
 		int m_flag;
-		store_t m_mem[128 + 1];
+		store_t m_mem[256 + 1];
 		store_t *m_pbuf;
 
 	public:
