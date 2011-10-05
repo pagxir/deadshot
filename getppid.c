@@ -47,7 +47,7 @@ int main(int argc, char *argv[])
 
 	sscanf(argv[1], "%lu", &pid);
 	*(void **)&NtQueryInformationProcess = (void *)GetProcAddress(
-		   	GetModuleHandle("ntdll.dll"), "NtQueryInformationProcess");
+			GetModuleHandle("ntdll.dll"), "NtQueryInformationProcess");
 	if (NtQueryInformationProcess)
 		printf("Parent PID for %lu is %lu\n", pid, getppid(pid));
 

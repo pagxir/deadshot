@@ -34,19 +34,19 @@ LPFN_ACCEPTEX GetAcceptExAddress(int fd1)
 
 #ifndef WSAID_TRANSMITFILE
 #define WSAID_TRANSMITFILE \
-	{0xb5367df0,0xcbac,0x11cf,{0x95,0xca,0x00,0x80,0x5f,0x48,0xa1,0x92}}
+{0xb5367df0,0xcbac,0x11cf,{0x95,0xca,0x00,0x80,0x5f,0x48,0xa1,0x92}}
 #endif
 
 #ifndef WSAID_ACCEPTEX
 #define WSAID_ACCEPTEX \
-	{0xb5367df1,0xcbac,0x11cf,{0x95,0xca,0x00,0x80,0x5f,0x48,0xa1,0x92}}
+{0xb5367df1,0xcbac,0x11cf,{0x95,0xca,0x00,0x80,0x5f,0x48,0xa1,0x92}}
 typedef BOOL (PASCAL *LPFN_ACCEPTEX)(SOCKET, SOCKET, PVOID, DWORD, 
 		DWORD, DWORD, LPDWORD, LPOVERLAPPED);
 #endif
 
 #ifndef WSAID_CONNECTEX
 #define WSAID_CONNECTEX \
-	{0x25a207b9,0xddf3,0x4660,{0x8e,0xe9,0x76,0xe5,0x8c,0x74,0x06,0x3e}}
+{0x25a207b9,0xddf3,0x4660,{0x8e,0xe9,0x76,0xe5,0x8c,0x74,0x06,0x3e}}
 typedef BOOL (PASCAL *LPFN_CONNECTEX)(SOCKET, const struct sockaddr *,
 		int, PVOID, DWORD, LPDWORD, LPOVERLAPPED);
 #endif
@@ -298,17 +298,17 @@ int xio_call(struct xiocb * cb)
 
 void cache_append(struct xiocb * cb, size_t iosize)
 {
-   	WSABUF wsabufs[2];
-   	size_t len = iosize;
-   	size_t off = (cb->xio_off + cb->xio_len) % cb->xio_size;
+	WSABUF wsabufs[2];
+	size_t len = iosize;
+	size_t off = (cb->xio_off + cb->xio_len) % cb->xio_size;
 
 	if (cb->xio_logfile != NULL) {
-	   	iovec_fill(wsabufs, cb->xio_buf, cb->xio_size, len, off);
+		iovec_fill(wsabufs, cb->xio_buf, cb->xio_size, len, off);
 
 		for (int i = 0; i < 2; i++) {
-		   	if (wsabufs[0].len == 0)
+			if (wsabufs[0].len == 0)
 				continue;
-		   	fwrite(wsabufs[i].buf, wsabufs[i].len, 1, cb->xio_logfile);
+			fwrite(wsabufs[i].buf, wsabufs[i].len, 1, cb->xio_logfile);
 		}
 	}
 }
@@ -405,7 +405,7 @@ int proxy_notify(struct xiocb * cbp)
 
 int proxy_xioing(struct proxycb *cb)
 {
-   	char buf[1024];
+	char buf[1024];
 
 	if (cb->log_file == NULL) {
 #if 0
@@ -414,7 +414,7 @@ int proxy_xioing(struct proxycb *cb)
 #endif
 	}
 
-   	if (cb->log_file != NULL) {
+	if (cb->log_file != NULL) {
 		int error;
 		time_t now;
 		struct sockaddr_in addr_in1 = {0};
@@ -425,11 +425,11 @@ int proxy_xioing(struct proxycb *cb)
 
 		error = getpeername(cb->fd_dst, (struct sockaddr*)&addr_in1, &addr_len);
 		fprintf(cb->log_file, "server: %s:%d\r\n",
-			   	inet_ntoa(addr_in1.sin_addr), htons(addr_in1.sin_port));
+				inet_ntoa(addr_in1.sin_addr), htons(addr_in1.sin_port));
 
 		error = getpeername(cb->fd_src, (struct sockaddr*)&addr_in1, &addr_len);
 		fprintf(cb->log_file, "client: %s\r\n\r\n",
-			   	inet_ntoa(addr_in1.sin_addr), htons(addr_in1.sin_port));
+				inet_ntoa(addr_in1.sin_addr), htons(addr_in1.sin_port));
 	}
 
 	cb->xy_d2s.xio_buf = cb->xy_snd_buf;
@@ -478,6 +478,10 @@ int proxy_udpass(HANDLE hPort, in_addr & addr1, u_short & port1, struct proxycb 
 	struct sockaddr_in addr_in1;
 	int fd1 = socket(AF_INET, SOCK_DGRAM, 0);
 	NASSERT (fd1 != -1);
+
+	int rcvbufsiz = 8192;
+	setsockopt(fd1, SOL_SOCKET, SO_RCVBUF, &rcvbufsiz, sizeof(rcvbufsiz));
+
 	memset(&addr_in1, 0, sizeof(addr_in1));
 	addr_in1.sin_family = AF_INET;
 	addr_in1.sin_port   = 0;
@@ -569,9 +573,9 @@ void udp_readed(struct XIOCBCTX * ctx, size_t iosize, BOOL success, HANDLE handl
 		const u_char * rcvbuf = (const u_char *)cb->xy_snd_buf;
 		printf("udp: %s:%d\n", inet_ntoa(from.sin_addr), ntohs(from.sin_port));
 		printf("udp ddd: %s:%d\n", inet_ntoa(cb->xy_addr), ntohs(cb->xy_port));
-	   	if (success && (from.sin_addr.s_addr == cb->xy_addr.s_addr) &&
-			   	(from.sin_port == cb->xy_port)) {
-		   	if (iosize < 4 || rcvbuf[0] != 0 || rcvbuf[1] != 0) {
+		if (success && (from.sin_addr.s_addr == cb->xy_addr.s_addr) &&
+				(from.sin_port == cb->xy_port)) {
+			if (iosize < 4 || rcvbuf[0] != 0 || rcvbuf[1] != 0) {
 				printf("bad packet %d %d %d %d\n", __LINE__, iosize, rcvbuf[0], rcvbuf[1]);
 				goto skip_check;
 			}
@@ -611,18 +615,18 @@ void udp_readed(struct XIOCBCTX * ctx, size_t iosize, BOOL success, HANDLE handl
 				default:
 					goto skip_check;
 			}
-		   	to.sin_family = AF_INET;
+			to.sin_family = AF_INET;
 			size_t datalen = &cb->xy_snd_buf[iosize] - (char *)rcvbuf;
 			printf("send out: %d\n", datalen);
 			sendto(cb->fd_dst, (const char *)rcvbuf, datalen, 0,
-				   	(struct sockaddr *)&to, sizeof(to));
+					(struct sockaddr *)&to, sizeof(to));
 			data_sended = 1;
-	   	}
+		}
 	} while ( 0 );
 
 skip_check:
 	if (data_sended == 0 && iosize + 10 <= sizeof(cb->xy_snd_buf)) {
-	   	struct sockaddr_in to;
+		struct sockaddr_in to;
 		memmove(&cb->xy_snd_buf[10], cb->xy_snd_buf, iosize);
 		to.sin_family = AF_INET;
 		to.sin_port   = cb->xy_port;
@@ -631,7 +635,7 @@ skip_check:
 		cb->xy_snd_buf[3] = 0x01;
 		memcpy(&cb->xy_snd_buf[4], &from.sin_addr, sizeof(from.sin_addr));
 		memcpy(&cb->xy_snd_buf[8], &from.sin_port, sizeof(from.sin_port));
-	   	printf("send in: %d\n", iosize + 10);
+		printf("send in: %d\n", iosize + 10);
 		sendto(cb->fd_dst, cb->xy_snd_buf, iosize + 10, 0,
 				(struct sockaddr *)&to, sizeof(to));
 	}
@@ -646,7 +650,7 @@ skip_check:
 		wsabufs[0].buf = cb->xy_snd_buf;
 		cb->xy_rcv_flags = 0;
 		cb->xy_addr_len  = sizeof(cb->xy_rcv_addr);
-		
+
 		int error = WSARecvFrom(cb->fd_dst, wsabufs, 1, NULL, &cb->xy_rcv_flags,
 				(struct sockaddr* )&cb->xy_rcv_addr, &cb->xy_addr_len, &cb->xy_write.xc_over, NULL);
 
@@ -660,16 +664,16 @@ skip_check:
 	xyf_flags  = XYF_WRITING | XYF_READING | XYF_XIOING;
 	if ((cb->xy_flags & xyf_flags) == 0) {
 		if ((cb->xy_flags & XYF_CLOSE) == 0) {
-		   	closesocket(cb->fd_src);
-		   	if (cb->xy_flags & XYF_CONNECTING)
-			   	closesocket(cb->fd_dst);
+			closesocket(cb->fd_src);
+			if (cb->xy_flags & XYF_CONNECTING)
+				closesocket(cb->fd_dst);
 			cb->xy_flags |= XYF_CLOSE;
 		}
 		if ((cb->xy_flags & XYF_UDPREADING) == 0) {
-		   	rate_cacl(0, -1, 0);
-		   	if (cb->log_file)
-			   	fclose(cb->log_file);
-		   	delete cb;
+			rate_cacl(0, -1, 0);
+			if (cb->log_file)
+				fclose(cb->log_file);
+			delete cb;
 		}
 	}
 }
@@ -849,7 +853,7 @@ int proxy_session(struct proxycb * cb, HANDLE handle)
 
 	xyf_flags = XYF_EOF | XYF_RESULTED | XYF_WRITING | XYF_UDP | XYF_ERROR | XYF_UDPREADING;
 	if (cb->xy_snd_len == 0 &&
-		   	(cb->xy_flags & xyf_flags) == (XYF_RESULTED | XYF_UDP)) {
+			(cb->xy_flags & xyf_flags) == (XYF_RESULTED | XYF_UDP)) {
 		WSABUF wsabufs[1];
 		wsabufs[0].len = sizeof(cb->xy_snd_buf);
 		wsabufs[0].buf = cb->xy_snd_buf;
@@ -969,16 +973,16 @@ void proxy_post(struct XIOCBCTX * ctx, size_t iosize, BOOL success, HANDLE handl
 
 	if ((cb->xy_flags & test_flags) == 0) {
 		if ((cb->xy_flags & XYF_CLOSE) == 0) {
-		   	closesocket(cb->fd_src);
-		   	if (cb->xy_flags & XYF_CONNECTING)
-			   	closesocket(cb->fd_dst);
+			closesocket(cb->fd_src);
+			if (cb->xy_flags & XYF_CONNECTING)
+				closesocket(cb->fd_dst);
 			cb->xy_flags |= XYF_CLOSE;
 		}
 		if ((cb->xy_flags & XYF_UDPREADING) == 0) {
-		   	rate_cacl(0, -1, 0);
-		   	if (cb->log_file)
-			   	fclose(cb->log_file);
-		   	delete cb;
+			rate_cacl(0, -1, 0);
+			if (cb->log_file)
+				fclose(cb->log_file);
+			delete cb;
 		}
 	}
 	return ;

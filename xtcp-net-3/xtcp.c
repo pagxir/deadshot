@@ -171,6 +171,11 @@ int xreq_init(u_short port)
 	pthread_mutex_init(&stat.xs_mutex, NULL);
 
 	stat.xs_file = socket(AF_INET, SOCK_DGRAM, 0);
+	do {
+		int rcvbufsiz = 8192;
+		setsockopt(stat.xs_file, SOL_SOCKET, SO_RCVBUF, &rcvbufsiz, sizeof(rcvbufsiz));
+	} while ( 0 );
+
 	if_addr.sin_family = AF_INET;
 	if_addr.sin_port   = htons(port);
 	if_addr.sin_addr.s_addr = htonl(INADDR_ANY);

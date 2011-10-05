@@ -263,6 +263,11 @@ int main(int argc, char * argv[])
 	sockfd = socket(AF_INET, SOCK_DGRAM, 0);
 	assert(sockfd != -1);
 
+	do {
+		int rcvbufsiz = 8192;
+		setsockopt(stat.xs_file, SOL_SOCKET, SO_RCVBUF, &rcvbufsiz, sizeof(rcvbufsiz));
+	} while ( 0 );
+
 	in_addr1.sin_family = AF_INET;
 	in_addr1.sin_port   = htons(53);
 	in_addr1.sin_addr.s_addr = htonl(INADDR_ANY);

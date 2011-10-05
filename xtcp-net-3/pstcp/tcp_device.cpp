@@ -44,9 +44,9 @@ void tcp_devbusy(struct tcpcb * tp)
 		tp->t_flags |= TF_DEVBUSY;
 		if (_tcp_dev_busy == 0) {
 			reset_event(&_dev_idle, _file, EV_WRITE);
-		   	_tcp_dev_busy = 1;
+			_tcp_dev_busy = 1;
 		}
-	   	return;
+		return;
 	}
 }
 
@@ -86,6 +86,11 @@ static void module_init(void)
 	_file = socket(AF_INET, SOCK_DGRAM, 0);
 	assert(_file != -1);
 
+	do {
+		int rcvbufsiz = 8192;
+		setsockopt(stat.xs_file, SOL_SOCKET, SO_RCVBUF, &rcvbufsiz, sizeof(rcvbufsiz));
+	} while ( 0 );
+
 	error = bind(_file, (struct sockaddr *)&_addr_in, sizeof(_addr_in));
 	assert(error == 0);
 
@@ -106,7 +111,7 @@ static void listen_statecb(void * context)
 			addr_len = sizeof(addr_in);
 			getsockname(_file, (struct sockaddr *)&addr_in, &addr_len);
 			fprintf(stderr, "bind!address# %s:%u\n",
-				   	inet_ntoa(addr_in.sin_addr), htons(addr_in.sin_port));
+					inet_ntoa(addr_in.sin_addr), htons(addr_in.sin_port));
 			reset_event(&_event, _file, EV_READ);
 			break;
 
@@ -130,10 +135,10 @@ static void listen_callback(void * context)
 
 	if ( evt_completed(&_event) ) {
 		for ( ; ; ) {
-		   	addr_len = sizeof(addr_in);
-		   	len = recvfrom(_file, buf, sizeof(buf),
-				   	0, (struct sockaddr *)&addr_in, &addr_len);
-		   	if (len < 28)
+			addr_len = sizeof(addr_in);
+			len = recvfrom(_file, buf, sizeof(buf),
+					0, (struct sockaddr *)&addr_in, &addr_len);
+			if (len < 28)
 				break;
 			tcp_packet(_file, buf, len, &addr_in, addr_len);
 		}

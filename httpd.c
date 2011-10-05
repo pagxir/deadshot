@@ -312,6 +312,7 @@ resend:
 		hc->context = NULL;
 	}
 
+   	if (hc->flags & (TF_WRABLE| TF_RDABLE| TF_DELETE)); else hc->flags |= TF_DELETE;
    	assert(hc->flags & (TF_WRABLE| TF_RDABLE| TF_DELETE));
 	return;
 }

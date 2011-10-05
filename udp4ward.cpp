@@ -60,6 +60,12 @@ int udpio_add(u_long addr, u_short d_port, u_short s_port)
 	struct sockaddr_in addr_in1;
 	int s_udp = socket(PF_INET, SOCK_DGRAM, 0);
 	assert(s_udp != -1);
+
+	do {
+		int rcvbufsiz = 8192;
+		setsockopt(stat.xs_file, SOL_SOCKET, SO_RCVBUF, &rcvbufsiz, sizeof(rcvbufsiz));
+	} while ( 0 );
+
 	addr_in1.sin_family = AF_INET;
 	addr_in1.sin_port = htons(s_port);
 	addr_in1.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -126,8 +132,8 @@ int udpio_event(fd_set * readfds, fd_set * writefds, fd_set * errorfds)
 
 		if (iter->cc_count > 0) {
 			if (FD_ISSET(iter->cc_file, writefds)) {
-			   	error = sendto(iter->cc_file, iter->cc_packet, iter->cc_count,
-					   	0, (struct sockaddr *)&(iter->udpio_addr), sizeof(iter->udpio_addr));
+				error = sendto(iter->cc_file, iter->cc_packet, iter->cc_count,
+						0, (struct sockaddr *)&(iter->udpio_addr), sizeof(iter->udpio_addr));
 				if (error == -1) {
 					break;
 				}
@@ -137,27 +143,27 @@ int udpio_event(fd_set * readfds, fd_set * writefds, fd_set * errorfds)
 				read_continue = 1;
 			}
 		} 
-		
+
 		if (read_continue == 1 ||
 				(iter->cc_count == 0 && FD_ISSET(iter->udpio_fd, readfds))) {
-		   	for ( ; ; ) {
-			   	addr_len1 = sizeof(addr_in1);
-			   	len = recvfrom(iter->udpio_fd, buf, sizeof(buf), 0,
-					   	(struct sockaddr *)&addr_in1, &addr_len1);
-			   	if (len == -1) {
-				   	break;
-			   	}
-			   
+			for ( ; ; ) {
+				addr_len1 = sizeof(addr_in1);
+				len = recvfrom(iter->udpio_fd, buf, sizeof(buf), 0,
+						(struct sockaddr *)&addr_in1, &addr_len1);
+				if (len == -1) {
+					break;
+				}
+
 				fd = udpio_realloc(addr_in1);
-			   	error = sendto(fd, buf, len, 0, 
+				error = sendto(fd, buf, len, 0, 
 						(struct sockaddr *)&(iter->udpio_addr), sizeof(iter->udpio_addr));
-			   	if (error == -1) {
-				   	memcpy((char *)iter->cc_packet, buf, len);
-				   	*(int*)&iter->cc_count = len;
-				   	*(int*)&iter->cc_file = fd;
-				   	break;
-			   	}
-		   	}
+				if (error == -1) {
+					memcpy((char *)iter->cc_packet, buf, len);
+					*(int*)&iter->cc_count = len;
+					*(int*)&iter->cc_file = fd;
+					break;
+				}
+			}
 		}
 
 		++iter;
