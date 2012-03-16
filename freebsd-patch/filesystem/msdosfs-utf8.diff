@@ -1,15 +1,17 @@
-diff -rdup msdosfs-keep/msdosfs_conv.c msdosfs/msdosfs_conv.c
---- msdosfs-keep/msdosfs_conv.c	2009-10-25 01:10:29.000000000 +0000
-+++ msdosfs/msdosfs_conv.c	2010-04-05 16:54:46.000000000 +0000
-@@ -63,7 +63,7 @@ extern struct iconv_functions *msdosfs_i
- static int mbsadjpos(const char **, size_t, size_t, int, int, void *handle);
- static u_int16_t dos2unixchr(const u_char **, size_t *, int, struct msdosfsmount *);
- static u_int16_t unix2doschr(const u_char **, size_t *, struct msdosfsmount *);
--static u_int16_t win2unixchr(u_int16_t, struct msdosfsmount *);
-+static u_int32_t win2unixchr(u_int16_t, struct msdosfsmount *);
- static u_int16_t unix2winchr(const u_char **, size_t *, int, struct msdosfsmount *);
- 
- /*
+From b188a8a38ceb033d6c419c01f879dc4b36082572 Mon Sep 17 00:00:00 2001
+From: pagxir <pagxir@gmail.com>
+Date: Sat, 10 Mar 2012 15:13:17 +0000
+Subject: [PATCH 1/2] add utf-8 supported
+
+---
+ msdosfs_conv.c   |  132 +++++++++++++++++++++++++++++++++++++++++++++++++++---
+ msdosfs_vfsops.c |   12 ++++-
+ 2 files changed, 136 insertions(+), 8 deletions(-)
+
+diff --git a/msdosfs_conv.c b/msdosfs_conv.c
+index 0c801bf..ce36b82 100644
+--- a/msdosfs_conv.c
++++ b/msdosfs_conv.c
 @@ -221,6 +221,111 @@ l2u[256] = {
  	0xf8, 0xf9, 0xfa, 0xfb, 0xfc, 0xfd, 0xfe, 0xff, /* f8-ff */
  };
@@ -122,45 +124,7 @@ diff -rdup msdosfs-keep/msdosfs_conv.c msdosfs/msdosfs_conv.c
  /*
   * DOS filenames are made of 2 parts, the name part and the extension part.
   * The name part is 8 characters long and the extension part is 3
-@@ -653,8 +758,8 @@ win2unixfn(nbp, wep, chksum, pmp)
- 	struct msdosfsmount *pmp;
- {
- 	u_int8_t *cp;
--	u_int8_t *np, name[WIN_CHARS * 2 + 1];
--	u_int16_t code;
-+	u_int8_t *np, name[WIN_CHARS * 3 + 1];
-+	u_int32_t code;
- 	int i;
- 
- 	if ((wep->weCnt&WIN_CNT) > howmany(WIN_MAXLEN, WIN_CHARS)
-@@ -687,6 +792,8 @@ win2unixfn(nbp, wep, chksum, pmp)
- 			return -1;
- 		default:
- 			code = win2unixchr(code, pmp);
-+			if (code & 0xff0000)
-+				*np++ = code >> 16;
- 			if (code & 0xff00)
- 				*np++ = code >> 8;
- 			*np++ = code;
-@@ -706,6 +813,8 @@ win2unixfn(nbp, wep, chksum, pmp)
- 			return -1;
- 		default:
- 			code = win2unixchr(code, pmp);
-+			if (code & 0xff0000)
-+				*np++ = code >> 16;
- 			if (code & 0xff00)
- 				*np++ = code >> 8;
- 			*np++ = code;
-@@ -725,6 +834,8 @@ win2unixfn(nbp, wep, chksum, pmp)
- 			return -1;
- 		default:
- 			code = win2unixchr(code, pmp);
-+			if (code & 0xff0000)
-+				*np++ = code >> 16;
- 			if (code & 0xff00)
- 				*np++ = code >> 8;
- 			*np++ = code;
-@@ -777,7 +888,10 @@ winSlotCnt(un, unlen, pmp)
+@@ -762,7 +867,10 @@ winSlotCnt(un, unlen, pmp)
  	if (pmp->pm_flags & MSDOSFSMNT_KICONV && msdosfs_iconv) {
  		wlen = WIN_MAXLEN * 2;
  		wnp = wn;
@@ -172,7 +136,7 @@ diff -rdup msdosfs-keep/msdosfs_conv.c msdosfs/msdosfs_conv.c
  		if (unlen > 0)
  			return 0;
  		return howmany(WIN_MAXLEN - wlen/2, WIN_CHARS);
-@@ -815,7 +929,10 @@ mbsadjpos(const char **instr, size_t inl
+@@ -800,7 +908,10 @@ mbsadjpos(const char **instr, size_t inlen, size_t outlen, int weight, int flag,
  	if (flag & MSDOSFSMNT_KICONV && msdosfs_iconv) {
  		outp = outstr;
  		outlen *= weight;
@@ -184,7 +148,7 @@ diff -rdup msdosfs-keep/msdosfs_conv.c msdosfs/msdosfs_conv.c
  		return (inlen);
  	}
  
-@@ -887,8 +1004,11 @@ unix2doschr(const u_char **instr, size_t
+@@ -870,8 +981,11 @@ unix2doschr(const u_char **instr, size_t *ilen, struct msdosfsmount *pmp)
  		ucslen = 2;
  		len = *ilen;
  		up = unicode;
@@ -198,51 +162,21 @@ diff -rdup msdosfs-keep/msdosfs_conv.c msdosfs/msdosfs_conv.c
  		unixlen = len - *ilen;
  
  		/*
-@@ -949,10 +1069,10 @@ unix2doschr(const u_char **instr, size_t
- /*
-  * Convert Windows char to Local char
-  */
--static u_int16_t
-+static u_int32_t
- win2unixchr(u_int16_t wc, struct msdosfsmount *pmp)
- {
--	u_char *inp, *outp, inbuf[3], outbuf[3];
-+	u_char *inp, *outp, inbuf[3], outbuf[4];
- 	size_t ilen, olen, len;
- 
- 	if (wc == 0)
-@@ -964,10 +1084,14 @@ win2unixchr(u_int16_t wc, struct msdosfs
- 		inbuf[2] = '\0';
- 
- 		ilen = olen = len = 2;
-+		len = olen = 4;
+@@ -947,8 +1061,12 @@ win2unixchr(u_char *outbuf, u_int16_t wc, struct msdosfsmount *pmp)
+ 		ilen = 2;
+ 		olen = len = 4;
  		inp = inbuf;
- 		outp = outbuf;
 -		msdosfs_iconv->convchr(pmp->pm_w2u, (const char **)&inp, &ilen,
--				     (char **)&outp, &olen);
 +		if (pmp->pm_w2u != NULL)
 +			msdosfs_iconv->convchr(pmp->pm_w2u, (const char **)&inp, &ilen,
-+					(char **)&outp, &olen);
+ 				     (char **)&outp, &olen);
 +		else
-+			iconv_w2u((const char**)&inp, &ilen, (char**)&outp, &olen);
++			iconv_w2u((const char **)&inp, &ilen, (char **)&outp, &olen);
++
  		len -= olen;
  
  		/*
-@@ -978,10 +1102,10 @@ win2unixchr(u_int16_t wc, struct msdosfs
- 			return (wc);
- 		}
- 
--		wc = 0;
-+		u_int32_t wc32 = 0;
- 		while(len--)
--			wc |= (*(outp - len - 1) & 0xff) << (len << 3);
--		return (wc);
-+			wc32 |= (*(outp - len - 1) & 0xff) << (len << 3);
-+		return (wc32);
- 	}
- 
- 	if (wc & 0xff00)
-@@ -1006,7 +1130,9 @@ unix2winchr(const u_char **instr, size_t
+@@ -981,7 +1099,9 @@ unix2winchr(const u_char **instr, size_t *ilen, int lower, struct msdosfsmount *
  	if (pmp->pm_flags & MSDOSFSMNT_KICONV && msdosfs_iconv) {
  		outp = outbuf;
  		olen = 2;
@@ -253,10 +187,11 @@ diff -rdup msdosfs-keep/msdosfs_conv.c msdosfs/msdosfs_conv.c
  			msdosfs_iconv->convchr_case(pmp->pm_u2w, (const char **)instr,
  						  ilen, (char **)&outp, &olen,
  						  KICONV_FROM_LOWER);
-diff -rdup msdosfs-keep/msdosfs_vfsops.c msdosfs/msdosfs_vfsops.c
---- msdosfs-keep/msdosfs_vfsops.c	2009-10-25 01:10:29.000000000 +0000
-+++ msdosfs/msdosfs_vfsops.c	2010-04-05 16:56:22.000000000 +0000
-@@ -132,8 +132,16 @@ update_mp(struct mount *mp, struct threa
+diff --git a/msdosfs_vfsops.c b/msdosfs_vfsops.c
+index bde7cd2..d83e98f 100644
+--- a/msdosfs_vfsops.c
++++ b/msdosfs_vfsops.c
+@@ -134,8 +134,16 @@ update_mp(struct mount *mp, struct thread *td)
  				error = vfs_getopt(mp->mnt_optnew,
  				    "cs_dos", &dos, NULL);
  			if (!error) {
@@ -275,3 +210,6 @@ diff -rdup msdosfs-keep/msdosfs_vfsops.c msdosfs/msdosfs_vfsops.c
  				msdosfs_iconv->open(dos, local, &pmp->pm_u2d);
  				msdosfs_iconv->open(local, dos, &pmp->pm_d2u);
  			}
+-- 
+1.7.8
+

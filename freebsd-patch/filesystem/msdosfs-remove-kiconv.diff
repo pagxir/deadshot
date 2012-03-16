@@ -1,16 +1,26 @@
-diff -rdup msdosfs-utf8/msdosfs_conv.c msdosfs/msdosfs_conv.c
---- msdosfs-utf8/msdosfs_conv.c	2010-04-05 17:58:23.000000000 +0000
-+++ msdosfs/msdosfs_conv.c	2010-04-05 17:57:39.000000000 +0000
-@@ -58,8 +58,6 @@
+From fbd55413798c74c2c9868a51af6f2c1606bdf2eb Mon Sep 17 00:00:00 2001
+From: pagxir <pagxir@gmail.com>
+Date: Sat, 10 Mar 2012 15:39:34 +0000
+Subject: [PATCH 2/2] remove kiconv
+
+---
+ msdosfs_conv.c   |  195 +++++++++++++++++++++++++++++++++++++++++++++++++++--
+ msdosfs_vfsops.c |   10 +++
+ 2 files changed, 197 insertions(+), 8 deletions(-)
+
+diff --git a/msdosfs_conv.c b/msdosfs_conv.c
+index ce36b82..339426e 100644
+--- a/msdosfs_conv.c
++++ b/msdosfs_conv.c
+@@ -58,7 +58,6 @@
  #include <fs/msdosfs/direntry.h>
  #include <fs/msdosfs/msdosfsmount.h>
  
 -extern struct iconv_functions *msdosfs_iconv;
--
+ 
  static int mbsadjpos(const char **, size_t, size_t, int, int, void *handle);
- static u_int16_t dos2unixchr(const u_char **, size_t *, int, struct msdosfsmount *);
- static u_int16_t unix2doschr(const u_char **, size_t *, struct msdosfsmount *);
-@@ -110,6 +108,7 @@ unix2dos[256] = {
+ static u_char * dos2unixchr(u_char *, const u_char **, size_t *, int, struct msdosfsmount *);
+@@ -110,6 +109,7 @@ unix2dos[256] = {
  	0x9d, 0xeb, 0xe9, 0xea, 0x9a, 0xed, 0xe8, 0x98,	/* f8-ff */
  };
  
@@ -18,7 +28,7 @@ diff -rdup msdosfs-utf8/msdosfs_conv.c msdosfs/msdosfs_conv.c
  static u_char
  dos2unix[256] = {
  /* cp850 -> iso8859-1 */
-@@ -146,6 +145,7 @@ dos2unix[256] = {
+@@ -146,6 +146,7 @@ dos2unix[256] = {
  	0xad, 0xb1, 0x3f, 0xbe, 0xb6, 0xa7, 0xf7, 0xb8,	/* f0-f7 */
  	0xb0, 0xa8, 0xb7, 0xb9, 0xb3, 0xb2, 0x3f, 0x3f,	/* f8-ff */
  };
@@ -26,7 +36,7 @@ diff -rdup msdosfs-utf8/msdosfs_conv.c msdosfs/msdosfs_conv.c
  
  static u_char
  u2l[256] = {
-@@ -184,6 +184,7 @@ u2l[256] = {
+@@ -184,6 +185,7 @@ u2l[256] = {
  	0xf8, 0xf9, 0xfa, 0xfb, 0xfc, 0xfd, 0xfe, 0xff, /* f8-ff */
  };
  
@@ -34,7 +44,7 @@ diff -rdup msdosfs-utf8/msdosfs_conv.c msdosfs/msdosfs_conv.c
  static u_char
  l2u[256] = {
  /* toupper */
-@@ -220,6 +221,73 @@ l2u[256] = {
+@@ -220,6 +222,73 @@ l2u[256] = {
  	0xf0, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, /* f0-f7 */
  	0xf8, 0xf9, 0xfa, 0xfb, 0xfc, 0xfd, 0xfe, 0xff, /* f8-ff */
  };
@@ -108,7 +118,7 @@ diff -rdup msdosfs-utf8/msdosfs_conv.c msdosfs/msdosfs_conv.c
  
  static int
  iconv_u2w(const char **inbuf, size_t *inbytes,
-@@ -602,7 +670,7 @@ unix2dosfn(un, dn, unlen, gen, pmp)
+@@ -598,7 +667,7 @@ unix2dosfn(un, dn, unlen, gen, pmp)
  	 * Correct posision to where insert the generation number
  	 */
  	cp = dn;
@@ -117,7 +127,7 @@ diff -rdup msdosfs-utf8/msdosfs_conv.c msdosfs/msdosfs_conv.c
  
  	dn[i++] = '~';
  	while (wcp < gentext + sizeof(gentext))
-@@ -653,7 +721,7 @@ unix2winfn(un, unlen, wep, cnt, chksum, 
+@@ -649,7 +718,7 @@ unix2winfn(un, unlen, wep, cnt, chksum, pmp)
  	 * Cut *un for this slot
  	 */
  	unlen = mbsadjpos((const char **)&un, unlen, (cnt - 1) * WIN_CHARS, 2,
@@ -126,7 +136,7 @@ diff -rdup msdosfs-utf8/msdosfs_conv.c msdosfs/msdosfs_conv.c
  
  	/*
  	 * Initialize winentry to some useful default
-@@ -885,6 +953,7 @@ winSlotCnt(un, unlen, pmp)
+@@ -864,6 +933,7 @@ winSlotCnt(un, unlen, pmp)
  
  	unlen = winLenFixup(un, unlen);
  
@@ -134,7 +144,7 @@ diff -rdup msdosfs-utf8/msdosfs_conv.c msdosfs/msdosfs_conv.c
  	if (pmp->pm_flags & MSDOSFSMNT_KICONV && msdosfs_iconv) {
  		wlen = WIN_MAXLEN * 2;
  		wnp = wn;
-@@ -900,6 +969,13 @@ winSlotCnt(un, unlen, pmp)
+@@ -879,6 +949,13 @@ winSlotCnt(un, unlen, pmp)
  	if (unlen > WIN_MAXLEN)
  		return 0;
  	return howmany(unlen, WIN_CHARS);
@@ -148,7 +158,7 @@ diff -rdup msdosfs-utf8/msdosfs_conv.c msdosfs/msdosfs_conv.c
  }
  
  /*
-@@ -926,6 +1002,7 @@ mbsadjpos(const char **instr, size_t inl
+@@ -905,6 +982,7 @@ mbsadjpos(const char **instr, size_t inlen, size_t outlen, int weight, int flag,
  {
  	char *outp, outstr[outlen * weight + 1];
  
@@ -156,7 +166,7 @@ diff -rdup msdosfs-utf8/msdosfs_conv.c msdosfs/msdosfs_conv.c
  	if (flag & MSDOSFSMNT_KICONV && msdosfs_iconv) {
  		outp = outstr;
  		outlen *= weight;
-@@ -938,6 +1015,14 @@ mbsadjpos(const char **instr, size_t inl
+@@ -917,6 +995,14 @@ mbsadjpos(const char **instr, size_t inlen, size_t outlen, int weight, int flag,
  
  	(*instr) += min(inlen, outlen);
  	return (inlen - min(inlen, outlen));
@@ -171,60 +181,76 @@ diff -rdup msdosfs-utf8/msdosfs_conv.c msdosfs/msdosfs_conv.c
  }
  
  /*
-@@ -946,11 +1031,14 @@ mbsadjpos(const char **instr, size_t inl
- static u_int16_t
- dos2unixchr(const u_char **instr, size_t *ilen, int lower, struct msdosfsmount *pmp)
+@@ -925,10 +1011,11 @@ mbsadjpos(const char **instr, size_t inlen, size_t outlen, int weight, int flag,
+ static u_char *
+ dos2unixchr(u_char *outbuf, const u_char **instr, size_t *ilen, int lower, struct msdosfsmount *pmp)
  {
-+#if 0
- 	u_char c;
-+#endif
- 	char *outp, outbuf[3];
- 	u_int16_t wc;
+-	u_char c, *outp;
++	u_char *outp;
  	size_t len, olen;
  
+ 	outp = outbuf;
 +#if 0
  	if (pmp->pm_flags & MSDOSFSMNT_KICONV && msdosfs_iconv) {
- 		olen = len = 2;
- 		outp = outbuf;
-@@ -984,6 +1072,29 @@ dos2unixchr(const u_char **instr, size_t
- 	if (lower & (LCASE_BASE | LCASE_EXT))
- 		c = u2l[c];
- 	return ((u_int16_t)c);
+ 		olen = len = 4;
+ 
+@@ -961,6 +1048,28 @@ dos2unixchr(u_char *outbuf, const u_char **instr, size_t *ilen, int lower, struc
+ 	*outp = '\0';
+ 	outp = outbuf;
+ 	return (outp);
 +#endif
 +
 +	olen = len = 2;
 +	outp = outbuf;
 +	if (lower & (LCASE_BASE | LCASE_EXT))
-+		convchr_lower((const char **)instr, ilen, &outp, &olen);
++		convchr_lower((const char **)instr, ilen, (char **)&outp, &olen);
 +	else
-+		convchr_pass((const char **)instr, ilen, &outp, &olen);
++		convchr_pass((const char **)instr, ilen, (char **)&outp, &olen);
 +	len -= olen;
 +
 +	/*
 +	 * return '?' if failed to convert
 +	 */
 +	if (len == 0) {
-+		(*ilen) --;
-+		(*instr) ++;
-+		return '?';
++		(*ilen)--;
++		(*instr)++;
++		*outp++ = '?';
 +	}
 +
-+	wc = 0;
-+	while (len--)
-+		wc |= (*(outp - len -1) & 0xFF) << (len << 3);
-+	return wc;
++	*outp = '\0';
++	outp = outbuf;
++	return (outp);
  }
  
  /*
-@@ -997,6 +1108,7 @@ unix2doschr(const u_char **instr, size_t
+@@ -970,10 +1079,11 @@ static u_int16_t
+ unix2doschr(const u_char **instr, size_t *ilen, struct msdosfsmount *pmp)
+ {
+ 	u_char c;
+-	char *up, *outp, unicode[3], outbuf[3];
  	u_int16_t wc;
++	char *up, *outp, unicode[3], outbuf[3];
  	size_t len, ucslen, unixlen, olen;
  
 +#if 0
  	if (pmp->pm_flags & MSDOSFSMNT_KICONV && msdosfs_iconv) {
  		/*
  		 * to hide an invisible character, using a unicode filter
-@@ -1064,6 +1176,61 @@ unix2doschr(const u_char **instr, size_t
+@@ -1030,10 +1140,10 @@ unix2doschr(const u_char **instr, size_t *ilen, struct msdosfsmount *pmp)
+ 			return (1);
+ 		}
+ 
+-		wc = 0;
++		u_int32_t wc32 = 0;
+ 		while(len--)
+-			wc |= (*(outp - len - 1) & 0xff) << (len << 3);
+-		return (wc);
++			wc32 |= (*(outp - len - 1) & 0xff) << (len << 3);
++		return (wc32);
+ 	}
+ 
+ 	(*ilen)--;
+@@ -1041,6 +1151,61 @@ unix2doschr(const u_char **instr, size_t *ilen, struct msdosfsmount *pmp)
  	c = l2u[c];
  	c = unix2dos[c];
  	return ((u_int16_t)c);
@@ -286,45 +312,42 @@ diff -rdup msdosfs-utf8/msdosfs_conv.c msdosfs/msdosfs_conv.c
  }
  
  /*
-@@ -1078,7 +1245,9 @@ win2unixchr(u_int16_t wc, struct msdosfs
- 	if (wc == 0)
- 		return (0);
+@@ -1053,7 +1218,9 @@ win2unixchr(u_char *outbuf, u_int16_t wc, struct msdosfsmount *pmp)
+ 	size_t ilen, olen, len;
  
+ 	outp = outbuf;
 +#if 0
  	if (pmp->pm_flags & MSDOSFSMNT_KICONV && msdosfs_iconv) {
 +#endif
  		inbuf[0] = (u_char)(wc>>8);
  		inbuf[1] = (u_char)wc;
  		inbuf[2] = '\0';
-@@ -1087,10 +1256,12 @@ win2unixchr(u_int16_t wc, struct msdosfs
- 		len = olen = 4;
+@@ -1061,10 +1228,12 @@ win2unixchr(u_char *outbuf, u_int16_t wc, struct msdosfsmount *pmp)
+ 		ilen = 2;
+ 		olen = len = 4;
  		inp = inbuf;
- 		outp = outbuf;
 +#if 0
  		if (pmp->pm_w2u != NULL)
  			msdosfs_iconv->convchr(pmp->pm_w2u, (const char **)&inp, &ilen,
- 					(char **)&outp, &olen);
+ 				     (char **)&outp, &olen);
  		else
 +#endif
- 			iconv_w2u((const char**)&inp, &ilen, (char**)&outp, &olen);
+ 			iconv_w2u((const char **)&inp, &ilen, (char **)&outp, &olen);
+ 
  		len -= olen;
- 
-@@ -1106,12 +1277,14 @@ win2unixchr(u_int16_t wc, struct msdosfs
- 		while(len--)
- 			wc32 |= (*(outp - len - 1) & 0xff) << (len << 3);
- 		return (wc32);
+@@ -1074,9 +1243,11 @@ win2unixchr(u_char *outbuf, u_int16_t wc, struct msdosfsmount *pmp)
+ 		 */
+ 		if (len == 0)
+ 			*outp++ = '?';
 +#if 0
+ 	} else {
+ 		*outp++ = (wc & 0xff00) ? '?' : (u_char)(wc & 0xff);
  	}
- 
- 	if (wc & 0xff00)
- 		wc = '?';
- 
- 	return (wc);
 +#endif
- }
  
- /*
-@@ -1127,11 +1300,16 @@ unix2winchr(const u_char **instr, size_t
+ 	*outp = '\0';
+ 	outp = outbuf;
+@@ -1096,11 +1267,16 @@ unix2winchr(const u_char **instr, size_t *ilen, int lower, struct msdosfsmount *
  	if (*ilen == 0)
  		return (0);
  
@@ -341,7 +364,7 @@ diff -rdup msdosfs-utf8/msdosfs_conv.c msdosfs/msdosfs_conv.c
  		else if (lower & (LCASE_BASE | LCASE_EXT))
  			msdosfs_iconv->convchr_case(pmp->pm_u2w, (const char **)instr,
  						  ilen, (char **)&outp, &olen,
-@@ -1139,6 +1317,7 @@ unix2winchr(const u_char **instr, size_t
+@@ -1108,6 +1284,7 @@ unix2winchr(const u_char **instr, size_t *ilen, int lower, struct msdosfsmount *
  		else
  			msdosfs_iconv->convchr(pmp->pm_u2w, (const char **)instr,
  					     ilen, (char **)&outp, &olen);
@@ -349,7 +372,7 @@ diff -rdup msdosfs-utf8/msdosfs_conv.c msdosfs/msdosfs_conv.c
  
  		/*
  		 * return '0' if end of filename
-@@ -1149,6 +1328,7 @@ unix2winchr(const u_char **instr, size_t
+@@ -1118,6 +1295,7 @@ unix2winchr(const u_char **instr, size_t *ilen, int lower, struct msdosfsmount *
  		wc = (outbuf[0]<<8) | outbuf[1];
  
  		return (wc);
@@ -357,7 +380,7 @@ diff -rdup msdosfs-utf8/msdosfs_conv.c msdosfs/msdosfs_conv.c
  	}
  
  	(*ilen)--;
-@@ -1157,6 +1337,7 @@ unix2winchr(const u_char **instr, size_t
+@@ -1126,6 +1304,7 @@ unix2winchr(const u_char **instr, size_t *ilen, int lower, struct msdosfsmount *
  		wc = u2l[wc];
  	(*instr)++;
  	return (wc);
@@ -365,10 +388,11 @@ diff -rdup msdosfs-utf8/msdosfs_conv.c msdosfs/msdosfs_conv.c
  }
  
  /*
-diff -rdup msdosfs-utf8/msdosfs_vfsops.c msdosfs/msdosfs_vfsops.c
---- msdosfs-utf8/msdosfs_vfsops.c	2010-04-05 17:58:23.000000000 +0000
-+++ msdosfs/msdosfs_vfsops.c	2010-04-05 17:57:39.000000000 +0000
-@@ -118,9 +118,12 @@ static int
+diff --git a/msdosfs_vfsops.c b/msdosfs_vfsops.c
+index d83e98f..df83983 100644
+--- a/msdosfs_vfsops.c
++++ b/msdosfs_vfsops.c
+@@ -120,9 +120,12 @@ static int
  update_mp(struct mount *mp, struct thread *td)
  {
  	struct msdosfsmount *pmp = VFSTOMSDOSFS(mp);
@@ -381,7 +405,7 @@ diff -rdup msdosfs-utf8/msdosfs_vfsops.c msdosfs/msdosfs_vfsops.c
  	if (!vfs_getopt(mp->mnt_optnew, "kiconv", NULL, NULL)) {
  		if (msdosfs_iconv != NULL) {
  			error = vfs_getopt(mp->mnt_optnew,
-@@ -154,6 +157,7 @@ update_mp(struct mount *mp, struct threa
+@@ -156,6 +159,7 @@ update_mp(struct mount *mp, struct thread *td)
  			pmp->pm_u2d = NULL;
  		}
  	}
@@ -389,7 +413,7 @@ diff -rdup msdosfs-utf8/msdosfs_vfsops.c msdosfs/msdosfs_vfsops.c
  
  	if (1 == vfs_scanopt(mp->mnt_optnew, "gid", "%d", &v))
  		pmp->pm_gid = v;
-@@ -171,8 +175,10 @@ update_mp(struct mount *mp, struct threa
+@@ -173,8 +177,10 @@ update_mp(struct mount *mp, struct thread *td)
  	    &pmp->pm_flags, MSDOSFSMNT_LONGNAME);
  	vfs_flagopt(mp->mnt_optnew, "longnames",
  	    &pmp->pm_flags, MSDOSFSMNT_LONGNAME);
@@ -400,7 +424,7 @@ diff -rdup msdosfs-utf8/msdosfs_vfsops.c msdosfs/msdosfs_vfsops.c
  
  	if (vfs_getopt(mp->mnt_optnew, "nowin95", NULL, NULL) == 0)
  		pmp->pm_flags |= MSDOSFSMNT_NOWIN95;
-@@ -224,11 +230,13 @@ msdosfs_cmount(struct mntarg *ma, void *
+@@ -228,11 +234,13 @@ msdosfs_cmount(struct mntarg *ma, void *data, uint64_t flags)
  	ma = mount_argb(ma, args.flags & MSDOSFSMNT_SHORTNAME, "noshortname");
  	ma = mount_argb(ma, args.flags & MSDOSFSMNT_LONGNAME, "nolongname");
  	ma = mount_argb(ma, !(args.flags & MSDOSFSMNT_NOWIN95), "nowin95");
@@ -414,7 +438,7 @@ diff -rdup msdosfs-utf8/msdosfs_vfsops.c msdosfs/msdosfs_vfsops.c
  
  	error = kernel_mount(ma, flags);
  
-@@ -803,6 +811,7 @@ msdosfs_unmount(struct mount *mp, int mn
+@@ -818,6 +826,7 @@ msdosfs_unmount(struct mount *mp, int mntflags)
  			return (error);
  		}
  	}
@@ -422,7 +446,7 @@ diff -rdup msdosfs-utf8/msdosfs_vfsops.c msdosfs/msdosfs_vfsops.c
  	if (pmp->pm_flags & MSDOSFSMNT_KICONV && msdosfs_iconv) {
  		if (pmp->pm_w2u)
  			msdosfs_iconv->close(pmp->pm_w2u);
-@@ -813,6 +822,7 @@ msdosfs_unmount(struct mount *mp, int mn
+@@ -828,6 +837,7 @@ msdosfs_unmount(struct mount *mp, int mntflags)
  		if (pmp->pm_u2d)
  			msdosfs_iconv->close(pmp->pm_u2d);
  	}
@@ -430,3 +454,6 @@ diff -rdup msdosfs-utf8/msdosfs_vfsops.c msdosfs/msdosfs_vfsops.c
  
  #ifdef MSDOSFS_DEBUG
  	{
+-- 
+1.7.8
+
