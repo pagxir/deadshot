@@ -1,6 +1,6 @@
 #include <stdio.h>
 #include <assert.h>
-#include <winsock.h>
+#include "platform.h"
 
 #include "event.h"
 #include "tcpusr.h"

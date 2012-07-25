@@ -1,5 +1,6 @@
 #include <stdio.h>
-#include <winsock.h>
+#include <stdlib.h>
+#include "platform.h"
 
 #include "event.h"
 #include "modules.h"
@@ -19,12 +20,14 @@ modules_t * modules_list[] = {
 
 int main(int argc, char * argv[])
 {
-	WSADATA data;
 	event_t event;
 	u_long f4ward_addr;
 	u_short f4ward_port;
 
+#ifdef _WIN32_
+	WSADATA data;
 	WSAStartup(0x101, &data);
+#endif
 
 	if (argc == 3) {
 	   	f4ward_addr = inet_addr(argv[1]);
@@ -40,7 +43,9 @@ int main(int argc, char * argv[])
 	event_run_stop();
 
 	cleanup_modules(modules_list);
+#ifdef _WIN32_
 	WSACleanup();
+#endif
 	return 0;
 }
 

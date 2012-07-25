@@ -1,12 +1,10 @@
 #include <stdio.h>
 #include <assert.h>
-#include <winsock.h>
+#include "platform.h"
 
 #include "event.h"
 #include "modules.h"
 #include "tcp_channel.h"
-
-typedef int socklen_t;
 
 static int _lenfile = -1;
 static struct sockaddr_in _lenaddr;

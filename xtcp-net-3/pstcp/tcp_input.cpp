@@ -1,6 +1,8 @@
 #include <stdio.h>
 #include <assert.h>
-#include <winsock2.h>
+#include <stdlib.h>
+#include <string.h>
+#include "platform.h"
 
 #include "tcp.h"
 #include "event.h"

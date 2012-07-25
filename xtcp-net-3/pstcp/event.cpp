@@ -1,6 +1,8 @@
 #include <stdio.h>
 #include <assert.h>
-#include <winsock.h>
+#include <stdlib.h>
+#include <math.h>
+#include "platform.h"
 
 #include "event.h"
 #include "timer.h"

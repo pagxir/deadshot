@@ -1,6 +1,6 @@
 #include <stdio.h>
 #include <assert.h>
-#include <winsock.h>
+#include "platform.h"
 
 #include "event.h"
 #include "tcpusr.h"
@@ -50,13 +50,6 @@ class pstcp_channel {
 u_short _forward_port = 1080;
 u_long  _forward_addr = INADDR_LOOPBACK;
 
-void setnonblock(int file)
-{
-	u_long mode = 1;
-	ioctlsocket(file, FIONBIO, &mode);
-	return;
-}
-
 pstcp_channel::pstcp_channel(struct tcpcb * tp)
 	:m_peer(tp), m_flags(0)
 {
@@ -96,7 +89,7 @@ int pstcp_channel::run(void)
 		name.sin_addr.s_addr = htonl(_forward_addr);
 	   	error = connect(m_file, (struct sockaddr *)&name, sizeof(name));
 		m_flags |= TF_CONNECT;
-		if (error == -1 && WSAGetLastError() == WSAEWOULDBLOCK) {
+		if (error == -1 && WSAGetLastError() == WSAEINPROGRESS) {
 			reset_event(&w_event, m_file, EV_WRITE);
 			m_flags |= TF_CONNECTING;
 			return 1;

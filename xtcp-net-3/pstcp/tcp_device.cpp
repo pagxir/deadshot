@@ -1,6 +1,6 @@
 #include <stdio.h>
 #include <assert.h>
-#include <winsock.h>
+#include "platform.h"
 
 #include "tcp.h"
 #include "event.h"
@@ -88,21 +88,21 @@ static void module_init(void)
 
 	do {
 		int rcvbufsiz = 8192;
-		setsockopt(stat.xs_file, SOL_SOCKET, SO_RCVBUF, &rcvbufsiz, sizeof(rcvbufsiz));
+		setsockopt(_file, SOL_SOCKET, SO_RCVBUF, &rcvbufsiz, sizeof(rcvbufsiz));
 	} while ( 0 );
 
 	error = bind(_file, (struct sockaddr *)&_addr_in, sizeof(_addr_in));
 	assert(error == 0);
 
-	ioctlsocket(_file, FIONBIO, &nonblock);
 	reset_event(&_start, -1, EV_RUNSTART);
 	reset_event(&_stop, -1, EV_RUNSTOP);
+	setnonblock(_file);
 }
 
 static void listen_statecb(void * context)
 {
 	int state;
-	int addr_len;
+	socklen_t addr_len;
 	struct sockaddr_in addr_in;
 
 	state = (int)context;
@@ -129,7 +129,7 @@ static void listen_statecb(void * context)
 static void listen_callback(void * context)
 {
 	int len;
-	int addr_len;
+	socklen_t addr_len;
 	char buf[2048];
 	struct sockaddr_in addr_in;
 

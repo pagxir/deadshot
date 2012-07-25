@@ -37,8 +37,5 @@ void event_insert_header(event_t ** header, event_t * evt);
 void event_insert_tailer(event_t * evt);
 void event_wakeup(event_t ** ppevt);
 
-#undef assert
-#define assert(exp) do { if (exp); else {printf("%s:%d", __FILE__, __LINE__); Sleep(INFINITE); }; } while ( 0 );
-
 #endif
 

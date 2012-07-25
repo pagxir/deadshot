@@ -2,7 +2,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
-#include <windows.h>
 
 #include "dtype.h"
 #include "rgnbuf.h"

@@ -1,6 +1,6 @@
 #include <stdio.h>
 #include <assert.h>
-#include <windows.h>
+#include "platform.h"
 
 #include "event.h"
 #include "timer.h"
