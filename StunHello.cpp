@@ -1,7 +1,20 @@
 #include <stdio.h>
 #include <errno.h>
-#include <winsock.h>
+#include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32_
+#include <winsock.h>
+typedef int socklen_t;
+typedef unsigned long in_addr_t;
+typedef unsigned short in_port_t;
+#else
+#include <unistd.h>
+#include <netdb.h>
+#include <sys/socket.h>
+#include <sys/select.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#endif
 
 #define getmappedbybuf(buff, buflen, addrptr, portptr) \
 	getaddrbybuf(buff, buflen, MAPPED_ADDRESS, addrptr, portptr)
@@ -22,10 +35,6 @@ enum {
 	CHANGE_REQUEST = 0x0003,
 	CHANGED_ADDRESS = 0x0005
 };
-
-typedef int socklen_t;
-typedef unsigned long in_addr_t;
-typedef unsigned short in_port_t;
 
 int getaddrbybuf(void *buff, size_t buflen, int type,
 		in_addr_t *addrptr, in_port_t *portptr)
@@ -57,12 +66,12 @@ int getaddrbybuf(void *buff, size_t buflen, int type,
 
 struct mapping_args{
 	unsigned short binding_request, zero_field;
-	unsigned long  tid0, tid1, tid2, tid3;
+	unsigned int  tid0, tid1, tid2, tid3;
 };
 
 struct changing_args{
 	unsigned short binding_request, zero_field;
-	unsigned long  tid0, tid1, tid2, tid3;
+	unsigned int  tid0, tid1, tid2, tid3;
 	unsigned short change_request, len_field;
 	unsigned char data[4];
 };
@@ -171,10 +180,11 @@ int main(int argc, char *argv[])
 	struct hostent *phost;
 	struct timeval tval;
 
+#ifdef _WIN32_
 	WSADATA data;
 	WSAStartup(0x101, &data);
-
-	if ((fd=socket(AF_INET, SOCK_DGRAM, 0))==-1)
+#endif
+	if ((fd = socket(AF_INET, SOCK_DGRAM, 0)) == -1)
 		return -2;
 
 	struct sockaddr_in myaddr;
@@ -183,6 +193,9 @@ int main(int argc, char *argv[])
 	myaddr.sin_addr.s_addr = 0;
 	if (-1 == bind(fd, (struct sockaddr *)&myaddr, sizeof(myaddr)))
 		return -1;
+
+	myaddr.sin_addr.s_addr = inet_addr(argv[1]);
+	sendto(fd, "hello", 5, 0, (struct sockaddr *)&myaddr, sizeof(myaddr));
 
 	tval.tv_sec = 12;
 	tval.tv_usec = 0;
@@ -255,11 +268,17 @@ int main(int argc, char *argv[])
 				inet_ntoa(_schgaddr.sin_addr), htons(_schgaddr.sin_port));
 
 	}
+#ifdef _WIN32_
 	closesocket(fd);
 	WSACleanup();
+#else
+	close(fd);
+#endif
 	return 0; 
 }
 
+#ifdef _WIN32_
 void __declspec(dllexport) _()
 {
 }
+#endif
