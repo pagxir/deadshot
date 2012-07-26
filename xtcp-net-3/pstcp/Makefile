@@ -8,8 +8,9 @@ OBJECTS = rgnbuf.o event.o modules.o tcp_device.o \
 		  tcp_usrreq.o timer.o platform.o
 SRV_OBJ = server.o pstcp_channel.o pstcp_listen.o
 CLT_OBJ = client.o tcp_listen.o tcp_channel.o
+USRV_OBJ = server.o pstcp_listen.o pstcp_http.o
 
-all: server.exe client.exe
+all: server.exe client.exe uhttpd.exe
 
 server.exe: $(SRV_OBJ) $(OBJECTS) 
 	$(CC) $(LDFLAGS) $(SRV_OBJ) $(OBJECTS) $(LDLIBS) -o $@
@@ -17,6 +18,9 @@ server.exe: $(SRV_OBJ) $(OBJECTS)
 client.exe: $(CLT_OBJ) $(OBJECTS)
 	$(CC) $(LDFLAGS) $(CLT_OBJ) $(OBJECTS) $(LDLIBS) -o $@
 
+uhttpd.exe: $(USRV_OBJ) $(OBJECTS)
+	$(CC) $(LDFLAGS) $(USRV_OBJ) $(OBJECTS) $(LDLIBS) -o $@
+
 clean:
-	$(RM) $(OBJECTS) $(CLT_OBJ) $(SRV_OBJ)
+	$(RM) $(OBJECTS) $(CLT_OBJ) $(SRV_OBJ) $(USRV_OBJ)
 

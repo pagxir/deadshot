@@ -25,6 +25,7 @@
 #define min(a, b) ((a) < (b)? (a): (b))
 #define WSAEINPROGRESS EINPROGRESS
 #define WSAEINVAL EINVAL
+#define stricmp strcmp
 #endif
 
 void setnonblock(int fd);
