@@ -384,13 +384,17 @@ trimthenstep6:
 							break;
 						}
 
+						if ((tp->t_flags & TF_FASTRECOVERY) == 0) {
+							tp->snd_recover = tp->snd_max;
+						}
+
+#if 0
 						win = umin(tp->snd_wnd, tp->snd_cwnd) /
 						   	2 / tp->t_maxseg;
 						if (win < 2)
 							win = 2;
-						tp->t_flags |= TF_FASTRECOVERY;
-						tp->snd_recover = tp->snd_max;
 						tp->snd_ssthresh = win * tp->t_maxseg;
+#endif
 						drop_event(&tp->t_timer_rexmt);
 						tp->t_rtttime = 0;
 						tp->snd_nxt = ti->ti_ack;

@@ -10,7 +10,7 @@ SRV_OBJ = server.o pstcp_channel.o pstcp_listen.o
 CLT_OBJ = client.o tcp_listen.o tcp_channel.o
 USRV_OBJ = server.o pstcp_listen.o pstcp_http.o
 
-all: server.exe client.exe uhttpd.exe
+all: server.exe client.exe
 
 server.exe: $(SRV_OBJ) $(OBJECTS) 
 	$(CC) $(LDFLAGS) $(SRV_OBJ) $(OBJECTS) $(LDLIBS) -o $@
