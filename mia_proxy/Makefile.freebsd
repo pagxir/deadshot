@@ -1,8 +1,0 @@
-CXX = g++
-OBJ = xio.o mia_proxy.o
-LDFLAGS = 
-LDLIBS = 
-CXXFLAGS = -g
-
-mia_proxy: $(OBJ)
-	$(CXX) $(LDFLAGS) $(OBJ) -o mia_proxy $(LDLIBS)
