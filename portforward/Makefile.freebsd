@@ -1,8 +1,0 @@
-CXX = g++
-OBJ = xio.o portforward.o
-LDFLAGS = 
-LDLIBS = 
-CXXFLAGS = -g
-
-mia_proxy: $(OBJ)
-	$(CXX) $(LDFLAGS) $(OBJ) -o mia_proxy $(LDLIBS)
