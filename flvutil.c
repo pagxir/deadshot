@@ -1,19 +1,20 @@
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
-#include <stdint.h>
+#include "stdint.h"
 #include <stdlib.h>
 
 #define FLVF_HEADER 1
 #define FLVF_SCRIPT 2
 
+#pragma pack(1)
 struct flvhdr {
 	char fh_magic[3];
 	char fh_version;
 	char fh_flags;
 	char fh_hlen[4];
 	char fh_pads[4];
-}__attribute__((packed));
+};
 
 struct taghdr {
 	uint8_t th_type;
@@ -21,19 +22,26 @@ struct taghdr {
 	uint8_t th_tstamp[3];
 	uint8_t th_xstamp;
 	uint8_t th_streamid[3];
-}__attribute__((packed));
+};
 
 struct flvcombine {
 	FILE * fc_file;
 	uint32_t fc_flags;
 	uint32_t fc_timestamp;
-	uint32_t fc_filesize;
-	double fc_duration;
-	int fc_filesize_offset;
-	int fc_duration_offset;
+	uint32_t fc_lasttimestamp;
+	uint32_t fc_metasize;
+	uint32_t fc_videocc;
+	uint32_t fc_videosize;
+	uint32_t fc_audiocc;
+	uint32_t fc_audiosize;
+	struct taghdr fc_taghdr;
+	struct flvhdr fc_header;
 };
 
 struct flv_meta {
+	const char *mt_path;
+	size_t mt_adjust;
+	size_t mt_starttime;
 	struct metatag *mt_head;
 	struct flv_meta *mt_next;
 };
@@ -41,13 +49,14 @@ struct flv_meta {
 struct metaink {
 	char *curp;
 	char *limit;
+	FILE *outfp;
 };
 
-static char tag_mark[6] = {
-	0x00, 0x00, 0x09, 0x00, 0x00, 0x09
+static char tag_mark[3] = {
+	0x00, 0x00, 0x09
 };
 
-void reserve_mem(void *buf, size_t len)
+static void convert_byte_order(void *buf, size_t len)
 {
 	char t;
 	char *up = (char *)buf;
@@ -62,19 +71,19 @@ void reserve_mem(void *buf, size_t len)
 	return;
 }
 
-void ink_init(struct metaink *ink, char *buf, size_t len)
+static void ink_init(struct metaink *ink, char *buf, size_t len)
 {
 	ink->curp = buf;
 	ink->limit = (buf + len);
 	return;
 }
 
-int ink_eof(struct metaink *ink)
+static int ink_eof(struct metaink *ink)
 {
 	return (ink->limit == ink->curp);
 }
 
-int ink_len(struct metaink *ink)
+static int ink_len(struct metaink *ink)
 {
 	int len;
 	len = ink->limit - ink->curp;
@@ -82,7 +91,7 @@ int ink_len(struct metaink *ink)
 	return len;
 }
 
-int ink_get_byte(struct metaink *ink)
+static int ink_get_byte(struct metaink *ink)
 {
 	int type = 0xFF;
 
@@ -93,9 +102,9 @@ int ink_get_byte(struct metaink *ink)
 	return type;
 }
 
-void ink_get_mem(struct metaink *ink, void *buf, size_t len)
+static void ink_get_mem(struct metaink *ink, void *buf, size_t len)
 {
-	if (ink_len(ink) < len) {
+	if (ink_len(ink) < (int)len) {
 		memcpy(buf, ink->curp, ink_len(ink));
 		ink->curp = ink->limit;
 		return;
@@ -106,7 +115,23 @@ void ink_get_mem(struct metaink *ink, void *buf, size_t len)
 	return;
 }
 
-int ink_get_str(struct metaink *ink, char **start)
+static int ink_get_value(struct metaink *ink)
+{
+	int val = 0;
+	ink_get_mem(ink, &val, sizeof(val));
+	convert_byte_order(&val, sizeof(val));
+	return val;
+}
+
+static double ink_get_double(struct metaink *ink)
+{
+	double val = 0.0;
+	ink_get_mem(ink, &val, sizeof(val));
+	convert_byte_order(&val, sizeof(val));
+	return val;
+}
+
+static int ink_get_str(struct metaink *ink, char **start)
 {
 	unsigned short t_len = 0;
 
@@ -117,7 +142,7 @@ int ink_get_str(struct metaink *ink, char **start)
 	}
 
 	ink_get_mem(ink, &t_len, sizeof(t_len));
-	reserve_mem(&t_len, sizeof(t_len));
+	convert_byte_order(&t_len, sizeof(t_len));
 
 	if (ink_len(ink) < t_len) {
 		ink->curp = ink->limit;
@@ -126,18 +151,91 @@ int ink_get_str(struct metaink *ink, char **start)
 	}
 
 	*start = ink->curp;
-	ink->curp += t_len;
+	ink->curp += (long)t_len;
 	return t_len;
 }
 
-void ink_skip(struct metaink *ink, size_t skip)
+static void ink_skip(struct metaink *ink, size_t skip)
 {
-	if (ink_len(ink) < skip) {
+	if (ink_len(ink) < (int)skip) {
 		ink->curp = ink->limit;
 		return;
 	}
 
 	ink->curp += skip;
+	return;
+}
+
+static void ink_put_tag(struct metaink *ink, unsigned char tag)
+{
+	ink->curp++;
+	if (ink->outfp != NULL)
+		fwrite(&tag, 1, 1, ink->outfp);
+	return;
+}
+
+static void ink_put_double(struct metaink *ink, double dvalue)
+{
+	char buf[8];
+	ink->curp += sizeof(dvalue);
+
+	if (ink->outfp != NULL) {
+		memcpy(buf, &dvalue, sizeof(dvalue));
+		convert_byte_order(buf, sizeof(buf));
+		fwrite(buf, 8, 1, ink->outfp);
+	}
+
+	return;
+}
+
+static void ink_put_string(struct metaink *ink, const char *title)
+{
+	uint16_t len;
+
+	ink->curp += 2;
+	ink->curp += strlen(title);
+
+	if (ink->outfp != NULL) {
+		len = strlen(title);
+		convert_byte_order(&len, sizeof(len));
+		fwrite(&len, 2, 1, ink->outfp);
+		len = strlen(title);
+		fwrite(title, len, 1, ink->outfp);
+	}
+
+	return;
+}
+
+static void ink_put_boolean(struct metaink *ink, int bvalue)
+{
+	char val;
+
+	ink->curp++;
+	if (ink->outfp != NULL) {
+		val = bvalue;
+		fwrite(&val, 1, 1, ink->outfp);
+	}
+	
+	return;
+}
+
+static void ink_put_stream(struct metaink *ink, void *buf, size_t len)
+{
+	ink->curp += len;
+	if (ink->outfp != NULL)
+		fwrite(buf, len, 1, ink->outfp);
+	return;
+}
+
+static void ink_put_value(struct metaink *ink, int ivalue)
+{
+	ink->curp += sizeof(ivalue);
+
+	if (ink->outfp != NULL) {
+		convert_byte_order(&ivalue, sizeof(ivalue));
+		fwrite(&ivalue, sizeof(ivalue), 1, ink->outfp);
+	}
+
 	return;
 }
 
@@ -151,37 +249,7 @@ struct metatag {
 	struct metatag *tagdata;
 };
 
-/* duration, filesize */
-	void *
-xmemmem(const void *l, size_t l_len, const void *s, size_t s_len)
-{
-	register char *cur, *last;
-	const char *cl = (const char *)l;
-	const char *cs = (const char *)s;
-
-	/* we need something to compare */
-	if (l_len == 0 || s_len == 0)
-		return NULL;
-
-	/* "s" must be smaller or equal to "l" */
-	if (l_len < s_len)
-		return NULL;
-
-	/* special case where s_len == 1 */
-	if (s_len == 1)
-		return memchr(l, (int)*cs, l_len);
-
-	/* the last position where its possible to find "s" in "l" */
-	last = (char *)cl + l_len - s_len;
-
-	for (cur = (char *)cl; cur <= last; cur++)
-		if (cur[0] == cs[0] && memcmp(cur, cs, s_len) == 0)
-			return cur;
-
-	return NULL;
-}
-
-uint32_t buftoint(const void *buf, size_t len)
+static uint32_t buftoint(const void *buf, size_t len)
 {
 	uint32_t bufint = 0;
 	const uint8_t *pval = (const uint8_t *)buf;
@@ -190,7 +258,7 @@ uint32_t buftoint(const void *buf, size_t len)
 	return bufint;
 }
 
-int dd_copy(FILE * dst_fp, FILE * src_fp, size_t dlen)
+static int dd_copy(FILE * dst_fp, FILE * src_fp, size_t dlen)
 {
 	size_t len;
 	char buf[64 * 1024];
@@ -203,9 +271,8 @@ int dd_copy(FILE * dst_fp, FILE * src_fp, size_t dlen)
 	return dlen;
 }
 
-void adjtimestamp(struct taghdr *header, uint32_t stampbase)
+static uint32_t adjtimestamp(struct taghdr *header, uint32_t stampbase)
 {
-	uint32_t netval = 0;
 	uint32_t adjtime = stampbase;
 	adjtime += buftoint(&header->th_tstamp, sizeof(header->th_tstamp));
 	adjtime += (header->th_xstamp << 24);
@@ -213,24 +280,23 @@ void adjtimestamp(struct taghdr *header, uint32_t stampbase)
 	header->th_tstamp[0] = (adjtime >> 16);
 	header->th_tstamp[1] = (adjtime >> 8);
 	header->th_tstamp[2] = (adjtime >> 0);
+	return adjtime;
 }
 
-int
-amf_end(struct metaink *ink)
+static int amf_end(struct metaink *ink)
 {
 	char *curp = ink->curp;
 	char *limitp = ink->limit;
 
-	assert(curp + 6 <= limitp);
-	if (memcmp(tag_mark, curp, 6)) {
+	assert(curp + 3l <= limitp);
+	if (memcmp(tag_mark, curp, 3)) {
 		return 0;
 	}
 
 	return 1;
 }
 
-struct metatag *
-alloc_tag(int type)
+static struct metatag * alloc_tag(int type)
 {
 	struct metatag *tag;
 	tag = (struct metatag *)malloc(sizeof(*tag));
@@ -244,8 +310,7 @@ alloc_tag(int type)
 	return tag;
 }
 
-struct metatag *
-amf_value(double value)
+static struct metatag * amf_value(double value)
 {
 	struct metatag *tag;
 	tag = alloc_tag(0);
@@ -253,8 +318,7 @@ amf_value(double value)
 	return tag;
 }
 
-struct metatag *
-amf_boolean(int value)
+static struct metatag * amf_boolean(int value)
 {
 	struct metatag *tag;
 	assert(0 == (value & ~0x01));
@@ -274,8 +338,7 @@ amf_string(char *str, size_t len)
 	return tag;
 }
 
-struct metatag *
-amf_list(int type, struct metatag *header)
+static struct metatag * amf_list(int type, struct metatag *header)
 {
 	struct metatag *tag;
 	tag = alloc_tag(type);
@@ -283,8 +346,8 @@ amf_list(int type, struct metatag *header)
 	return tag;
 }
 
-struct metatag *
-amf_key_pair(char *str, size_t len, struct metatag *val)
+static struct metatag * amf_key_pair(char *str,
+	size_t len, struct metatag *val)
 {
 	assert(len < sizeof(val->title));
 	memcpy(val->title, str, len);
@@ -292,13 +355,11 @@ amf_key_pair(char *str, size_t len, struct metatag *val)
 	return val;
 }
 
-struct metatag *
-amf_object(struct metaink *ink)
+static struct metatag * amf_object(struct metaink *ink)
 {
 	int i;
 	int len;
 	int type;
-	int bval;
 	char *str = 0;
 	double value;
 	struct metatag *header = NULL;
@@ -307,8 +368,7 @@ amf_object(struct metaink *ink)
 	type = ink_get_byte(ink);
 	switch (type) {
 		case 0x00:
-			ink_get_mem(ink, &value, sizeof(value));
-			reserve_mem(&value, sizeof(value));
+			value = ink_get_double(ink);
 			return amf_value(value);
 
 		case 0x01:
@@ -330,12 +390,11 @@ amf_object(struct metaink *ink)
 				tailer = &tag->next;
 			}
 
-			ink_skip(ink, 6);
+			ink_skip(ink, 3);
 			return amf_list(0x03, header);
 
 		case 0x08:
-			ink_get_mem(ink, &len, sizeof(len));
-			reserve_mem(&len, sizeof(len));
+			len = ink_get_value(ink);
 
 			for (i = 0; i < len; i++) {
 				struct metatag *val, *tag;
@@ -350,8 +409,7 @@ amf_object(struct metaink *ink)
 			return amf_list(type, header);
 
 		case 0x0A:
-			ink_get_mem(ink, &len, sizeof(len));
-			reserve_mem(&len, sizeof(len));
+			len = ink_get_value(ink);
 
 			for (i = 0; i < len; i++) {
 				struct metatag *val;
@@ -373,51 +431,77 @@ amf_object(struct metaink *ink)
 	return NULL;
 }
 
-void write_tag_object(struct metatag *tag)
+static struct metatag * flv_get_item(struct flv_meta *flv,
+		const char *keyname)
 {
-	int i;
+	int cmp;
+	const char *title;
+	struct metatag *tag, *iter;
+
+	tag = flv->mt_head;
+	if (tag == NULL)
+		return NULL;
+
+	if (tag->tag != 0x02)
+		return NULL;
+
+	title = tag->textdata;
+	if (strcmp(title, "onMetaData") != 0)
+		return NULL;
+
+	tag = tag->next;
+	if (tag->tag != 0x08)
+		return NULL;
+
+	iter = tag->tagdata;
+	while (iter != NULL) {
+		cmp = strcmp(iter->title, keyname);
+		if (cmp == 0)
+			return iter;
+		iter = iter->next;
+	}
+
+	return NULL;
+}
+
+static void flv_set_value(struct flv_meta *flv,
+		const char *keyname, double val)
+{
+	struct metatag *tag;
+	tag = flv_get_item(flv, keyname);
+	if (tag != NULL)
+		tag->dvalue = val;
+	return;
+}
+
+static void write_tag_object(struct metatag *tag, struct metaink *ink)
+{
 	int len;
-	char *p;
-	char buf[9];
 	struct metatag *iter;
 
+	ink_put_tag(ink, tag->tag);
 	switch (tag->tag) {
 		case 0x00:
-			memcpy(buf + 1, &tag->dvalue, sizeof(tag->dvalue));
-			buf[0] = 0x00;
-			reserve_mem(buf + 1, 8);
-			write(1, buf, 9);
+			ink_put_double(ink, tag->dvalue);
 			break;
 
 		case 0x01:
-			buf[0] = 0x01;
-			buf[1] = tag->bvalue;
-			write(1, buf, 2);
+			ink_put_boolean(ink, tag->bvalue);
 			break;
 
 		case 0x02:
-			len = strlen(tag->textdata);
-			buf[0] = 0x02;
-			buf[2] = (len & 0xFF);
-			buf[1] = (len >> 8);
-			write(1, buf, 3);
-			write(1, tag->textdata, strlen(tag->textdata));
+			ink_put_string(ink, tag->textdata);
 			break;
 
 		case 0x03:
 			iter = tag->tagdata;
-			buf[0] = 0x03;
-			write(1, buf, 1);
 			while (iter != NULL) {
-				len = strlen(iter->title);
-				buf[1] = (len & 0xFF);
-				buf[0] = (len >> 8);
-				write(1, buf, 2);
-				write(1, iter->title, len);
-				write_tag_object(iter);
+				ink_put_string(ink, iter->title);
+				write_tag_object(iter, ink);
 				iter = iter->next;
 			}
-			write(1, tag_mark, 6);
+
+			ink_put_stream(ink, tag_mark, sizeof(tag_mark));
 			break;
 
 		case 0x08:
@@ -428,20 +512,12 @@ void write_tag_object(struct metatag *tag)
 				iter = iter->next;
 				len ++;
 			}
-			buf[0] = tag->tag;
-			write(1, buf, 1);
-			reserve_mem(&len, sizeof(len));
-			write(1, &len, sizeof(len));
+			ink_put_value(ink, len);
 			iter = tag->tagdata;
 			while (iter != NULL) {
-				if (tag->tag == 0x08) {
-					len = strlen(iter->title);
-					buf[1] = (len & 0xFF);
-					buf[0] = (len >> 8);
-					write(1, buf, 2);
-					write(1, iter->title, len);
-				}
-				write_tag_object(iter);
+				if (tag->tag == 0x08)
+					ink_put_string(ink, iter->title);
+				write_tag_object(iter, ink);
 				iter = iter->next;
 			}
 			break;
@@ -455,9 +531,8 @@ void write_tag_object(struct metatag *tag)
 	return;
 }
 
-void parse_metainfo(struct flv_meta *mt, char *buf, size_t len)
+static void parse_metainfo(struct flv_meta *mt, char *buf, size_t len)
 {
-	int i;
 	struct metaink ink;
 	struct metatag *tag = NULL;
 	struct metatag *header = NULL;
@@ -477,55 +552,11 @@ void parse_metainfo(struct flv_meta *mt, char *buf, size_t len)
 	return;
 }
 
-#if 0
-void update_metainfo(struct flv_meta *mt, FILE *fp, size_t dlen)
-{
-	int i;
-	size_t len;
-	char *pmem = NULL;
-	char buf[256 * 1024];
-	double duration = 0.0;
-	uint8_t duration_bytes[8];
-	printf("dlen: %ld\n", dlen);
-	assert(dlen < (256 * 1024));
-
-	len = fread(buf, 1, dlen < sizeof(buf)? dlen: sizeof(buf), fp);
-	if (len == 0)
-		return;
-
-	parse_metainfo(buf, len);
-
-	pmem = (char *)xmemmem(buf, len, "duration", 8);
-	if (pmem == NULL || pmem + 17l > buf + len) {
-		printf("duration not found: %p %p %ld\n", pmem, buf + 142, len);
-		return;
-	}
-	memcpy(&duration_bytes, pmem + 9l, 8);
-	for (i = 0; i < 4; i ++) {
-		uint8_t tmp = duration_bytes[i];
-		duration_bytes[i] = duration_bytes[7 - i];
-		duration_bytes[7 - i] = tmp;
-	}
-	memcpy(&duration, &duration_bytes, 8);
-	combine->fc_duration += duration;
-	if (combine->fc_flags & FLVF_SCRIPT)
-		return;
-	combine->fc_duration_offset = 
-		combine->fc_filesize + (pmem + 9l - buf) + sizeof(struct taghdr);
-	printf("duration offset: %d\n", combine->fc_duration_offset);
-	pmem = (char *)xmemmem(buf, len, "filesize", 8);
-	if (pmem == NULL || pmem + 17l - buf > len)
-		return;
-	combine->fc_filesize_offset = 
-		combine->fc_filesize + (pmem + 9l - buf) + sizeof(struct taghdr);
-}
-#endif
-
-int flv_load_meta(struct flv_meta *mt, const char *path)
+static int flv_load_meta(struct flv_meta *mt, const char *path)
 {
 	int error;
 	FILE *flv_in;
-	char magic[4];
+	char magic[4] = {0};
 	char d_buf[256 * 1024];
 	size_t dlen = 0;
 	struct flvhdr head;
@@ -569,7 +600,7 @@ int flv_load_meta(struct flv_meta *mt, const char *path)
 		goto fail;
 	}
 
-	fprintf(stderr, "dlen %d\n", dlen);
+	fprintf(stderr, "dlen %ld\n", dlen);
 	parse_metainfo(mt, d_buf, dlen);
 	error = 0;
 
@@ -578,43 +609,44 @@ fail:
 	return error;
 }
 
-int addflv(struct flvcombine *combine, const char *path)
+static int flv_merge_data(struct flvcombine *combine, struct flv_meta *fm)
 {
-	int error = 0;
+	int scr = 0;
 	FILE *fp, *fout;
+#ifdef ENABLE_DUMP_METADATA
+	FILE *tt = NULL;
+#endif
 	char magic[4];
-	long savepos;
-	size_t len, dlen, flags;
+	size_t dlen;
+	size_t video_index;
 	struct flvhdr header;
-	struct taghdr *last;
 	struct taghdr tagvideo;
 	struct taghdr tagaudio;
 	struct taghdr tagheader;
 
-	fp = fopen(path, "rb");
+	fp = fopen(fm->mt_path, "rb");
 	fout = combine->fc_file;
-	if (fp == NULL || fout == NULL)
+	if (fp == NULL)
 		return 0;
 
-	last = NULL;
+#ifdef ENABLE_DUMP_METADATA
+	tt = fopen("meta_data.dat", "wb");
+#endif
+
+	video_index = 0;
 	memset(magic, 0, sizeof(magic));
 	memset(&tagvideo, 0, sizeof(tagvideo));
 	memset(&tagaudio, 0, sizeof(tagaudio));
 
 	if ( !fread(&header, sizeof(header), 1, fp) )
-		goto fail;
+		goto failure;
 
 	memcpy(magic, header.fh_magic, 3);
 	if ( strcmp("FLV", magic) )
-		goto fail;
+		goto failure;
 
-	int remove_first_video_frame = (combine->fc_flags & FLVF_HEADER);
-	if ((combine->fc_flags & FLVF_HEADER) == 0) {
-		fwrite(&header, sizeof(header), 1, fout);
-		combine->fc_filesize += sizeof(header);
-		combine->fc_flags |= FLVF_HEADER;
-	}
-
+	memcpy(&combine->fc_header, &header, sizeof(header));
+	fm->mt_starttime = combine->fc_timestamp;
 #if 0
 	printf("magic: %s\n", magic);
 	printf("flags: 0x%02x\n", header.fh_flags);
@@ -623,208 +655,130 @@ int addflv(struct flvcombine *combine, const char *path)
 #endif
 
 	while (feof(fp) == 0) {
-		int is_video_frame = 0;
+		int skip = 0;
+
 		if ( !fread(&tagheader, sizeof(tagheader), 1, fp) )
-			goto fail;
+			goto failure;
 
 		dlen = buftoint(tagheader.th_dlen, sizeof(tagheader.th_dlen));
 
-		switch (tagheader.th_type)
-		{
+		switch (tagheader.th_type) {
 			case 0x09:
-				is_video_frame = 1;
-				adjtimestamp(&tagheader, combine->fc_timestamp);
+				if (video_index++ == 0 &&
+					(combine->fc_flags & FLVF_HEADER) == 0) {
+					skip = 0;
+					break;
+				}
+				combine->fc_videocc ++;
+				combine->fc_videosize += (dlen + 11l);
+				combine->fc_lasttimestamp = combine->fc_timestamp;
+				combine->fc_timestamp = adjtimestamp(&tagheader, fm->mt_starttime);
 				tagvideo = tagheader;
-				last = &tagvideo;
 				break;
 
 			case 0x08:
-				adjtimestamp(&tagheader, combine->fc_timestamp);
+				combine->fc_audiocc ++;
+				combine->fc_audiosize += (dlen + 11l);
+				combine->fc_lasttimestamp = combine->fc_timestamp;
+				combine->fc_timestamp = adjtimestamp(&tagheader, fm->mt_starttime);
 				tagaudio = tagheader;
-				last = &tagaudio;
 				break;
 
 			case 0x12:
-				//update_metainfo(combine, fp, dlen);
-				goto fail;
+				memcpy(&combine->fc_taghdr, &tagheader, sizeof(tagheader));
+				if (scr++ != 0)
+					goto failure;
+				skip = 1;
+				break;
 
 			default:
-				//printf("type %x\n", tagheader.th_type);
-				flags = combine->fc_flags;
-				savepos = ftell(fp);
-				if (savepos == -1)
-					goto fail;
-				savepos = (flags & FLVF_SCRIPT)? (savepos + dlen + 4): savepos;
-				//update_metainfo(combine, fp, dlen);
-				combine->fc_flags |= FLVF_SCRIPT;
-				if ( fseek(fp, savepos, SEEK_SET) )
-					goto fail;
-				if (flags & FLVF_SCRIPT)
-					continue;
+				printf("type %x\n", tagheader.th_type);
+				exit(-1);
 				break;
 		}
-			
-		savepos = ftell(fout);
+
+		if (skip == 1) {
+#ifdef ENABLE_DUMP_METADATA
+			dd_copy(tt, fp, dlen);
+#else
+			fseek(fp, dlen, SEEK_CUR);
+#endif
+			fseek(fp, 4, SEEK_CUR);
+			continue;
+		}
+
 		fwrite(&tagheader, sizeof(tagheader), 1, fout);
-		combine->fc_filesize += sizeof(tagheader);
-		combine->fc_filesize += (dlen + 4);
-		if ( dd_copy(fout, fp, dlen + 4)) {
+		fm->mt_adjust = ftell(fout) - ftell(fp);
+		if ( dd_copy(fout, fp, dlen + 4))
 			break;
-		}
-
-		if (remove_first_video_frame && is_video_frame) {
-			fseek(fout, savepos, SEEK_SET);
-			remove_first_video_frame = 0;
-		}
 	}
 
-fail:
+failure:
+	combine->fc_flags &= ~FLVF_HEADER;
 	fclose(fp);
-	if (last == &tagvideo || last == &tagaudio) {
-		combine->fc_timestamp = buftoint(last->th_tstamp, sizeof(last->th_tstamp));
-		combine->fc_timestamp |= (last->th_xstamp << 24);
-		//printf("time stamp: %d\n", combine->fc_timestamp);
-	}
 
+#ifdef ENABLE_DUMP_METADATA
+	fclose(tt);
+#endif
 	return 0;
 }
 
-void fixedflv(struct flvcombine *context)
+static void flv_update_array(struct flv_meta *fm)
 {
-	int i;
-	double dblval = 0.0;
-	uint8_t dblbytes[8];
-	FILE *fout = context->fc_file;
+	struct metatag *tag;
+	struct metatag *old_tag = NULL;
 
-	if (context->fc_filesize_offset > 0) {
-		if ( fseek(fout, context->fc_filesize_offset, SEEK_SET) )
-			return;
-		dblval = context->fc_filesize;
-		memcpy(dblbytes, &dblval, 8);
-
-		for (i = 0; i < 4; i ++) {
-			uint8_t tmp = dblbytes[i];
-			dblbytes[i] = dblbytes[7 - i];
-			dblbytes[7 - i] = tmp;
-		}
-		fwrite(dblbytes, 8, 1, fout);
-		//printf("fix filesize\n");
-	}
-
-	if (context->fc_duration_offset > 0) {
-		if ( fseek(fout, context->fc_duration_offset, SEEK_SET) )
-			return;
-		dblval = context->fc_duration;
-		memcpy(dblbytes, &dblval, 8);
-
-		for (i = 0; i < 4; i ++) {
-			uint8_t tmp = dblbytes[i];
-			dblbytes[i] = dblbytes[7 - i];
-			dblbytes[7 - i] = tmp;
-		}
-		fwrite(dblbytes, 8, 1, fout);
-		//printf("fix duration\n");
-	}
-}
-
-static struct metatag *
-flv_get_item(struct flv_meta *flv, const char *keyname)
-{
-	const char *title;
-	struct metatag *tag, *iter;
-
-	tag = flv->mt_head;
+	tag = flv_get_item(fm, "keyframes");
 	if (tag == NULL)
-		return NULL;
+		return;
 
-	if (tag->tag != 0x02)
-		return NULL;
+	assert(tag != NULL);
+	for (tag = tag->tagdata;
+			tag != NULL; tag = tag->next) {
+		if (tag->tag != 0x0A || tag->tagdata == NULL
+			|| strcmp(tag->title, "filepositions") != 0)
+			continue;
 
-	title = tag->textdata;
-	if (strcmp(title, "onMetaData") != 0)
-		return NULL;
+		old_tag = tag->tagdata;
+		while (old_tag != NULL) {
+			old_tag->dvalue += fm->mt_adjust;
+			old_tag = old_tag->next;
+		}
 
-	tag = tag->next;
-	if (tag->tag != 0x08)
-		return NULL;
-
-	iter = tag->tagdata;
-	while (iter != NULL) {
-		int cmp = strcmp(iter->title, keyname);
-		if (cmp == 0)
-			return iter;
-		iter = iter->next;
+		break;
 	}
 
-	return NULL;
-}
+	tag = flv_get_item(fm, "keyframes");
+	for (tag = tag->tagdata;
+			tag != NULL; tag = tag->next) {
+		if (tag->tag != 0x0A || tag->tagdata == NULL
+			|| strcmp(tag->title, "times") != 0)
+			continue;
 
-static double
-flv_get_value(struct flv_meta *flv, const char *keyname)
-{
-	struct metatag *tag;
+		old_tag = tag->tagdata;
+		while (old_tag != NULL) {
+			old_tag->dvalue += (fm->mt_starttime * 1.0 / 1000.0);
+			old_tag = old_tag->next;
+		}
 
-	tag = flv_get_item(flv, keyname);
-	if (tag == NULL || tag->tag != 0x00)
-		return 0.0;
-	return tag->dvalue;
-}
+		break;
+	}
 
-static void
-flv_set_value(struct flv_meta *flv, const char *keyname, double val)
-{
-	struct metatag *tag;
-	tag = flv_get_item(flv, keyname);
-	if (tag != NULL)
-		tag->dvalue = val;
 	return;
 }
 
-static double
-flv_all_value(struct flv_meta *flv, const char *keyname)
+static double flv_merge_array(struct flv_meta *fm, const char *tagname)
 {
-	double val = 0.0;
-	struct flv_meta *hi = NULL;
-
-	for (hi = flv; hi; hi = hi->mt_next)
-		val += flv_get_value(hi, keyname);
-
-	return val;
-}
-
-int main(int argc, char *argv[])
-{
-	int i;
+	double retval = 0;
+	struct flv_meta *hi;
 	struct metatag *tag;
-	struct flv_meta *h0, *hi;
-	struct flv_meta **tail = &h0;
+	struct metatag *old_tag = NULL;
 
-	for (i = 1; i < argc; i++) {
-		hi = (struct flv_meta *)malloc(sizeof(*hi));
-		hi->mt_head = NULL;
-		hi->mt_next = NULL;
-		flv_load_meta(hi, argv[i]);
-		*tail = hi;
-		 tail = &hi->mt_next;
-	}
-
-	double duration  = flv_all_value(h0, "duration");
-	double datasize  = flv_all_value(h0, "datasize");
-	double filesize  = flv_all_value(h0, "filesize");
-	double videosize  = flv_all_value(h0, "videosize");
-	double audiosize  = flv_all_value(h0, "audiosize");
-
-	flv_set_value(h0, "duration", duration);
-	flv_set_value(h0, "datasize", datasize);
-	flv_set_value(h0, "filesize", filesize);
-	flv_set_value(h0, "videosize", videosize);
-	flv_set_value(h0, "audiosize", audiosize);
-
-	struct metatag * mm_times = NULL;
-	struct metatag * mm_filepositions = NULL;
-
-	for (hi = h0; hi != NULL; hi = hi->mt_next) {
+	for (hi = fm; hi != NULL; hi = hi->mt_next) {
 		tag = flv_get_item(hi, "keyframes");
+		if (tag == NULL)
+			continue;
+		assert(tag != NULL);
 #if 0
 		printf("keyframes: %p\n", tag);
 		printf("tagdata: %p\n", tag->tagdata);
@@ -833,53 +787,153 @@ int main(int argc, char *argv[])
 
 		for (tag = tag->tagdata;
 				tag != NULL; tag = tag->next) {
-			if (tag->tag != 0x0A) {
-				//printf("unsupported tag: %x\n", tag->tag);
+			if (tag->tag != 0x0A || tag->tagdata == NULL
+				|| strcmp(tag->title, tagname) != 0)
 				continue;
-			}
 
-			if (strcmp(tag->title, "filepositions") == 0) {
-				if (tag->tagdata != NULL) {
-					if (mm_filepositions != NULL)
-						mm_filepositions->next = tag->tagdata;
-					mm_filepositions = tag->tagdata;
-					while (mm_filepositions->next != NULL)
-						mm_filepositions = mm_filepositions->next;
-				}
-			} else if (strcmp(tag->title, "times") == 0) {
-				if (tag->tagdata != NULL) {
-					if (mm_times != NULL)
-						mm_times->next = tag->tagdata;
-					mm_times = tag->tagdata;
-					while (mm_times->next != NULL)
-						mm_times = mm_times->next;
-				}
-			}
+			if (tag->tagdata->next == NULL)
+				continue;
+
+			if (old_tag != NULL)
+				old_tag->next = tag->tagdata->next;
+
+			old_tag = tag->tagdata;
+			while (old_tag->next != NULL)
+				old_tag = old_tag->next;
+			retval = old_tag->dvalue;
 		}
 	}
 
-#if 1
-	{
-		struct metatag *tag = h0->mt_head;
-		while (tag != NULL) {
-			write_tag_object(tag);
-			tag = tag->next;
-		}
-		//printf("\n");
+	return retval;
+}
+
+static void flv_update_meta(struct flvcombine *c, struct flv_meta *meta)
+{
+	int len;
+	FILE *fout;
+	char buf[4];
+	long s1, s2;
+	struct taghdr thdr;
+	struct flv_meta *iter;
+	struct metaink ink = {0};
+	struct metatag *tag = meta->mt_head;
+	double lastkeyframetimestamp, lastkeyframelocation;
+
+	fout = c->fc_file;
+	fseek(fout, 0, SEEK_SET);
+	fwrite(&c->fc_header, sizeof(c->fc_header), 1, fout);
+
+	iter = meta;
+	while (iter != NULL) {
+		flv_update_array(iter);
+		iter = iter->mt_next;
 	}
-#endif
+
+	lastkeyframetimestamp = flv_merge_array(meta, "times");
+	lastkeyframelocation = flv_merge_array(meta, "filepositions");
+
+	len = c->fc_metasize;
+	c->fc_taghdr.th_dlen[0] = len >> 16;
+	c->fc_taghdr.th_dlen[1] = len >> 8;
+	c->fc_taghdr.th_dlen[2] = len >> 0;
+	fwrite(&c->fc_taghdr, sizeof(c->fc_taghdr), 1, fout);
+
+	flv_set_value(meta, "lastkeyframelocation", lastkeyframelocation);
+	flv_set_value(meta, "lastkeyframetimestamp", lastkeyframetimestamp);
+
+	memset(&ink, 0, sizeof(ink));
+	s1 = ftell(fout);
+	ink.outfp = fout;
+	while (tag != NULL) {
+		write_tag_object(tag, &ink);
+		tag = tag->next;
+	}
+	ink_put_stream(&ink, tag_mark, sizeof(tag_mark));
+
+	buf[0] = len >> 24;
+	buf[1] = len >> 16;
+	buf[2] = len >> 8;
+	buf[3] = len >> 0;
+	fwrite(buf, 1, 4, fout);
+	s2 = ftell(fout);
+	printf("%d %ld\n", c->fc_metasize, s2 - s1);
+	return;
+}
+
+int cat_flv_video(const char *out_path, int argc, char *argv[])
+{
+	int i;
+	long data_start, data_end;
+	struct metaink ink = {0};
+	struct metatag *tag;
+	struct flvcombine context;
+	struct flv_meta *h0, *hi;
+	struct flv_meta **tail = &h0;
+
+	for (i = 0; i < argc; i++) {
+		hi = (struct flv_meta *)malloc(sizeof(*hi));
+		hi->mt_head = NULL;
+		hi->mt_next = NULL;
+		flv_load_meta(hi, argv[i]);
+		*tail = hi;
+		 tail = &hi->mt_next;
+	}
+
+	tag = h0->mt_head;
+
+	flv_merge_array(h0, "times");
+	flv_merge_array(h0, "filepositions");
+	while (tag != NULL) {
+		write_tag_object(tag, &ink);
+		tag = tag->next;
+	}
+	ink_put_stream(&ink, tag_mark, sizeof(tag_mark));
+
+	tail = &h0;
+	for (i = 0; i < argc; i++) {
+		hi = (struct flv_meta *)malloc(sizeof(*hi));
+		hi->mt_head = NULL;
+		hi->mt_next = NULL;
+		hi->mt_path = argv[i];
+		flv_load_meta(hi, argv[i]);
+		*tail = hi;
+		 tail = &hi->mt_next;
+	}
 
 #if 0
+	double lasttimestamp  = flv_all_value(h0, "lasttimestamp");
+	double lastkeyframelocation  = flv_all_value(h0, "lastkeyframelocation");
+	double lastkeyframetimestamp  = flv_all_value(h0, "lastkeyframetimestamp");
+	flv_set_value(h0, "lastkeyframelocation", lastkeyframelocation);
+	flv_set_value(h0, "lastkeyframetimestamp", lastkeyframetimestamp);
+#endif
+
 	memset(&context, 0, sizeof(context));
-	context.fc_file = fopen("out.flv", "wb");
+	context.fc_file = fopen(out_path, "wb");
 	if (context.fc_file == NULL)
 		return -1;
-	context.fc_duration = 0;
-	for (i = 1; i < argc; i++)
-		addflv(&context, argv[i]);
-	fixedflv(&context);
+	context.fc_flags = FLVF_HEADER;
+	context.fc_metasize = (ink.curp - (char *)NULL);
+	fseek(context.fc_file, sizeof(struct flvhdr) + sizeof(struct taghdr) + context.fc_metasize + 4, SEEK_SET);
+	data_start = ftell(context.fc_file);
+	for (hi = h0; hi != NULL; hi = hi->mt_next)
+		flv_merge_data(&context, hi);
+	data_end = ftell(context.fc_file);
+	flv_set_value(h0, "filesize", data_end);
+	flv_set_value(h0, "datasize", data_end - data_start);
+	flv_set_value(h0, "duration", context.fc_timestamp / 1000.0);
+	flv_set_value(h0, "videosize", context.fc_videosize);
+	flv_set_value(h0, "audiosize", context.fc_audiosize);
+	flv_set_value(h0, "lasttimestamp", context.fc_lasttimestamp / 1000.0);
+	flv_update_meta(&context, h0);
 	fclose(context.fc_file);
-	printf("seconds: %d\n", context.fc_timestamp);
-#endif
 	return 0;
 }
+
+
+int main(int argc, char *argv[])
+{
+	cat_flv_video("a.flv", argc, argv);
+	return 0;
+}
+
