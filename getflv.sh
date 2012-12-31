@@ -23,15 +23,15 @@ then
 	exit 1;
 fi;
 
-echo -n $1 > swf_url.txt
-b64enc --no-break swf_url.txt
+echo -n $1 | sed 's@http://@http:##@' > swf_url.txt
+base64 -w0 swf_url.txt > swf_url.txt.b64
 rm -f swf_url.txt
 
-wget -O flv_get_url.txt http://www.flvxz.com/getFlv.php?url=`cat swf_url.txt.b64`
+wget -O flv_get_url.txt "http://www.flvxz.com/getFlv.php?url=`cat swf_url.txt.b64`"
 rm -f swf-url.txt.b64
 
-wget -O flv_get_list.txt `cat flv_get_url.txt | sed "s/.*'\(.*\)'.*/\1/"`
-rm -f flv_get_url.txt
+#wget -O flv_get_list.txt `cat flv_get_url.txt | sed "s/.*'\(.*\)'.*/\1/"`
+#rm -f flv_get_url.txt
 
 cat << EOF > digurl.sed
 :a; h;
@@ -43,8 +43,7 @@ t a;
 d; 
 EOF
 
-sed -f digurl.sed flv_get_list.txt > flv_file_list.txt;
-
+sed -f digurl.sed flv_get_url.txt > flv_file_list.txt;
 rm -f flv_get_list.txt
 
 if [ -z "$OUTPUT" ];
@@ -59,7 +58,7 @@ fi;
 
 let minor=0;
 
-for url in `cat flv_file_list.txt`;
+for url in `sed '1d;/&hd=/d;' flv_file_list.txt`;
 do
 	wget --user-agent "Mozilla/1.0" -O "$OUTPUT.$minor.flv" "$url";
 	let minor=$minor+1;
