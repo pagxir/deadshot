@@ -7,14 +7,13 @@
 #define FLVF_HEADER 1
 #define FLVF_SCRIPT 2
 
-#pragma pack(1)
 struct flvhdr {
 	char fh_magic[3];
 	char fh_version;
 	char fh_flags;
 	char fh_hlen[4];
 	char fh_pads[4];
-};
+} __attribute__((packed));
 
 struct taghdr {
 	uint8_t th_type;
@@ -22,7 +21,7 @@ struct taghdr {
 	uint8_t th_tstamp[3];
 	uint8_t th_xstamp;
 	uint8_t th_streamid[3];
-};
+} __attribute__((packed));
 
 struct flvcombine {
 	FILE * fc_file;
@@ -666,7 +665,7 @@ static int flv_merge_data(struct flvcombine *combine, struct flv_meta *fm)
 			case 0x09:
 				if (video_index++ == 0 &&
 					(combine->fc_flags & FLVF_HEADER) == 0) {
-					skip = 0;
+					skip = 1;
 					break;
 				}
 				combine->fc_videocc ++;
@@ -729,10 +728,10 @@ static void flv_update_array(struct flv_meta *fm)
 	struct metatag *old_tag = NULL;
 
 	tag = flv_get_item(fm, "keyframes");
+	assert(tag != NULL);
 	if (tag == NULL)
 		return;
 
-	assert(tag != NULL);
 	for (tag = tag->tagdata;
 			tag != NULL; tag = tag->next) {
 		if (tag->tag != 0x0A || tag->tagdata == NULL
@@ -776,9 +775,9 @@ static double flv_merge_array(struct flv_meta *fm, const char *tagname)
 
 	for (hi = fm; hi != NULL; hi = hi->mt_next) {
 		tag = flv_get_item(hi, "keyframes");
+		assert(tag != NULL);
 		if (tag == NULL)
 			continue;
-		assert(tag != NULL);
 #if 0
 		printf("keyframes: %p\n", tag);
 		printf("tagdata: %p\n", tag->tagdata);
@@ -933,7 +932,7 @@ int cat_flv_video(const char *out_path, int argc, char *argv[])
 
 int main(int argc, char *argv[])
 {
-	cat_flv_video("a.flv", argc, argv);
+	cat_flv_video("a.flv", argc - 1, argv + 1);
 	return 0;
 }
 
