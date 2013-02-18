@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <assert.h>
-#include <winsock2.h>
+#include <stdlib.h>
+#define min(a, b) ((a) < (b)? (a): (b))
 
 #include "cantainer.h"
 

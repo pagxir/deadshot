@@ -1,6 +1,9 @@
 #include <stdio.h>
 #include <assert.h>
-#include <winsock2.h>
+#include <stdint.h>
+#include <string.h>
+#include <stdlib.h>
+#include <arpa/inet.h>
 
 #include "cantainer.h"
 
@@ -10,7 +13,7 @@
 #define SF_COMPLETED 8
 
 struct prefix {
-	long size;
+	int32_t size;
 	char magic[4];
 };
 
@@ -32,7 +35,7 @@ struct mp4_box_info {
 
 	int bi_type;
 	int bi_length;
-	long bi_small[2];
+	int32_t bi_small[2];
 	char *bi_buffer;
 };
 
@@ -178,7 +181,7 @@ mp4_table_load(struct mp4_file_info *fip,
 	   	struct cantainer *canp, struct prefix *pfixp, int index)
 {
 	int fmask;
-	long *valuep;
+	int32_t *valuep;
 	struct mp4_box_info *boxp;
 	struct mp4_trak_info *trakp;
 
@@ -193,7 +196,7 @@ mp4_table_load(struct mp4_file_info *fip,
 	switch (index) {
 		case STTS:
 		case STSC:
-			valuep = (long *)boxp->bi_buffer;
+			valuep = (int32_t *)boxp->bi_buffer;
 			assert(valuep[2] == 0);
 			trakp->ti_nalign[index] = 16;
 			trakp->ti_ncounter[index] = ntohl(valuep[3]);
@@ -201,7 +204,7 @@ mp4_table_load(struct mp4_file_info *fip,
 			break;
 
 		case STSZ:
-			valuep = (long *)boxp->bi_buffer;
+			valuep = (int32_t *)boxp->bi_buffer;
 			assert(valuep[2] == 0);
 			trakp->ti_nalign[index] = 20;
 			trakp->ti_ncounter[index] = ntohl(valuep[4]);
@@ -211,7 +214,7 @@ mp4_table_load(struct mp4_file_info *fip,
 		case STCO:
 		case STSS:
 		case CTTS:
-			valuep = (long *)boxp->bi_buffer;
+			valuep = (int32_t *)boxp->bi_buffer;
 			assert(valuep[2] == 0);
 			trakp->ti_nalign[index] = 16;
 			trakp->ti_ncounter[index] = ntohl(valuep[3]);
@@ -219,7 +222,7 @@ mp4_table_load(struct mp4_file_info *fip,
 			break;
 
 		default:
-			valuep = (long *)boxp->bi_buffer;
+			valuep = (int32_t *)boxp->bi_buffer;
 			assert(valuep[2] == 0);
 			trakp->ti_nalign[index] = 16;
 			trakp->ti_ncounter[index] = ntohl(valuep[3]);
@@ -469,7 +472,7 @@ mp4_merge_trak2(struct mp4_merg_info *mip,
 	   	struct mp4_trak_info *tip, int adjval)
 {
 	int i, j;
-	long *srcp, *dstp;
+	int32_t *srcp, *dstp;
 	struct mp4_box_info *boxp;
 
 	for (i = 0; i < ST_MAX; i++) {
@@ -482,15 +485,15 @@ mp4_merge_trak2(struct mp4_merg_info *mip,
 
 			switch(i) {
 				case STSD:
-					dstp = (long *)mip[i].mi_base;
-					srcp = (long *)boxp->bi_buffer;
+					dstp = (int32_t *)mip[i].mi_base;
+					srcp = (int32_t *)boxp->bi_buffer;
 					assert(boxp->bi_length == mip[i].mi_nbytes);
 					assert(!memcmp(dstp, srcp, mip[i].mi_nbytes));
 					break;
 
 				case STCO:
-				   	dstp = (long *)mip[i].mi_buff;
-					srcp = (long *)(boxp->bi_buffer + tip->ti_nalign[i]);
+				   	dstp = (int32_t *)mip[i].mi_buff;
+					srcp = (int32_t *)(boxp->bi_buffer + tip->ti_nalign[i]);
 					for (j = 0; j < tip->ti_ncounter[i]; j++) {
 						*dstp++ = htonl(ntohl(srcp[j]) + adjval);
 						mip[i].mi_buff += 4;
@@ -498,8 +501,8 @@ mp4_merge_trak2(struct mp4_merg_info *mip,
 					break;
 
 				case STSS:
-					dstp = (long *)mip[i].mi_buff;
-					srcp = (long *)(boxp->bi_buffer + tip->ti_nalign[i]);
+					dstp = (int32_t *)mip[i].mi_buff;
+					srcp = (int32_t *)(boxp->bi_buffer + tip->ti_nalign[i]);
 					for (j = 0; j < tip->ti_ncounter[i]; j++) {
 						if (mip[STSZ].mi_nitem2 != 0) {
 						   	*dstp++ = htonl(ntohl(srcp[j]) + mip[STSZ].mi_nitem2);
@@ -512,8 +515,8 @@ mp4_merge_trak2(struct mp4_merg_info *mip,
 					break;
 
 				case STSC:
-					dstp = (long *)mip[i].mi_buff;
-					srcp = (long *)(boxp->bi_buffer + tip->ti_nalign[i]);
+					dstp = (int32_t *)mip[i].mi_buff;
+					srcp = (int32_t *)(boxp->bi_buffer + tip->ti_nalign[i]);
 					for (j = 0; j < tip->ti_ncounter[i] * 3; j++) {
 						if ((j % 3) == 0 && mip[STCO].mi_nitem2) {
 						   	*dstp++ = htonl(ntohl(srcp[j]) + mip[STCO].mi_nitem2);
@@ -528,8 +531,8 @@ mp4_merge_trak2(struct mp4_merg_info *mip,
 				case STTS:
 				case CTTS:
 				default:
-					dstp = (long *)mip[i].mi_buff;
-					srcp = (long *)(boxp->bi_buffer + tip->ti_nalign[i]);
+					dstp = (int32_t *)mip[i].mi_buff;
+					srcp = (int32_t *)(boxp->bi_buffer + tip->ti_nalign[i]);
 					memcpy(dstp, srcp, tip->ti_nlength[i]);
 					mip[i].mi_buff += tip->ti_nlength[i];
 					break;
@@ -616,7 +619,7 @@ mp4_file_merge(size_t count, struct mp4_file_info *fips, char *paths[])
 	int mdatoff;
 	int mdatsiz;
 	int moovlen;
-	long sthd[4];
+	int32_t sthd[4];
 	int trak_flags[10];
 	struct mp4_file_info *fip;
 	struct mp4_box_info *boxp;
@@ -689,7 +692,7 @@ mp4_file_merge(size_t count, struct mp4_file_info *fips, char *paths[])
 	}
 
 	if (count > 0) {
-		long *valup;
+		int32_t *valup;
 
 		fip = fips;
 		*fip->fi_durationp = htonl(moovlen);
@@ -704,7 +707,7 @@ mp4_file_merge(size_t count, struct mp4_file_info *fips, char *paths[])
 			for (i = 1; i < ST_MAX; i++) {
 			   	boxp = tip->ti_stboxs[i];
 			   	if (tip->ti_flags & (1 << i)) {
-					valup = (long *)mip[i].mi_base;
+					valup = (int32_t *)mip[i].mi_base;
 					valup[0] = ntohl(mip[i].mi_nbytes);
 					memcpy(valup + 1, st_chunks[i], 4);
 					valup[2] = 0;
@@ -739,7 +742,7 @@ mp4_file_merge(size_t count, struct mp4_file_info *fips, char *paths[])
 					assert(filp != NULL);
 					size_t count = fips[i].fi_mdats - 8;
 					size_t offset = fips[i].fi_mdato + 8;
-					fprintf(stderr, "%d\n", offset);
+					fprintf(stderr, "%ld\n", offset);
 					file_copy(mp4fp, filp, count, offset);
 					fclose(filp);
 				}
