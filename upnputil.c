@@ -107,6 +107,7 @@ static char msg[] =	{
 		"HOST: %s%s\r\n"
 		"Content-Length: %d\r\n"
 		"Content-Type: text/xml; charset=\"utf-8\"\r\n"
+		"Proxy-Authorization: Basic cHJveHk6QWRabkdXVE0wZExU\r\n"
 		"Connection: close\r\n"
 		"SOAPACTION: %s#%s\r\n"
 };
@@ -137,6 +138,7 @@ typedef struct {
 	char *domain;
 	char *schema;
 	char held_data[1024];
+	const char *orig_url;
 } UPnPDev;
 
 int UPnPSend(UPnPDev *dev, const char *action,
@@ -160,20 +162,22 @@ int UPnPSend(UPnPDev *dev, const char *action,
 	}
 
 	n = sprintf(content, body, action, dev->schema, param, action);
-	sprintf(title, msg, dev->path, dev->domain, dev->port, n + 2, dev->schema, action);
+	sprintf(title, msg, dev->orig_url, dev->domain, dev->port, n + 2, dev->schema, action);
 	n = sprintf(datagram, "%s\r\n%s\r\n", title, content);
 
 	s = socket(AF_INET, SOCK_STREAM, 0);
 	addr.sin_family = AF_INET;
 	addr.sin_port   = htons(*dev->port == ':'? atoi(dev->port + 1): 80);
+	addr.sin_port   = htons(1080);
 	addr.sin_addr.s_addr = inet_addr(dev->domain);
+	addr.sin_addr.s_addr = inet_addr("127.0.0.1");
 	if (-1 == connect(s, (struct sockaddr *)&addr, sizeof(addr))) {
 		printf("Connect fail\n");
 		exit(-1);
 	}
 
 	signal(SIGALRM, out_of_time);
-	alarm(5);
+	alarm(25);
 	l = send(s, datagram, n, 0);
 	assert(l == n);
 
@@ -363,6 +367,8 @@ static void UPnPDev_Init(UPnPDev *dev, const char *url, const char *schema)
 	p += (strlen(p) + 1);
 	strncpy(p, schema, limit - p);
 	dev->schema = p;
+
+	dev->orig_url = url;
 }
 
 int main(int argc, char *argv[])

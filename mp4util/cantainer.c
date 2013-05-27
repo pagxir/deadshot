@@ -1,9 +1,11 @@
 #include <stdio.h>
 #include <assert.h>
 #include <stdlib.h>
-#define min(a, b) ((a) < (b)? (a): (b))
+#include <netinet/in.h>
 
 #include "cantainer.h"
+
+#define min(a, b) ((a) < (b)? (a): (b))
 
 struct cantainer {
 	void *upp;
