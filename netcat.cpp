@@ -1,6 +1,7 @@
 #ifndef WIN32
    #include <cstdlib>
    #include <unistd.h>
+   #include <ctype.h>
    #include <arpa/inet.h>
 #else
    #include <winsock2.h>
@@ -66,12 +67,12 @@ static UDTSOCKET get_cat_socket(netcat_t *upp)
 	sockaddr_in their_addr;
 	if (upp->l_mode) {
 		UDT::listen(serv, 1);
-		cerr << "server is ready at port: " << upp->s_port << endl;
+		fprintf(stderr, "server is ready at port: %s\n", upp->s_port);
 		int namelen = sizeof(their_addr);
 		UDTSOCKET fhandle = UDT::accept(serv, (sockaddr*)&their_addr, &namelen);
 		if (UDT::INVALID_SOCK == fhandle)
 			cerr << "accept: " << UDT::getlasterror().getErrorMessage() << endl;
-		cerr << "client is accepted: " << endl;
+		fprintf(stderr, "client is accepted: \n");
 		UDT::close(serv);
 		return fhandle;
 	} else {
@@ -217,6 +218,7 @@ int main(int argc, char* argv[])
 #define DIRECT_UDT2FD 1
 #define DIRECT_FD2UDT 2
 
+   time_t last_time = 0;
    do {
 	   int result;
 	   fd_set readfds, writefds;
@@ -298,7 +300,7 @@ int main(int argc, char* argv[])
 		   }
 		   fuoff += r;
 		   if (fuoff == fulen) {
-			   last_direct &= DIRECT_FD2UDT;
+			   last_direct &= ~((fd_status & 1)? 0: DIRECT_FD2UDT);
 			   fuoff = fulen = 0;
 		   }
 		   udt_status &= ~2;
@@ -325,7 +327,7 @@ int main(int argc, char* argv[])
 
 		   ufoff += r;
 		   if (ufoff == uflen) {
-			   last_direct &= DIRECT_UDT2FD;
+			   last_direct &= ~((udt_status & 1)? 0: DIRECT_UDT2FD);
 			   ufoff = uflen = 0;
 		   }
 		   fd_status &= ~2;
@@ -343,10 +345,17 @@ int main(int argc, char* argv[])
 		   }
 	   }
 
+	   if (last_time == 0 && (udt_status & 1)) {
+   			UDT::perfmon(fhandle, &trace);
+   			last_time = time(NULL);
+	   }
+
    } while (!fdudt_eof || (fulen > fuoff) || (uflen > ufoff));
 
    UDT::perfmon(fhandle, &trace);
-   cerr << "speed = " << trace.mbpsSendRate << "Mbits/sec" << endl;
+   fprintf(stderr, "RX packet = %ld , TX packet = %ld\n", trace.pktRecv, trace.pktSent);
+   fprintf(stderr, "RX = %f MB/sec, TX = %f MB/sec\n", trace.mbpsRecvRate / 8, trace.mbpsSendRate / 8);
+   fprintf(stderr, "RX packet loss = %d , TX packet loss = %d, rexmt = %d\n", trace.pktRcvLoss, trace.pktSndLoss, trace.pktRetrans);
 
    UDT::close(fhandle);
 
