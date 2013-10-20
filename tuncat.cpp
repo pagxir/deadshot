@@ -56,7 +56,9 @@ static int tun_create(char *dev, int flags)
 	int fd, err, flag;
 	struct ifreq ifr;
 
-	if ((fd = open("/dev/net/tun", O_RDWR)) < 0) {
+	fd = open("/dev/net/tun", O_RDWR);
+	fd = (fd > -1? fd: open("/dev/tun", O_RDWR));
+	if (fd < 0) {
 		return fd;
 	}
 
@@ -246,15 +248,17 @@ static netcat_t* get_cat_context(netcat_t *upp, int argc, char **argv)
 #define STATUS_TUNR 0x0100
 #define STATUS_TUNW 0x1000
 
+#ifdef USE_CACHE
 static int _t2n_w = 0;
 static int _t2n_r = 0;
-static int _t2n_len[128];
-static char *_t2n_buf[128];
+static int _t2n_len[USE_CACHE];
+static char *_t2n_buf[USE_CACHE];
 
 static int _n2t_w = 0;
 static int _n2t_r = 0;
-static int _n2t_len[128];
-static char *_n2t_buf[128];
+static int _n2t_len[USE_CACHE];
+static char *_n2t_buf[USE_CACHE];
+#endif
 
 int main(int argc, char* argv[])
 {
@@ -315,6 +319,7 @@ int main(int argc, char* argv[])
 		check = ((rdwr & STATUS_TUNW) && FD_ISSET(tun_fd, &writefds));
 		check? (rdwr &= ~STATUS_TUNW): (STATUS_TUNW);
 
+#ifdef USE_CACHE
 		while (0x0 == (STATUS_NETW & rdwr) && (_t2n_len[_t2n_w] > 0)) {
 			result = write(net_fd, _t2n_buf[_t2n_w], _t2n_len[_t2n_w]);
 			if (result == -1) {
@@ -324,8 +329,9 @@ int main(int argc, char* argv[])
 
 			free(_t2n_buf[_t2n_w]);
 			_t2n_len[_t2n_w++] = 0;
-			_t2n_w %= 128;
+			_t2n_w %= CACHE_SIZE;
 		}
+#endif
 
 		check = (STATUS_TUNR | STATUS_NETW);
 		while (0x0 == (rdwr & check)) {
@@ -341,10 +347,13 @@ int main(int argc, char* argv[])
 			check = write(net_fd, packet, result); 
 			if (check == -1) {
 				rdwr |= STATUS_NETW;
+#ifdef USE_CACHE
 				goto pack_tun_d;
+#endif
 			}
 		}
 
+#ifdef USE_CACHE
 		while ((STATUS_TUNR & rdwr) == 0 && (_t2n_len[_t2n_r] == 0)) {
 			result = read(tun_fd, packet, sizeof(packet));
 			if (result == -1) {
@@ -356,7 +365,7 @@ pack_tun_d:
 			_t2n_buf[_t2n_r] = memdup(packet, result);
 			if (_t2n_buf[_t2n_r]) {
 				_t2n_len[_t2n_r++] = result;
-				_t2n_r %= 128;
+				_t2n_r %= CACHE_SIZE;
 			}
 		}
 
@@ -369,8 +378,9 @@ pack_tun_d:
 
 			free(_n2t_buf[_n2t_w]);
 			_n2t_len[_n2t_w++] = 0;
-			_n2t_w %= 128;
+			_n2t_w %= CACHE_SIZE;
 		}
+#endif
 
 		check = (STATUS_TUNW | STATUS_NETR);
 		while (0 == (rdwr & check)) {
@@ -383,10 +393,13 @@ pack_tun_d:
 			check = write(tun_fd, packet, result); 
 			if (check == -1) {
 				rdwr |= STATUS_TUNW;
+#ifdef USE_CACHE
 				goto pack_net_d;
+#endif
 			}
 		}
 
+#ifdef USE_CACHE
 		while ((STATUS_NETR & rdwr) == 0x0 && (_n2t_len[_n2t_r] == 0)) {
 			result = read(net_fd, packet, sizeof(packet));
 			if (result == -1) {
@@ -397,9 +410,10 @@ pack_net_d:
 			_n2t_buf[_n2t_r] = memdup(packet, result);
 			if (_n2t_buf[_n2t_r] != NULL) {
 				_n2t_len[_n2t_r++] = result;
-				_n2t_r %= 128;
+				_n2t_r %= CACHE_SIZE;
 			}
 		}
+#endif
 	}
 
 	close(net_fd);
