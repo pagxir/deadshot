@@ -5,7 +5,6 @@
 #include <windows.h>
 
 #include "Network.h"
-#pragma warning(disable: 4996) 
 
 static BOOL bIsRunning = TRUE;
 static HANDLE gQuitPortHandle = INVALID_HANDLE_VALUE;
@@ -78,7 +77,7 @@ static int full_link = 0, half_link = 0;
 const char * CountToText(char *title, __int64 rate)
 {
 	if (rate < 8192) {
-		sprintf(title, "%8lld", rate);
+		sprintf(title, "%8ld", (long)rate);
 		return title;
 	}
 	if (rate < 8192 * 1024) {
@@ -405,8 +404,6 @@ int proxy_notify(struct xiocb * cbp)
 
 int proxy_xioing(struct proxycb *cb)
 {
-	char buf[1024];
-
 	if (cb->log_file == NULL) {
 #if 0
 		sprintf(buf, "http_trace-%08d-%08x.txt", GetTickCount(), cb);
@@ -421,15 +418,17 @@ int proxy_xioing(struct proxycb *cb)
 		int addr_len = sizeof(addr_in1);
 
 		time(&now);
-		fprintf(cb->log_file, "time: %d\r\n", now);
+		//fprintf(cb->log_file, "time: %u\r\n", now);
 
 		error = getpeername(cb->fd_dst, (struct sockaddr*)&addr_in1, &addr_len);
 		fprintf(cb->log_file, "server: %s:%d\r\n",
 				inet_ntoa(addr_in1.sin_addr), htons(addr_in1.sin_port));
+		if (error == -1) exit(-2);
 
 		error = getpeername(cb->fd_src, (struct sockaddr*)&addr_in1, &addr_len);
-		fprintf(cb->log_file, "client: %s\r\n\r\n",
+		fprintf(cb->log_file, "client: %s:%d\r\n\r\n",
 				inet_ntoa(addr_in1.sin_addr), htons(addr_in1.sin_port));
+		if (error == -1) exit(-2);
 	}
 
 	cb->xy_d2s.xio_buf = cb->xy_snd_buf;
@@ -480,13 +479,14 @@ int proxy_udpass(HANDLE hPort, in_addr & addr1, u_short & port1, struct proxycb 
 	NASSERT (fd1 != -1);
 
 	int rcvbufsiz = 8192;
-	setsockopt(fd1, SOL_SOCKET, SO_RCVBUF, &rcvbufsiz, sizeof(rcvbufsiz));
+	setsockopt(fd1, SOL_SOCKET, SO_RCVBUF, (const char *)&rcvbufsiz, sizeof(rcvbufsiz));
 
 	memset(&addr_in1, 0, sizeof(addr_in1));
 	addr_in1.sin_family = AF_INET;
 	addr_in1.sin_port   = 0;
 	addr_in1.sin_addr.s_addr = INADDR_ANY;
 	error = bind(fd1, (struct sockaddr *)&addr_in1, sizeof(addr_in1));
+	error = error;
 
 	cb->xy_addr = addr1;
 	cb->xy_port = port1;
@@ -556,7 +556,7 @@ void udp_readed(struct XIOCBCTX * ctx, size_t iosize, BOOL success, HANDLE handl
 {
 	size_t namelen;
 	int test_flags;
-	HANDLE handle1 = NULL;
+	//HANDLE handle1 = NULL;
 	struct proxycb * cb = NULL;
 	cb = reinterpret_cast<struct proxycb*>(ctx->xc_udata);
 	NASSERT(0 == memcmp(cb->xy_magic, ".xy", 4));
@@ -1087,7 +1087,7 @@ int NDSMainCall(BOOL IsInterActive)
 	error = proxy_accept(listen1);
 	NASSERT(error == 0);
 
-	int last_print = 0;
+	//int last_print = 0;
 	while ( bIsRunning ) {
 		proxy_event(hPort, listen1);
 		rate_cacl(0, 0, 0);
