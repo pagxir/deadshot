@@ -88,7 +88,7 @@ static void module_init(void)
 
 	do {
 		int rcvbufsiz = 8192;
-		setsockopt(_file, SOL_SOCKET, SO_RCVBUF, &rcvbufsiz, sizeof(rcvbufsiz));
+		setsockopt(_file, SOL_SOCKET, SO_RCVBUF, (const char *)&rcvbufsiz, sizeof(rcvbufsiz));
 	} while ( 0 );
 
 	error = bind(_file, (struct sockaddr *)&_addr_in, sizeof(_addr_in));
@@ -105,7 +105,7 @@ static void listen_statecb(void * context)
 	socklen_t addr_len;
 	struct sockaddr_in addr_in;
 
-	state = (int)context;
+	state = (int)(long)context;
 	switch (state) {
 		case EV_RUNSTART:
 			addr_len = sizeof(addr_in);

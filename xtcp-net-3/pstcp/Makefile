@@ -1,6 +1,5 @@
-CC = g++
 RM = rm
-LDLIBS = -lrt
+LDLIBS = -lws2_32
 CFLAGS = -O2 -g
 CXXFLAGS = -O2 -g
 OBJECTS = rgnbuf.o event.o modules.o tcp_device.o \
@@ -13,13 +12,13 @@ USRV_OBJ = server.o pstcp_listen.o pstcp_http.o
 all: server.exe client.exe
 
 server.exe: $(SRV_OBJ) $(OBJECTS) 
-	$(CC) $(LDFLAGS) $(SRV_OBJ) $(OBJECTS) $(LDLIBS) -o $@
+	$(CXX) $(LDFLAGS) $(SRV_OBJ) $(OBJECTS) $(LDLIBS) -o $@
 
 client.exe: $(CLT_OBJ) $(OBJECTS)
-	$(CC) $(LDFLAGS) $(CLT_OBJ) $(OBJECTS) $(LDLIBS) -o $@
+	$(CXX) $(LDFLAGS) $(CLT_OBJ) $(OBJECTS) $(LDLIBS) -o $@
 
 uhttpd.exe: $(USRV_OBJ) $(OBJECTS)
-	$(CC) $(LDFLAGS) $(USRV_OBJ) $(OBJECTS) $(LDLIBS) -o $@
+	$(CXX) $(LDFLAGS) $(USRV_OBJ) $(OBJECTS) $(LDLIBS) -o $@
 
 clean:
 	$(RM) $(OBJECTS) $(CLT_OBJ) $(SRV_OBJ) $(USRV_OBJ)

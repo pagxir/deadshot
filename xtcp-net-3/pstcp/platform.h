@@ -5,8 +5,12 @@
 
 #ifdef _WIN32_
 #include <winsock.h>
-#define WSAEINPROGRESS WSAEWOULDBLOCK
+//#define WSAEINPROGRESS WSAEWOULDBLOCK
 #define assert(exp) do { if (exp); else {printf("%s:%d", __FILE__, __LINE__); Sleep(INFINITE); }; } while ( 0 );
+#define max(a, b) (((a) < (b))? (b): (a))
+#define min(a, b) (((a) < (b))? (a): (b))
+
+#define socklen_t int
 #else
 #include <errno.h>
 #include <unistd.h>
@@ -26,10 +30,10 @@
 #define WSAEINPROGRESS EINPROGRESS
 #define WSAEINVAL EINVAL
 #define stricmp strcmp
+unsigned int GetTickCount(void);
 #endif
 
 void setnonblock(int fd);
-unsigned int GetTickCount(void);
 
 #endif
 

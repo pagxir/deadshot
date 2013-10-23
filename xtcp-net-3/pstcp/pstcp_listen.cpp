@@ -38,7 +38,7 @@ static void accept_statecb(void * ignore)
 	int state;
 	int error = -1;
 
-	state = (int)ignore;
+	state = (int)(long)ignore;
 	if (state == EV_RUNSTOP) {
 		fprintf(stderr, "listen_stop\n");
 		drop_event(&_event);

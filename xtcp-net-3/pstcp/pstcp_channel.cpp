@@ -159,7 +159,7 @@ int pstcp_channel::run(void)
 	if (m_woff >= m_wlen) {
 		int test_flags = (TF_EOF1 | TF_SHUT1);
 		if ((m_flags & test_flags) == TF_EOF1) {
-			shutdown(m_file, SD_BOTH);
+			shutdown(m_file, 2);
 			test_flags |= TF_SHUT1;
 		}
 		m_woff = m_wlen = 0;
