@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdint.h>
 #include <windows.h>
 
 /* OPTION:
@@ -226,7 +227,9 @@ int main(int argc, char * argv[])
 	int skip = 0, seek = 0;
 	int bs = -1, ibs = 4096, obs = 4096;
 	int buffer_size = 0;
+    int dummy_zero_read = 0, dummy_hole_write = 0;
 	int count_read, count_write;
+    uint64_t count_summary = 0;
 	DWORD time_start, time_finish, time_use;
 
 	const char * input_path = "-";
@@ -264,6 +267,9 @@ int main(int argc, char * argv[])
 	valid_size("invalid input block size", ibs);
 	valid_size("invalid output block size", obs);
 
+    if (strcmp(input_path, "/dev/zero") == 0) {
+        dummy_zero_read = 1;
+    } else {
 	input_handle = open_file(input_path, GENERIC_READ);
 	if (input_device != NULL &&
 			input_handle == INVALID_HANDLE_VALUE) {
@@ -271,7 +277,12 @@ int main(int argc, char * argv[])
 	   	input_handle = open_file(input_path, GENERIC_READ);
 	}
 	valid_handle("invalid input handle", input_handle);
+    }
 
+    if (strcmp(output_path, "/dev/null") == 0
+        || strcmp(output_path, "/dev/zero") == 0) {
+        dummy_hole_write = 1;
+    } else {
 	output_handle = open_file(output_path, GENERIC_WRITE);
 	if (output_device != NULL &&
 			output_handle == INVALID_HANDLE_VALUE) {
@@ -279,19 +290,23 @@ int main(int argc, char * argv[])
 	   	output_handle = open_file(output_path, GENERIC_WRITE);
 	}
 	valid_handle("invalid output handle", output_handle);
+    }
 
 	buffer_size = (ibs < obs? obs: ibs) * 2;
 	buffer_alloc = (char *)malloc(buffer_size);
 	valid_buffer("alloc buffer fail", buffer_alloc);
 
-	if (seek > 0) {
+	if (seek > 0 && !dummy_hole_write) {
 		DWORD pos = SetFilePointer(output_handle,
 			   	seek * obs, NULL, FILE_CURRENT);
 	   	valid_size("seek ouput file fail", pos != INVALID_SET_FILE_POINTER);
 		valid_size("seek output file fail", pos == seek * obs);
 	}
 
-	if (skip > 0) {
+    if (dummy_zero_read) {
+        /* clear all memory buffer */
+        memset(buffer_alloc, 0, buffer_size);
+    } else if (skip > 0) {
 		DWORD pos = SetFilePointer(input_handle,
 			   	skip * ibs, NULL, FILE_CURRENT);
 	   	valid_size("skip input file fail", pos != INVALID_SET_FILE_POINTER);
@@ -307,7 +322,9 @@ int main(int argc, char * argv[])
 		DWORD transfer = 0;
 
 		while (buffer_read < buffer_alloc + obs) {
-			if (!ReadFile(input_handle, buffer_read, ibs, &transfer, NULL)) {
+            if (dummy_zero_read) {
+                transfer = ibs;
+            } else if (!ReadFile(input_handle, buffer_read, ibs, &transfer, NULL)) {
 				read_write_error = 2;
 				break;
 			}
@@ -317,6 +334,7 @@ int main(int argc, char * argv[])
 				break;
 			}
 
+            count_summary += (uint64_t)transfer;
 			buffer_read += transfer;
 			count_read += transfer;
 
@@ -328,7 +346,9 @@ int main(int argc, char * argv[])
 		}
 
 		while (buffer_write + obs <= buffer_read) {
-			if (!WriteFile(output_handle, buffer_write, obs, &transfer, NULL)) {
+            if (dummy_hole_write) {
+                transfer = obs;
+            } else if (!WriteFile(output_handle, buffer_write, obs, &transfer, NULL)) {
 				read_write_error = 2;
 				break;
 			}
@@ -343,24 +363,36 @@ int main(int argc, char * argv[])
 			count_write += transfer;
 		}
 
+        if (dummy_zero_read == 0)
 		memmove(buffer_alloc, buffer_write, count_read - count_write);
 		buffer_read = buffer_alloc + (count_read - count_write);
 		buffer_write = buffer_alloc;
 	}
 
 	while (read_write_error == 1 &&
-			count_write < count_read) {
+			(count_write - count_read) < 0) {
 		DWORD transfer = (count_read - count_write);
 
 		valid_size("internal error", transfer < obs);
-		if (WriteFile(output_handle, buffer_write, transfer, &transfer, NULL)) {
+        if (dummy_hole_write) {
+            transfer = obs;
+		   	output_stat[transfer == obs]++;
+		   	buffer_write += transfer;
+		   	count_write += transfer;
+            continue;
+        } else if (WriteFile(output_handle, buffer_write, transfer, &transfer, NULL)) {
 		   	output_stat[transfer == obs]++;
 		   	buffer_write += transfer;
 		   	count_write += transfer;
 			continue;
 		}
 
-		if (WriteFile(output_handle, buffer_write, obs, &transfer, NULL)) {
+        if (dummy_hole_write) {
+            transfer = obs;
+		   	output_stat[transfer == obs]++;
+		   	buffer_write += transfer;
+		   	count_write += transfer;
+        } else if (WriteFile(output_handle, buffer_write, obs, &transfer, NULL)) {
 		   	output_stat[transfer == obs]++;
 		   	buffer_write += transfer;
 		   	count_write += transfer;
@@ -372,7 +404,9 @@ int main(int argc, char * argv[])
 	}
 	time_finish = GetTickCount();
 
+    if (!dummy_hole_write)
 	CloseHandle(output_handle);
+    if (!dummy_zero_read)
 	CloseHandle(input_handle);
 	free(buffer_alloc);
 
@@ -385,8 +419,8 @@ int main(int argc, char * argv[])
 	time_use = time_finish > time_start? time_finish - time_start: 1;
 	fprintf(stderr, "%d+%d records in\n", input_stat[1], input_stat[0]);
 	fprintf(stderr, "%d+%d records out\n", output_stat[1], output_stat[0]);
-	fprintf(stderr, "%d bytes transferred in %f secs (%.0f bytes/sec)\n",
-		   	count_read, time_use / 1000.0, count_read * 1000.0 / time_use);
+	fprintf(stderr, "%I64d bytes transferred in %f secs (%I64d bytes/sec)\n",
+		   	count_summary, time_use / 1000.0, count_summary * 1000 / time_use);
 	return 0;
 }
 
