@@ -1,8 +1,8 @@
-#include "Stdafx.h"
+#include "stdafx.h"
 #include <time.h>
 #include <stdio.h>
 #include <windows.h>
-#include <Dbghelp.h>
+#include <dbghelp.h>
 
 #include "Exception.h"
 

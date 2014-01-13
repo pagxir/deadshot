@@ -1,7 +1,7 @@
-#include "Stdafx.h"
+#include "stdafx.h"
 #include <windows.h>
-#include <AccCtrl.h>
-#include <Aclapi.h>
+#include <accctrl.h>
+#include <aclapi.h>
 #include <assert.h>
 
 #include <vector>

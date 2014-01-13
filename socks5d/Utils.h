@@ -29,11 +29,13 @@ int ds_abort(const char * msg, const char * exp, const char * file, int line);
 typedef struct sqlite3 sqlite3;
 extern "C" int sqlite3_open(const char * path, sqlite3 ** dbase);
 
+#if 0
 static int sqlite3_open_ansi(const char * path, sqlite3 ** dbase)
 {
 	char buf[4096];
 	OEMCharToUTF8Char(buf, path, sizeof(buf));
 	return sqlite3_open(buf, dbase);
 }
+#endif
 
 #endif
