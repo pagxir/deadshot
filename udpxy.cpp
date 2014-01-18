@@ -1,4 +1,4 @@
-#ifndef __WIN32__
+#ifndef WIN32
 #include <time.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -13,6 +13,7 @@
 #define S_WRITE write
 #else
 #include <winsock2.h>
+#include <ws2tcpip.h>
 #define socklen_t int
 #define S_CLOSE(s) closesocket(s)
 #define S_READ(fd, buf, len) recv(fd, buf, len, 0)
@@ -25,202 +26,365 @@
 #include <assert.h>
 #include <set>
 
+#define RCVSIZ 16384
 #define UDPF_KEEP 0x00000001
+#define IN6ADDRSZ  16
+#define INT16SZ    2
 
-struct udpiocb {
-    int flags;
-    int udpio_fd;
-    time_t last_active;
-    struct sockaddr_in udpio_addr;
+struct udp6to4cb {
+	int flags;
+	int fildes;
+	int source;
+	time_t lastidle;
+	struct sockaddr_in target;
 };
 
-bool operator < (const struct udpiocb & a, const struct udpiocb & b)
+bool operator < (const struct udp6to4cb & a, const struct udp6to4cb & b)
 {
-    struct sockaddr_in addr_a, addr_b;
-    addr_a = a.udpio_addr;
-    addr_b = b.udpio_addr;
-    if (addr_a.sin_port == addr_b.sin_port)
-        return (addr_a.sin_addr.s_addr < addr_b.sin_addr.s_addr);
-    return (addr_a.sin_port < addr_b.sin_port);
+	u_short in_port1;
+	u_short in_port2;
+	struct in_addr in_addr1;
+	struct in_addr in_addr2;
+
+	in_port1 = a.target.sin_port;
+	in_addr1 = a.target.sin_addr;
+
+	in_port2 = b.target.sin_port;
+	in_addr2 = b.target.sin_addr;
+
+	if (in_port1 != in_port2)
+		return (in_port1 < in_port2);
+
+	return memcmp(&in_addr1, &in_addr2, sizeof(in_addr1)) < 0;
 }
 
-static std::set<udpiocb> udpio_list;
+static std::set<udp6to4cb> udp6to4_list;
+
+struct udp4to6cb {
+	int flags;
+	int fildes;
+	int source;
+	time_t lastidle;
+	struct sockaddr_in6 target;
+};
+
+bool operator < (const struct udp4to6cb & a, const struct udp4to6cb & b)
+{
+	u_short in6_port1;
+	u_short in6_port2;
+	struct in6_addr in6_addr1;
+	struct in6_addr in6_addr2;
+
+	in6_port1 = a.target.sin6_port;
+	in6_addr1 = a.target.sin6_addr;
+
+	in6_port2 = b.target.sin6_port;
+	in6_addr2 = b.target.sin6_addr;
+
+	if (in6_port1 != in6_port2)
+		return (in6_port1 < in6_port2);
+
+	return memcmp(&in6_addr1, &in6_addr2, sizeof(in6_addr1)) < 0;
+}
+
+static std::set<udp4to6cb> udp4to6_list;
 
 int udpio_add(u_long addr, u_short port)
 {
-    int error;
-    struct udpiocb iocb;
-    struct sockaddr_in addr_in1;
-    int s_udp = socket(PF_INET, SOCK_DGRAM, 0);
-    assert(s_udp != -1);
+	int error;
+	int rcvsiz = RCVSIZ;
+	struct udp6to4cb iocb;
+	struct sockaddr_in addr_in1;
+	struct sockaddr_in6 addr_in6;
+	int s_udp = socket(PF_INET6, SOCK_DGRAM, 0);
+	assert(s_udp != -1);
 
-	int rcvbufsiz = 8192;
-    setsockopt(s_udp, SOL_SOCKET, SO_RCVBUF, &rcvbufsiz, sizeof(rcvbufsiz));
+	setsockopt(s_udp, SOL_SOCKET, SO_RCVBUF, (char *)&rcvsiz, sizeof(rcvsiz));
 
-    addr_in1.sin_family = AF_INET;
-    addr_in1.sin_port = htons(port);
-    addr_in1.sin_addr.s_addr = htonl(INADDR_ANY);
-    error = bind(s_udp, (struct sockaddr *)&addr_in1, sizeof(addr_in1));
-    assert(error == 0);
-    iocb.flags = UDPF_KEEP;
-    iocb.udpio_fd = s_udp;
-    iocb.udpio_addr = addr_in1;
-    iocb.udpio_addr.sin_addr.s_addr = addr;
-    udpio_list.insert(iocb);
-    return 0;
+	memset(&addr_in6, 0, sizeof(addr_in6));
+	addr_in6.sin6_family = AF_INET6;
+	addr_in6.sin6_port = htons(port + 2000);
+	addr_in6.sin6_port = htons(port);
+	error = bind(s_udp, (struct sockaddr *)&addr_in6, sizeof(addr_in6));
+	assert(error == 0);
+
+	addr_in1.sin_family = AF_INET;
+	addr_in1.sin_port = htons(port);
+	addr_in1.sin_addr.s_addr = htonl(INADDR_ANY);
+	iocb.flags = UDPF_KEEP;
+	iocb.fildes = s_udp;
+	iocb.target = addr_in1;
+	iocb.target.sin_addr.s_addr = addr;
+	udp6to4_list.insert(iocb);
+	return 0;
 }
 
 int udpio_final(void)
 {
-    std::set<udpiocb>::const_iterator iter;
-    iter = udpio_list.begin();
-    while (iter != udpio_list.end()) {
-        S_CLOSE(iter->udpio_fd);
-        ++iter;
-    }
-    return 0;
+	std::set<udp6to4cb>::const_iterator iter64;
+	std::set<udp4to6cb>::const_iterator iter46;
+
+	iter64 = udp6to4_list.begin();
+	while (iter64 != udp6to4_list.end()) {
+		S_CLOSE(iter64->fildes);
+		++iter64;
+	}
+
+	iter46 = udp4to6_list.begin();
+	while (iter46 != udp4to6_list.end()) {
+		S_CLOSE(iter46->fildes);
+		++iter46;
+	}
+
+	return 0;
 }
 
 int udpio_realloc(const struct sockaddr_in & addr)
 {
-    struct udpiocb iocb;
-    iocb.flags = 0;
-    iocb.udpio_addr = addr;
-    std::set<udpiocb>::iterator iter;
-    iter = udpio_list.find(iocb);
-    if (iter != udpio_list.end()) {
-        iocb = *iter;
-        time(&iocb.last_active);
-        udpio_list.erase(iter);
-        udpio_list.insert(iocb);
-        return iocb.udpio_fd;
-    }
-    iocb.udpio_fd = socket(AF_INET, SOCK_DGRAM, 0);
-    time(&iocb.last_active);
-    udpio_list.insert(iocb);
-    return iocb.udpio_fd;
+	int fd;
+	int rcvsiz = RCVSIZ;
+	struct udp6to4cb iocb;
+
+	iocb.flags = 0;
+	iocb.target = addr;
+	std::set<udp6to4cb>::iterator iter;
+
+	iter = udp6to4_list.find(iocb);
+	if (iter != udp6to4_list.end()) {
+		iocb = *iter;
+		time(&iocb.lastidle);
+		udp6to4_list.erase(iter);
+		udp6to4_list.insert(iocb);
+		return iocb.fildes;
+	}
+
+	fprintf(stderr, "failure\n");
+	return -1;
+}
+
+int udpio_realloc(int source, const struct sockaddr_in6 & addr)
+{
+	int fd;
+	int rcvsiz = RCVSIZ;
+	struct udp4to6cb iocb;
+
+	iocb.flags = 0;
+	iocb.target = addr;
+	std::set<udp4to6cb>::iterator iter;
+
+	iter = udp4to6_list.find(iocb);
+	if (iter != udp4to6_list.end()) {
+		iocb = *iter;
+		time(&iocb.lastidle);
+		udp4to6_list.erase(iter);
+		udp4to6_list.insert(iocb);
+		return iocb.fildes;
+	}
+
+	fd = socket(AF_INET, SOCK_DGRAM, 0);
+	setsockopt(fd, SOL_SOCKET, SO_RCVBUF, (char *)&rcvsiz, sizeof(rcvsiz));
+
+	iocb.fildes = fd;
+	iocb.target = addr;
+	iocb.source = source;
+	time(&iocb.lastidle);
+	udp4to6_list.insert(iocb);
+	return iocb.fildes;
 }
 
 int udpio_event(fd_set * readfds, fd_set * writefds, fd_set * errorfds)
 {
-    int fd, len;
-       char buf[4096];
-    int addr_len1;
-    struct sockaddr_in addr_in1;
-    std::set<udpiocb>::iterator iter;
-    iter = udpio_list.begin();
-    while (iter != udpio_list.end()) {
-        if (FD_ISSET(iter->udpio_fd, readfds)) {
-            addr_len1 = sizeof(addr_in1);
-            len = recvfrom(iter->udpio_fd, buf, sizeof(buf), 0,
-                     (struct sockaddr *)&addr_in1, &addr_len1);
-            fd = udpio_realloc(addr_in1);
-            sendto(fd, buf, len, 0, (struct sockaddr *)&(iter->udpio_addr),
-                     sizeof(iter->udpio_addr));
-        }
-        ++iter;
-    }
-    return 0;
+	int fd, len;
+	int addr_len1;
+	char buf[4096];
+	struct sockaddr_in addr_in4;
+	struct sockaddr_in6 addr_in6;
+	std::set<udp6to4cb>::iterator iter64;
+	std::set<udp4to6cb>::iterator iter46;
+
+	iter64 = udp6to4_list.begin();
+	while (iter64 != udp6to4_list.end()) {
+		int source = -1;
+		if (FD_ISSET(iter64->fildes, readfds)) {
+			addr_len1 = sizeof(addr_in6);
+			len = recvfrom(iter64->fildes, buf, sizeof(buf), 0,
+					(struct sockaddr *)&addr_in6, &addr_len1);
+			if (len == -1) continue;
+
+			fprintf(stderr, "recvfrom6to4: len = %d\n", len);
+			if (iter64->flags & UDPF_KEEP) {
+				fd = udpio_realloc(iter64->fildes, addr_in6);
+				fprintf(stderr, "alloc pair %d, src %d\n", fd, iter64->fildes);
+			} else {
+				fd = iter64->source;
+				fprintf(stderr, "user source pair %d\n", fd);
+			}
+
+			int err = sendto(fd, buf, len, 0, (struct sockaddr *)
+					&(iter64->target), sizeof(iter64->target));
+		}
+		++iter64;
+	}
+
+	iter46 = udp4to6_list.begin();
+	while (iter46 != udp4to6_list.end()) {
+		if (FD_ISSET(iter46->fildes, readfds)) {
+			addr_len1 = sizeof(addr_in4);
+			len = recvfrom(iter46->fildes, buf, sizeof(buf), 0,
+					(struct sockaddr *)&addr_in4, &addr_len1);
+			if (len == -1) continue;
+			fprintf(stderr, "recvfrom4to6: len = %d\n", len);
+
+			if (iter46->flags & UDPF_KEEP) {
+				fprintf(stderr, "failure send\n");
+				continue;
+			}
+
+			int err = sendto(fd, buf, len, 0, (struct sockaddr *)
+					&(iter46->target), sizeof(iter46->target));
+		}
+		++iter46;
+	}
+
+	return 0;
 }
 
 int udpio_collect(time_t current)
 {
-    int count = udpio_list.size();
-    std::set<udpiocb>::iterator iter;
-    iter = udpio_list.begin();
-    while (iter != udpio_list.end()) {
-        if (iter->last_active + 60 < current &&
-                (iter->flags & UDPF_KEEP) == 0) {
-            closesocket(iter->udpio_fd);
-            udpio_list.erase(iter++);
-            continue;
-        }
-         ++iter;
-    }
-    if (udpio_list.size() != count)
-        printf("udpio collect: %d %d\n", udpio_list.size(), count);
-    assert (udpio_list.size() <= count);
-    return count - udpio_list.size();
+	int sum = 0;
+	int count = udp6to4_list.size();
+	std::set<udp6to4cb>::iterator iter64;
+	std::set<udp4to6cb>::iterator iter46;
+
+	iter64 = udp6to4_list.begin();
+	while (iter64 != udp6to4_list.end()) {
+		if (iter64->lastidle + 150 < current &&
+				(iter64->flags & UDPF_KEEP) == 0) {
+			S_CLOSE(iter64->fildes);
+			udp6to4_list.erase(iter64++);
+			continue;
+		}
+		++iter64;
+	}
+
+	if (udp6to4_list.size() != count) {
+		fprintf(stderr, "udpio collect: %d %d\n", udp6to4_list.size(), count);
+		assert (udp6to4_list.size() <= count);
+		sum += (count - udp6to4_list.size());
+	}
+
+	count = udp4to6_list.size();
+	iter46 = udp4to6_list.begin();
+	while (iter46 != udp4to6_list.end()) {
+		if (iter46->lastidle + 150 < current &&
+				(iter46->flags & UDPF_KEEP) == 0) {
+			S_CLOSE(iter46->fildes);
+			udp4to6_list.erase(iter46++);
+			continue;
+		}
+		++iter46;
+	}
+
+	if (udp4to6_list.size() != count) {
+		fprintf(stderr, "udpio collect: %d %d\n", udp4to6_list.size(), count);
+		assert (udp4to6_list.size() <= count);
+		sum += (count - udp4to6_list.size());
+	}
+
+	return sum;
 }
 
 int udpio_fd_set(fd_set * readfds, fd_set * writefds, fd_set * errorfds)
 {
-    int fd_max = 0;
-    std::set<udpiocb>::const_iterator iter;
-    iter = udpio_list.begin();
-    while (iter != udpio_list.end()) {
-        FD_SET(iter->udpio_fd, readfds);
-        fd_max = (fd_max < iter->udpio_fd? iter->udpio_fd: fd_max);
-        ++iter;
-    }
-    return fd_max;
+	int fd_max = 0;
+	std::set<udp6to4cb>::const_iterator iter64;
+	std::set<udp4to6cb>::const_iterator iter46;
+
+	iter64 = udp6to4_list.begin();
+	while (iter64 != udp6to4_list.end()) {
+		FD_SET(iter64->fildes, readfds);
+		fd_max = (fd_max < iter64->fildes? iter64->fildes: fd_max);
+		++iter64;
+	}
+
+	iter46 = udp4to6_list.begin();
+	while (iter46 != udp4to6_list.end()) {
+		FD_SET(iter46->fildes, readfds);
+		fd_max = (fd_max < iter46->fildes? iter46->fildes: fd_max);
+		++iter46;
+	}
+
+	return fd_max;
 }
 
 int udp_switch(void)
 {
-    int count;
-    struct fd_set readfds, writefds, errorfds;
+	int count;
+	struct fd_set readfds, writefds, errorfds;
 
-    time_t t_last, t_current;
-    size_t c_active = udpio_list.size();
+	time_t t_last, t_current;
+	size_t c_active = udp6to4_list.size();
 
-    time(&t_last);
-    for ( ; ; ) {
-        FD_ZERO(&readfds);
-        FD_ZERO(&writefds);
-        FD_ZERO(&errorfds);
+	time(&t_last);
+	for ( ; ; ) {
+		int max_fd;
+		struct timeval timeout = {1, 1};
 
-        int max_fd = udpio_fd_set(&readfds, &writefds, &errorfds);
+		FD_ZERO(&readfds);
+		FD_ZERO(&writefds);
+		FD_ZERO(&errorfds);
 
-        struct timeval timeout = {1, 1};
-        count = select(max_fd + 1, &readfds, &writefds, &errorfds, &timeout);
-        if (count == -1) {
-            printf("select error: %d \n", count);
-            continue;
-        }
+		max_fd = udpio_fd_set(&readfds, &writefds, &errorfds);
 
-        if (time(&t_current) > t_last + 5) {
-            udpio_collect(t_current);
-            c_active = udpio_list.size();
-            t_last = t_current;
-        }
+		count = select(max_fd + 1, &readfds, &writefds, &errorfds, &timeout);
+		if (count == -1) {
+			fprintf(stderr, "select error: %d \n", count);
+			continue;
+		}
 
-        if (count == 0)
-            continue;
+		if (time(&t_current) > t_last + 150) {
+			udpio_collect(t_current);
+			c_active = udp6to4_list.size();
+			t_last = t_current;
+		}
 
-        udpio_event(&readfds, &writefds, &errorfds);
-    }
-    return 0;
+		if (count > 0) {
+			udpio_event(&readfds, &writefds, &errorfds);
+			continue;
+		}
+	}
+
+	return 0;
 }
 
 /* udp_switch addr1:port1 */
 int main(int argc, char * argv[])
 {
-    int error;
-    char buf[512];
+	int error;
+	char buf[512];
 
-    WSADATA data;
-       WSAStartup(0x201, &data);
+	WSADATA data;
+	WSAStartup(0x201, &data);
 
-    int count = 0;
-    for (int i = 1; i < argc; i++) {
-        char * pdot = NULL;
-        strncpy(buf, argv[i], sizeof(buf));
-        buf[sizeof(buf) - 1] = 0;
-        pdot = strchr(buf, ':');
-        if (pdot == NULL)
-            continue;
-        *pdot++ = 0;
-        int port = atoi(pdot);
-        if (port == 0 || port == -1)
-            continue;
-        udpio_add(inet_addr(buf), port);
-        count++;
-    }
+	int count = 0;
+	for (int i = 1; i < argc; i++) {
+		char * pdot = NULL;
+		strncpy(buf, argv[i], sizeof(buf));
+		buf[sizeof(buf) - 1] = 0;
+		pdot = strchr(buf, ':');
+		if (pdot == NULL)
+			continue;
+		*pdot++ = 0;
+		int port = atoi(pdot);
+		if (port == 0 || port == -1)
+			continue;
+		udpio_add(inet_addr(buf), port);
+		count++;
+	}
 
-    if (count > 0)
-        udp_switch();
-    udpio_final();
-    return 0;
+	if (count > 0)
+		udp_switch();
+	udpio_final();
+	return 0;
 }
 
