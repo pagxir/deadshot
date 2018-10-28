@@ -1,5 +1,7 @@
+
 #include <stdio.h>
 #include <string.h>
+#include <assert.h>
 
 #if 0
 字符串处理
@@ -21,87 +23,79 @@ merge(A1, A2)，合并A1和A2两个字符串，合并过程中只保证A1和A2�
 输出一个字符串，为A的最小取值。
 #endif
 
-static int stat[256] = {};
-static int strbuf[256][256] = {};
+#define M(x) ((x) - 'a')
+
+// echo igighhbbdacdac|./a.out
+static int stat[26] = {};
+static int stat1[26] = {};
 
 int get_result(const char *buf)
 {
-  int i, j, p;
-  int ch, cnt;
-  int len = strlen(buf);
+	int i, j, p;
+	int ch, progress = 0;
+	int len = strlen(buf);
 
-  for (i = 0; i < len; i++) {
-	ch = buf[i];
-    cnt = stat[ch]++;
-	strbuf[cnt][ch] = i;
-  }
+	for (i = 0; i < len; i++) {
+		ch = buf[i];
+		stat[M(ch)]++;
+	}
 
-  char chmask[256] = {};
-  char restore[256] = {};
-  memset(chmask, '@', len);
+	int left = -1, right = 25;
+	for (i = 0; i < 26; i++) {
+		if (stat[i] == 0) continue;
 
-  int low = 'a';
-  int high = 'z';
-  int set_high = 0;
-  int low_limit = -1;
-  int high_limit = 256;
+		stat[i] /= 2;
 
-  while (low <= high) {
-	  int total = 0;
-	  memcpy(restore, chmask, len);
-	  if (set_high) {
-		  while (stat[high] == 0 && low <= high) high --;
-		  if (low > high) break;
+		if (left == -1) left = i;
 
-		  int limit = 0;
-		  for (j = stat[high] - 1; j >= 0; j--) {
-			  p = strbuf[j][high];
-			  if (p < high_limit && total * 2 < stat[high]) {
-				  limit = p;
-				  chmask[p] = high;
-				  total++;
-			  }
-		  }
+		right = i;
+	}
 
-		  if (total * 2 >= stat[high]) {
-			  low_limit = limit;
-			  high--;
-		  } else {
-			  set_high = 0;
-			  memcpy(chmask, restore, len);
-		  }
-	  } else {
-		  while (stat[low] == 0 && low <= high) low ++;
-		  if (low > high) break;
+	progress = len/2;
+	while (progress > 0) {
 
-		  int limit = 0;
-		  for (j = 0; j < stat[low]; j++) {
-			  p = strbuf[j][low];
-			  if (p > low_limit && total * 2 < stat[low]) {
-				  chmask[p] = low;
-				  limit = p;
-				  total++;
-			  }
-		  }
+		for (i = left; i <= right; i++) {
+			int pos = -1;
+			if (stat[i] == 0) continue;
 
-		  if (total * 2 >= stat[low]) {
-			  low_limit = limit;
-			  low++; 
-		  } else {
-			  set_high = 1;
-			  memcpy(chmask, restore, len);
-		  }
-	  }
-  }
+			memcpy(stat1, stat, sizeof(stat));
+			for (j = 0; buf[j]; j++) {
+				if (M(buf[j]) == i) {
+					pos = j;
+					break;
+				}
+			}
 
-  char *src, *dst = chmask;
-  for (src = chmask; *src; src++) {
-	  if (src[0] != '@') *dst++ = *src;
-  }
+			assert(pos != -1);
+			for (j = pos; buf[j]; j++) {
+				if (stat1[M(buf[j])])
+					stat1[M(buf[j])]--;
+			}
 
-  *dst = 0;
-  printf("%s", chmask);
-  return 0;
+			int again = 0;
+			for (j = left; j <= right; j++) {
+				if (stat1[j] != 0) {
+					again = 1;
+			// printf("%s break %c; sel %c, %d\n", buf, j + 'a', i + 'a', stat1[j]);
+					break;
+				}
+			}
+
+			if (again == 0) {
+				// printf("|%c\n", 'a' + i);
+				printf("%c", 'a' + i);
+				buf = buf + pos + 1;
+				progress--;
+				stat[i]--;
+				break;
+			}
+
+			// printf("tontinue;\n");
+		}
+	}
+
+    printf("\n");
+	return 0;
 }
 
 int main(int argc, char *argv[])
