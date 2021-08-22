@@ -1,0 +1,11 @@
+set bear 154.204.56.88:53548
+set ident dupit8@gmail.com
+set lock.key 123
+set lock.interval 28
+print FROM pagxir@gmail.com TO dupit8@gmail.com SESSION ssh EXCHANGE 0.0.0.0:0
+
+bear.stun
+bear FROM dupit8@gmail.com TO pagxir@gmail.com SESSION ssh EXCHANGE 0.0.0.0:0
+
+peer FROM dupit8@gmai.com SESSION ssh SYN
+peer FROM dupit8@gmai.com SESSION ssh SYN+ACK

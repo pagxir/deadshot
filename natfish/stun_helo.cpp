@@ -2,6 +2,7 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #ifdef _WIN32_
 #include <winsock.h>
 typedef int socklen_t;
@@ -35,6 +36,8 @@ enum {
     CHANGE_REQUEST = 0x0003,
     CHANGED_ADDRESS = 0x0005
 };
+
+int do_bear_exchange(struct natcb_t *cb, const char *buf);
 
 int getaddrbybuf(void *buff, size_t buflen, int type,
         in_addr_t *addrptr, in_port_t *portptr)
@@ -91,9 +94,17 @@ struct natcb_t {
     int buflen;
     char stunbuf[2048];
 
+    char ident[128];
+    char lock_key[128];
+
+    time_t lock_interval;
+    time_t lock_nextcheck;
+
     socklen_t peerlen;
-    struct sockaddr_in peeraddr;
-    struct sockaddr_in stunbear;
+    struct sockaddr_in bear;
+    struct sockaddr_in stun;
+    struct sockaddr_in peer;
+    struct sockaddr_in from;
 };
 
 struct natcb_t * natcb_setup(struct natcb_t *cb)
@@ -110,7 +121,7 @@ struct natcb_t * natcb_setup(struct natcb_t *cb)
 
     cb->sockfd = fd;
     cb->pending = 0;
-    cb->peerlen = sizeof(cb->peeraddr);
+    cb->peerlen = sizeof(cb->bear);
     return cb;
 }
 
@@ -143,7 +154,7 @@ int do_stun_maping(struct natcb_t *cb, stun_callback *callback, void *udata)
     req.tid3 = htonl(_stid3++);
 
     sent = sendto(cb->sockfd, (const char *)&req, sizeof(req), 0, 
-            (const struct sockaddr *)&cb->stunbear, sizeof(cb->stunbear));
+            (const struct sockaddr *)&cb->stun, sizeof(cb->stun));
 
     if (sent > 0) {
         cb->pending++;
@@ -176,7 +187,7 @@ int do_stun_changing(struct natcb_t *cb, stun_callback *callback, void *udata)
 #endif
 
     sent = sendto(cb->sockfd, (const char *)&req, sizeof(req), 0, 
-            (const struct sockaddr *)&cb->stunbear, sizeof(cb->stunbear));
+            (const struct sockaddr *)&cb->stun, sizeof(cb->stun));
 
     if (sent > 0) {
         cb->pending++;
@@ -187,7 +198,18 @@ int do_stun_changing(struct natcb_t *cb, stun_callback *callback, void *udata)
 
 void update_timer_list(struct natcb_t *cb)
 {
+    char ident_lock[2048];
+    time_t current = time(NULL);
 
+    if (cb->lock_interval > 0 &&
+	    (cb->lock_nextcheck < current || cb->lock_nextcheck > current + cb->lock_interval)) {
+	snprintf(ident_lock, sizeof(ident_lock), "FROM %s LOCK %s", cb->ident, cb->lock_key);
+	do_bear_exchange(cb, ident_lock);
+	cb->lock_nextcheck = current + cb->lock_interval;
+	fprintf(stderr, "timer update\n");
+    }
+
+    return;
 }
 
 void do_receive_update(struct natcb_t *cb)
@@ -195,8 +217,8 @@ void do_receive_update(struct natcb_t *cb)
     struct sockaddr_in  _schgaddr, _sinaddr;
     struct mapping_args *r = (struct mapping_args *)cb->stunbuf;
 
-    printf("\r  from: %s:%d\n",
-	    inet_ntoa(cb->peeraddr.sin_addr), htons(cb->peeraddr.sin_port));
+    printf("\r<  from: %s:%d\n",
+	    inet_ntoa(cb->from.sin_addr), htons(cb->from.sin_port));
 
     if (r->tid0 == (uint32_t)(uint64_t)&MAGIC_MAPPING
 	    || r->tid0 == (uint32_t)(uint64_t)&MAGIC_CHANGING) {
@@ -205,17 +227,17 @@ void do_receive_update(struct natcb_t *cb)
 		    (in_addr_t*)&_schgaddr.sin_addr, &_schgaddr.sin_port))
 	    return;
 
-	printf("  mapped address: %s:%d\n",
+	printf("<  mapped address: %s:%d\n",
 		inet_ntoa(_schgaddr.sin_addr), htons(_schgaddr.sin_port));
 
 	if (-1 == getchangedbybuf(cb->stunbuf, cb->buflen,
 		    (in_addr_t*)&_schgaddr.sin_addr, &_schgaddr.sin_port))
 	    return;
 
-        printf(" changed server address: %s:%d\n",
+        printf("< changed server address: %s:%d\n",
                 inet_ntoa(_schgaddr.sin_addr), htons(_schgaddr.sin_port));
     } else if (cb->buflen > 0) {
-	printf("%s\n", cb->stunbuf);
+	printf("<  %s\n", cb->stunbuf);
 	// receive FROM dupit8@gmail.com TO pagxir@gmail.com SESSION xxxx EXCHANGE 103.119.224.18:51901
 	// send    FROM pagxir@gmail.com TO dupit8@gmail.com SESSION xxxx EXCHANGE 0.0.0.0:0
 	// send    FROM pagxir@gmail.com SESSION xxxx (SYN|SYN+ACK) # check SESSION is receive any packet
@@ -234,7 +256,7 @@ void check_and_receive(struct natcb_t *cb)
     struct sockaddr  rcvaddr;
     socklen_t rcvaddrlen = sizeof(rcvaddr);
 
-    cb->peerlen = sizeof(cb->peeraddr);
+    cb->peerlen = sizeof(cb->from);
 
     do {
         FD_ZERO(&readfds);
@@ -246,7 +268,7 @@ void check_and_receive(struct natcb_t *cb)
 
         if (readycount > 0 && FD_ISSET(cb->sockfd, &readfds)) {
             cb->buflen = recvfrom(cb->sockfd, cb->stunbuf, sizeof(cb->stunbuf) -1,
-                    0, (struct sockaddr *)&cb->peeraddr, &cb->peerlen);
+                    0, (struct sockaddr *)&cb->from, &cb->peerlen);
 	    if (cb->buflen > 0) {
 		cb->stunbuf[cb->buflen] = 0;
 		do_receive_update(cb);
@@ -268,21 +290,58 @@ void check_and_receive(struct natcb_t *cb)
     return;
 }
 
-int do_helo_exchange(struct natcb_t *cb, const char *buf)
+int do_peer_exchange(struct natcb_t *cb, const char *buf)
+{
+    int sent;
+
+    sent = sendto(cb->sockfd, buf, strlen(buf), 0, 
+            (const struct sockaddr *)&cb->peer, sizeof(cb->peer));
+
+    if (sent > 0) {
+	// fprintf(stderr, "hello exchange!\n");
+        cb->pending++;
+    } else {
+      fprintf(stderr, "hello %d\n", sent);
+    }
+
+    return sent;
+}
+
+int do_bear_exchange(struct natcb_t *cb, const char *buf)
 {
     int sent;
     char barnner[] = "HELLO, WELCOME TO STUN.";
 
     sent = sendto(cb->sockfd, buf, strlen(buf), 0, 
-            (const struct sockaddr *)&cb->peeraddr, cb->peerlen);
+            (const struct sockaddr *)&cb->bear, cb->peerlen);
 
     if (sent > 0) {
-	fprintf(stderr, "hello exchange!\n");
+	// fprintf(stderr, "hello exchange!\n");
         cb->pending++;
+    } else {
+      fprintf(stderr, "hello %d\n", sent);
     }
 
-    fprintf(stderr, "hello %d\n", sent);
     return sent;
+}
+
+int set_config_host(struct sockaddr_in *target, char *value)
+{
+    char *port;
+    struct hostent *phost;
+
+    port = strchr(value, ':');
+    if (port) *port++ = 0;
+
+    phost = gethostbyname(value);
+    if (!phost) {
+	return 0;
+    }
+
+    target->sin_family = AF_INET;
+    target->sin_port = htons(port? atoi(port): 3478);
+    target->sin_addr.s_addr = *(in_addr_t*)phost->h_addr;
+    return 0;
 }
 
 int do_update_config(struct natcb_t *cb, const char *buf)
@@ -297,29 +356,18 @@ int do_update_config(struct natcb_t *cb, const char *buf)
 	return 0;
     }
 
-    if (strcmp(key, "server") == 0 || strcmp(key, "peer") == 0) {
-	char *port;
-	struct hostent *phost;
-
-	port = strchr(value, ':');
-	if (port) *port++ = 0;
-
-        phost = gethostbyname(value);
-	if (!phost) {
-	    return 0;
-	}
-
-	if (strcmp(key, "server") == 0) {
-	    cb->stunbear.sin_family = AF_INET;
-	    cb->stunbear.sin_port = htons(port? atoi(port): 3478);
-	    cb->stunbear.sin_addr.s_addr = *(in_addr_t*)phost->h_addr;
-	} else {
-            cb->peerlen = sizeof(cb->peeraddr);
-	    cb->peeraddr.sin_family = AF_INET;
-	    cb->peeraddr.sin_port = htons(port? atoi(port): 3478);
-	    cb->peeraddr.sin_addr.s_addr = *(in_addr_t*)phost->h_addr;
-	}
-    } else if (strcmp(key, "config") == 0) {
+    if (strcmp(key, "bear") == 0) {
+	set_config_host(&cb->bear, value);
+    } else if (strcmp(key, "peer") == 0) {
+	set_config_host(&cb->peer, value);
+    } else if (strcmp(key, "stun") == 0) {
+	set_config_host(&cb->stun, value);
+    } else if (strcmp(key, "lock.key") == 0) {
+	strncpy(cb->lock_key, value, sizeof(cb->lock_key) -1);
+    } else if (strcmp(key, "lock.interval") == 0) {
+	cb->lock_interval = atoi(value);
+    } else if (strcmp(key, "ident") == 0) {
+	strncpy(cb->ident, value, sizeof(cb->ident) -1);
     }
 
     return 0;
@@ -366,13 +414,20 @@ void do_dump_status(struct natcb_t *cb)
     fprintf(stderr, "  sockfd %d\n", cb->sockfd);
     fprintf(stderr, "  pending %d\n", cb->pending);
     fprintf(stderr, "  buflen  %d\n", cb->buflen);
+    fprintf(stderr, "  ident  %s\n", cb->ident);
+    fprintf(stderr, "  lock_key  %s\n", cb->lock_key);
+    fprintf(stderr, "  lock_interval  %ld\n", cb->lock_interval);
 
-    inp = &cb->peeraddr;
+    inp = &cb->peer;
     printf("  peer: %s:%d\n",
             inet_ntoa(inp->sin_addr), htons(inp->sin_port));
 
-    inp = &cb->stunbear;
+    inp = &cb->bear;
     printf("  bear: %s:%d\n",
+            inet_ntoa(inp->sin_addr), htons(inp->sin_port));
+
+    inp = &cb->stun;
+    printf("  stun: %s:%d\n",
             inet_ntoa(inp->sin_addr), htons(inp->sin_port));
 
     socklen_t selflen = sizeof(selfaddr);
@@ -391,7 +446,9 @@ void print_usage()
    fprintf(stderr, "  help              print usage\n");
    fprintf(stderr, "  bind <address>    bind socket to address\n");
    fprintf(stderr, "  set <key> <value> set server|peer value\n");
-   fprintf(stderr, "  helo              send hello to peer\n");
+   fprintf(stderr, "  peer              send message to peer\n");
+   fprintf(stderr, "  bear              send message to bear\n");
+   fprintf(stderr, "  bear.stun         send stun message to bear\n");
    fprintf(stderr, "  stun.map          send stun request to server\n");
    fprintf(stderr, "  stun.change       send stun change request to server\n");
 }
@@ -400,6 +457,8 @@ int main(int argc, char *argv[])
 {
     char action[128];
     char stdbuf[1024];
+    char helo_line[2048];
+    char last_line[2048];
     struct natcb_t cb = {};
 
     natcb_setup(&cb);
@@ -411,6 +470,12 @@ int main(int argc, char *argv[])
             goto check_pending;
         }
 
+        if (strcmp(action, "r") == 0) {
+	    fprintf(stderr, "+ %s\n", last_line);
+            strncpy(stdbuf, last_line, sizeof(stdbuf) -1);
+            sscanf(stdbuf, "%128s", action);
+        }
+
         if (strcmp(action, "bind") == 0) {
 	    do_bind_address(&cb, stdbuf);
         } else if (strcmp(action, "dump") == 0) {
@@ -419,8 +484,17 @@ int main(int argc, char *argv[])
 	    print_usage();
         } else if (strcmp(action, "set") == 0) {
 	    do_update_config(&cb, stdbuf);
-        } else if (strcmp(action, "helo") == 0) {
-	    do_helo_exchange(&cb, stdbuf +5);
+        } else if (strcmp(action, "peer") == 0) {
+            strncpy(last_line, stdbuf, sizeof(last_line) -1);
+	    do_peer_exchange(&cb, stdbuf +5);
+        } else if (strcmp(action, "bear") == 0) {
+            strncpy(last_line, stdbuf, sizeof(last_line) -1);
+	    do_bear_exchange(&cb, stdbuf +5);
+        } else if (strcmp(action, "print") == 0) {
+	    printf("%s", stdbuf + 5);
+        } else if (strcmp(action, "bear.stun") == 0) {
+	    snprintf(helo_line, sizeof(helo_line), "FROM %s STUN.MAP", cb.ident);
+	    do_bear_exchange(&cb, helo_line);
         } else if (strcmp(action, "stun.map") == 0) {
             do_stun_maping(&cb, NULL, 0);
         } else if (strcmp(action, "stun.change") == 0) {

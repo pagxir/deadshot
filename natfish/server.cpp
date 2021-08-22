@@ -172,6 +172,7 @@ static int exchange_forward(struct natcb_t *cb, const char *buf, const struct so
         return 0;
     }
 
+    fprintf(stderr, "delivery TO %s -> %s\n", to, found->ident);
     return 1;
 }
 
