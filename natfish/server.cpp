@@ -124,11 +124,11 @@ static int exchange_forward(struct natcb_t *cb, const char *buf, const struct so
 {
     int match, n;
     char title[128], from[128], action[128], to[128];
-    char title2[128], session[128], title3[128], exchange[128];
+    char title2[128], session[128], title3[128], exchange[128], flags[128];
 
-    match = sscanf(buf, "%128s %128s %128s %128s %128s %128s %128s %128s",
-            title, from, action, to, title2, session, title3, exchange);
-    if (match != 8) {
+    match = sscanf(buf, "%128s %128s %128s %128s %128s %128s %128s %128s%128s",
+            title, from, action, to, title2, session, title3, exchange, flags);
+    if (match != 8 && match != 9) {
         fprintf(stderr, "invalid exchange format! missing argument");
 	return 0;
     }
@@ -158,8 +158,8 @@ static int exchange_forward(struct natcb_t *cb, const char *buf, const struct so
     /* 2. FROM aaa TO bbb SESSION sss EXCHANGE cc.cc.cc.cc:cc */
     if (strcmp(exchange, "0.0.0.0:0") == 0) {
         match = snprintf(deliverybuf, sizeof(deliverybuf),
-                "FROM %s TO %s SESSION %s EXCHANGE %s:%d",
-                from, to, session, inet_ntoa(endpoint->sin_addr), htons(endpoint->sin_port));
+                "FROM %s TO %s SESSION %s EXCHANGE %s:%d %s",
+                from, to, session, inet_ntoa(endpoint->sin_addr), htons(endpoint->sin_port), flags);
     } else {
         match = snprintf(deliverybuf, sizeof(deliverybuf), "%s", buf);
     }

@@ -38,6 +38,8 @@ enum {
 };
 
 int do_bear_exchange(struct natcb_t *cb, const char *buf);
+int do_peer_exchange(struct natcb_t *cb, const char *buf);
+int set_config_host(struct sockaddr_in *target, char *value);
 
 int getaddrbybuf(void *buff, size_t buflen, int type,
         in_addr_t *addrptr, in_port_t *portptr)
@@ -96,9 +98,15 @@ struct natcb_t {
 
     char ident[128];
     char lock_key[128];
+    char session[128];
+    char acked_session[128];
 
     time_t lock_interval;
     time_t lock_nextcheck;
+
+    int pair_ttl;
+    time_t pair_interval;
+    time_t pair_nextcheck;
 
     socklen_t peerlen;
     struct sockaddr_in bear;
@@ -122,6 +130,7 @@ struct natcb_t * natcb_setup(struct natcb_t *cb)
     cb->sockfd = fd;
     cb->pending = 0;
     cb->peerlen = sizeof(cb->bear);
+    cb->pair_interval = 2;
     return cb;
 }
 
@@ -196,6 +205,17 @@ int do_stun_changing(struct natcb_t *cb, stun_callback *callback, void *udata)
     return sent;
 }
 
+void run_session_action(struct natcb_t *cb)
+{
+    int is_acked = strcmp(cb->acked_session, cb->session) == 0;
+    char peer_cmd[2048];
+
+    sprintf(peer_cmd, "FROM %s SESSION %s SYN%s", cb->ident, cb->session, is_acked? "+ACK":"");
+    fprintf(stderr, ">> %s\n", peer_cmd);
+    do_peer_exchange(cb, peer_cmd);
+    return;
+}
+
 void update_timer_list(struct natcb_t *cb)
 {
     char ident_lock[2048];
@@ -206,7 +226,17 @@ void update_timer_list(struct natcb_t *cb)
 	snprintf(ident_lock, sizeof(ident_lock), "FROM %s LOCK %s", cb->ident, cb->lock_key);
 	do_bear_exchange(cb, ident_lock);
 	cb->lock_nextcheck = current + cb->lock_interval;
-	fprintf(stderr, "timer update\n");
+	// fprintf(stderr, "+@ \n");
+    }
+
+    if (cb->pair_ttl > 0 && cb->pair_interval > 0 &&
+	    (cb->pair_nextcheck < current || cb->pair_nextcheck > current + cb->pair_interval)) {
+	// fprintf(stderr, "+# %d\n", cb->pair_ttl);
+        if (cb->pair_ttl > 0) {
+            run_session_action(cb);
+            cb->pair_nextcheck = current + cb->pair_interval;
+            cb->pair_ttl --;
+        } 
     }
 
     return;
@@ -241,7 +271,49 @@ void do_receive_update(struct natcb_t *cb)
 	// receive FROM dupit8@gmail.com TO pagxir@gmail.com SESSION xxxx EXCHANGE 103.119.224.18:51901
 	// send    FROM pagxir@gmail.com TO dupit8@gmail.com SESSION xxxx EXCHANGE 0.0.0.0:0
 	// send    FROM pagxir@gmail.com SESSION xxxx (SYN|SYN+ACK) # check SESSION is receive any packet
+        char peer_cmd[2048];
+	char from[128], to[128], session[128], exchange[128], flags[128];
 
+	int match = sscanf(cb->stunbuf, "FROM %s TO %s SESSION %s EXCHANGE %s%s", from, to, session, exchange, flags);
+        if (match == 4 || match == 5) {
+            fprintf(stderr, "start session %s handshake %s\n", session, exchange);
+            set_config_host(&cb->peer, exchange);
+
+            if (strcmp(flags, "ACK")) {
+                snprintf(peer_cmd, sizeof(peer_cmd), "FROM %s TO %s SESSION %s EXCHANGE 0.0.0.0:0 ACK", cb->ident, from, session);
+		fprintf(stderr, ">> %s\n", peer_cmd);
+                do_bear_exchange(cb, peer_cmd);
+            }
+
+	    strcpy(cb->session, session);
+	    cb->pair_ttl = 3;
+            run_session_action(cb);
+            return;
+        }
+
+	match = sscanf(cb->stunbuf, "FROM %s SESSION %s SY%s", from, session, flags);
+        if (match == 3) {
+            cb->peer = cb->from;
+            strcpy(cb->acked_session, session);
+	    if (strcmp(flags, "N+ACK") == 0) {
+                snprintf(peer_cmd, sizeof(peer_cmd), "FROM %s SESSION %s ACK", cb->ident, session);
+                do_peer_exchange(cb, peer_cmd);
+		cb->pair_ttl = 0;
+	    } else {
+		run_session_action(cb);
+	    }
+            fprintf(stderr, "receive session %s handshake %s %d\n", session, flags, cb->pair_ttl);
+            return;
+        }
+
+	match = sscanf(cb->stunbuf, "FROM %s SESSION %s AC%s", from, session, flags);
+        if (match == 3) {
+            fprintf(stderr, "receive session %s handshake %d\n", session, cb->pair_ttl);
+            cb->peer = cb->from;
+            strcpy(cb->acked_session, session);
+	    cb->pair_ttl = 0;
+            return;
+        }
     }
 
     return;
@@ -272,7 +344,7 @@ void check_and_receive(struct natcb_t *cb)
 	    if (cb->buflen > 0) {
 		cb->stunbuf[cb->buflen] = 0;
 		do_receive_update(cb);
-		cb->pending--;
+		// cb->pending--;
 	    }
         }
 
