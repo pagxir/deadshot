@@ -1,0 +1,9 @@
+set bear 154.204.56.88:34693
+set ident twice@gmail.com
+set lock.key 12s13
+set lock.interval 28
+delay 2
+print hello
+peer.bear FROM twice@gmail.com TO newbird@gmail.com SESSION ssh EXCHANGE 0.0.0.0:0
+delay 2
+print done

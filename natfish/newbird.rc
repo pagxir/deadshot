@@ -1,0 +1,16 @@
+set bear 154.204.56.88:34693
+set ident newbird@gmail.com
+set exitchild 1
+set lock.key 123
+set lock.interval 28
+set command exec ./client.udp -l 8800 -i ${LOCAL} -algo hybla ${REMOTE} 
+delay 1
+
+print peer.bear FROM newbird@gmail.com TO dupit8@gmail.com SESSION ussh EXCHANGE 0.0.0.0:0
+peer.bear FROM newbird@gmail.com TO dupit8@gmail.com SESSION ussh EXCHANGE 0.0.0.0:0
+delay 2
+wait session.pong
+if ping.start
+if bear FROM newbird@gmail.com TO dupit8@gmail.com SESSION ussh COMMAND
+if fork exec ./client.udp -l 8800 -i ${LOCAL} -algo hybla ${REMOTE}
+print MAY BE FAILURE
