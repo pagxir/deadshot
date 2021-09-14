@@ -153,6 +153,7 @@ struct natcb_t {
     int mode;
     int ready;
     int passfd;
+    int sack_want;
     int exit_child;
     int got_pong;
     int out_ping;
@@ -327,6 +328,7 @@ void do_receive_update(struct natcb_t *cb)
             if (strcmp(flags, "ACK")) {
                 snprintf(peer_cmd, sizeof(peer_cmd), "FROM %s TO %s SESSION %s EXCHANGE 0.0.0.0:0 ACK", cb->ident, from, session);
                 do_peer_bearing(cb, peer_cmd);
+                cb->sack_want = 1;
 	    }
 
             fprintf(stderr, "start session %s handshake %s\n", session, exchange);
@@ -343,12 +345,17 @@ void do_receive_update(struct natcb_t *cb)
 
 	match = sscanf(cb->stunbuf, "FROM %s SESSION %s P%[OING]", from, session, flags);
         if (match == 3) {
+            char good_resp[19];
             cb->peer.target = cb->from;
 
 	    if (strcmp(flags, "ING") == 0) {
-                snprintf(peer_cmd, sizeof(peer_cmd), "FROM %s SESSION %s PONG", cb->ident, session);
+                snprintf(peer_cmd, sizeof(peer_cmd), "FROM %s SESSION %s PONG %s:%d", cb->ident, session, inet_ntoa(cb->from.sin_addr), htons(cb->from.sin_port));
                 do_peer_exchange(cb, peer_cmd);
-	    }
+	    } else if (2 == sscanf(cb->stunbuf, "FROM %*s SESSION %*s P%[OING] %s", flags, good_resp) && cb->sack_want){
+                snprintf(peer_cmd, sizeof(peer_cmd), "FROM %s TO %s SESSION %s EXCHANGE %s ACK", cb->ident, from, session, good_resp);
+                do_bear_exchange(cb, peer_cmd);
+                cb->sack_want = 0;
+            }
 
             fprintf(stderr, "receive session %s handshake %s %d\n", session, flags, cb->peer.ttl);
             strcpy(cb->acked_session, session);
@@ -1000,3 +1007,4 @@ check_pending:
 
     return 0;
 }
+
