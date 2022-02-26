@@ -51,50 +51,50 @@ function formatName(name) {
 }
 
 function fetchAssets(res, path) {
-    const fsPath = path.substr(1);
+  const fsPath = path.substr(1);
 
-    if (fsPath === "" ||  !fs.existsSync(fsPath)) {
-	try {
-	    var data = fs.readFileSync("404.html", 'utf8');
-	    res.statusCode = 404;
-	    res.end(data); 
-	} catch(e) {
-	    console.log('XError:', e.stack);
-	    res.end(); 
-	}
-	return;
-    }
-
-    const suffixes = path.substr(path.lastIndexOf('.'));
-
-    console.log(suffixes);
-    var mimeType = "application/octect-stream";
-    switch(suffixes) {
-	case ".js":
-	    mimeType = "text/javascript";
-	    break;
-	case ".png":
-	    mimeType = "image/png";
-	    break;
-	case ".txt":
-	    mimeType = "text/plain";
-	    break;
-	case ".html":
-	    mimeType = "text/html";
-	    break;
-    }
-
-    res.setHeader("Content-Type", mimeType);
-
+  if (fsPath === "" ||  !fs.existsSync(fsPath)) {
     try {
-        var stats = fs.statSync(fsPath);
-        res.setHeader("Content-Length", stats.size);
-        fs.createReadStream(fsPath).pipe(res);
+      var data = fs.readFileSync("404.html", 'utf8');
+      res.statusCode = 404;
+      res.end(data); 
     } catch(e) {
-	console.log('XError:', e.stack);
-	res.statusCode = 404;
-	res.end(); 
+      console.log('XError:', e.stack);
+      res.end(); 
     }
+    return;
+  }
+
+  const suffixes = path.substr(path.lastIndexOf('.'));
+
+  console.log(suffixes);
+  var mimeType = "application/octect-stream";
+  switch(suffixes) {
+    case ".js":
+      mimeType = "text/javascript";
+      break;
+    case ".png":
+      mimeType = "image/png";
+      break;
+    case ".txt":
+      mimeType = "text/plain";
+      break;
+    case ".html":
+      mimeType = "text/html";
+      break;
+  }
+
+  res.setHeader("Content-Type", mimeType);
+
+  try {
+    var stats = fs.statSync(fsPath);
+    res.setHeader("Content-Length", stats.size);
+    fs.createReadStream(fsPath).pipe(res);
+  } catch(e) {
+    console.log('XError:', e.stack);
+    res.statusCode = 404;
+    res.end(); 
+  }
 }
 
 function urlRequest(url, options) {
@@ -110,13 +110,13 @@ function urlRequest(url, options) {
 
   return new Promise((resolv, reject) => {
     try {
-	const cReq = handler.request(url, reqInit, (nRes) => resolv(nRes));
-        cReq.on('error', reject);
-	if (options.method === 'POST') {
-	  options.body.pipe(cReq);
-	} else {
-	  cReq.end();
-	}
+      const cReq = handler.request(url, reqInit, (nRes) => resolv(nRes));
+      cReq.on('error', reject);
+      if (options.method === 'POST') {
+        options.body.pipe(cReq);
+      } else {
+        cReq.end();
+      }
     } catch (e) {
       reject(e);
     }
@@ -137,8 +137,8 @@ async function request(aRes, url, options) {
     (nRes) => {
 
       for (const [k, v] of Object.entries(nRes.headers)) {
-	console.log("key: " + k + " value: " + v);
-	aRes.setHeader(k, v);
+        console.log("key: " + k + " value: " + v);
+        aRes.setHeader(k, v);
       }
 
       return nRes.pipe(aRes);
@@ -168,9 +168,9 @@ async function proxy(urlObj, reqInit, acehOld, rawLen, retryTimes) {
   console.log("URL " + urlObj.href);
   for (const [k, v] of Object.entries(resHdrOld)) {
     if (k === 'access-control-allow-origin' ||
-        k === 'access-control-expose-headers' ||
-        k === 'location' ||
-        k === 'set-cookie'
+      k === 'access-control-expose-headers' ||
+      k === 'location' ||
+      k === 'set-cookie'
     ) {
       const x = '--' + k
       resHdrNew[x]=v
@@ -213,14 +213,14 @@ async function proxy(urlObj, reqInit, acehOld, rawLen, retryTimes) {
       }
 
       var props = {
-	'--error': `bad len: ${newLen}, except: ${rawLen}`,
-	'access-control-expose-headers': '--error',
+        '--error': `bad len: ${newLen}, except: ${rawLen}`,
+        'access-control-expose-headers': '--error',
       };
 
       res.statusCode = 400;
 
       for (const [k, v] of Object.entries(props)) {
-	res.setHeader(k, v);
+        res.setHeader(k, v);
       }
 
       return res;
@@ -243,10 +243,10 @@ async function proxy(urlObj, reqInit, acehOld, rawLen, retryTimes) {
   delete resHdrNew['clear-site-data']
 
   if (status === 301 ||
-      status === 302 ||
-      status === 303 ||
-      status === 307 ||
-      status === 308
+    status === 302 ||
+    status === 303 ||
+    status === 307 ||
+    status === 308
   ) {
     status = status + 10
   }
@@ -254,7 +254,7 @@ async function proxy(urlObj, reqInit, acehOld, rawLen, retryTimes) {
   res.statusCode = status;
   res.headers = resHdrNew;
 
-	/*
+  /*
   for (const [k, v] of Object.entries(resHdrNew)) {
     res.setHeader(k, v);
   }
@@ -284,7 +284,7 @@ async function httpHandler(aRes, req, pathname) {
 
   // preflight
   if (req.method === 'OPTIONS' &&
-      headers.hasOwnProperty('access-control-request-headers')
+    headers.hasOwnProperty('access-control-request-headers')
   ) {
     return makeRes(res, "", 204, PREFLIGHT_INIT.headers);
   }
@@ -301,18 +301,18 @@ async function httpHandler(aRes, req, pathname) {
     if (k.substr(0, 2) === '--') {
       // 系统信息
       switch (k.substr(2)) {
-      case 'aceh':
-        acehOld = true
-        break
-      case 'raw-info':
-        [rawSvr, rawLen, rawEtag] = v.split('|')
-        console.log("raw-info: " + v);
-        break
+        case 'aceh':
+          acehOld = true
+          break
+        case 'raw-info':
+          [rawSvr, rawLen, rawEtag] = v.split('|')
+          console.log("raw-info: " + v);
+          break
       }
     } else {
       // 还原 HTTP 请求头
       if (v) {
-	console.log("SET " + k + ":" + v);
+        console.log("SET " + k + ":" + v);
         headers[k]=v
       } else {
         delete headers[k]
@@ -350,94 +350,98 @@ async function httpHandler(aRes, req, pathname) {
 
 async function forwardHelper(aRes, req, url) {
 
-    var headers = {};
-    var urlObj = newUrl(url);
+  var headers = {};
+  var urlObj = newUrl(url);
 
-    for (const [k, v] of Object.entries(req.headers)) {
-	console.log("|key: " + k + " value: " + v);
-	headers[k] = v;
-	(k === "host" || k === "Host") && (headers[k] = urlObj.host);
-    }
+  for (const [k, v] of Object.entries(req.headers)) {
+    console.log("|key: " + k + " value: " + v);
+    headers[k] = v;
+    (k === "host" || k === "Host") && (headers[k] = urlObj.host);
+  }
 
-    headers["referer"] && (headers["referer"] = headers["referer"].replace("v2x.yrli.bid", "www.v2ex.com"));
+  headers["referer"] && (headers["referer"] = headers["referer"].replace("v2x.yrli.bid", "www.v2ex.com"));
 
-    const reqInit0 = {
-	method: req.method,
-	headers: headers,
-	body: req
-    }
+  const reqInit0 = {
+    method: req.method,
+    headers: headers,
+    body: req
+  }
 
-    var nRes = await urlRequest(url, reqInit0);
-    var redirect = nRes.statusCode === 302 || nRes.statusCode === 301;
+  var nRes = await urlRequest(url, reqInit0);
+  var redirect = nRes.statusCode === 302 || nRes.statusCode === 301;
 
-    if (redirect) {
-	for (const [k, v] of Object.entries(nRes.headers)) {
-	    if ((k === "location" || k === "Location") &&
-		(v.startsWith("https://") || v.startsWith("http://"))) {
-		nRes = await urlRequest(v, reqInit0);
-		break;
-	    }
-	}
-    }
-
-    aRes.statusCode = nRes.statusCode;
+  if (redirect) {
     for (const [k, v] of Object.entries(nRes.headers)) {
-	console.log("key: " + k + " value: " + v);
-	if (k === "alt-svc") {
-	    console.log("ignore alt-svc" + v);
-	} else  {
-	    aRes.setHeader(k, v);
-	}
+      if ((k === "location" || k === "Location") &&
+        (v.startsWith("https://") || v.startsWith("http://"))) {
+        var urlObj = newUrl(v);
+        delete headers["host"];
+        delete headers["Host"];
+        headers["Host"] = urlObj.host;
+        nRes = await urlRequest(v, reqInit0);
+        break;
+      }
     }
+  }
 
-    return nRes.pipe(aRes);
+  aRes.statusCode = nRes.statusCode;
+  for (const [k, v] of Object.entries(nRes.headers)) {
+    console.log("key: " + k + " value: " + v);
+    if (k === "alt-svc") {
+      console.log("ignore alt-svc" + v);
+    } else  {
+      aRes.setHeader(k, v);
+    }
+  }
+
+  return nRes.pipe(aRes);
 }
 
 async function fetchHandler(req, res) {
-    let host = "";
-    let refer = "";
-    const path = req.url;
+  let host = "";
+  let refer = "";
+  const path = req.url;
 
-    // https://shy-unit-c0d5.cachefiles.workers.dev/
-    // return forwardHelper(res, req, "https://shy-unit-c0d5.cachefiles.workers.dev/" + path);
-    for (const [k, v] of Object.entries(req.headers)) {
-	k === "host" && (host = v);
-	k === "refer" && (refer = v);
-    }
+  // https://shy-unit-c0d5.cachefiles.workers.dev/
+  // return forwardHelper(res, req, "https://shy-unit-c0d5.cachefiles.workers.dev/" + path);
+  for (const [k, v] of Object.entries(req.headers)) {
+    k === "host" && (host = v);
+    k === "refer" && (refer = v);
+  }
 
-    if (path.startsWith("/dns-query")) {
-	return forwardHelper(res, req, "https://cloudflare-dns.com" + path);
-    }
+  if (path.startsWith("/dns-query")) {
+    return forwardHelper(res, req, "https://cloudflare-dns.com" + path);
+  }
 
-    if (path.startsWith('/http/')) {
-	return httpHandler(res, req, path.substr(6));
-    }
+  if (path.startsWith('/http/')) {
+    return httpHandler(res, req, path.substr(6));
+  }
 
-    if (path.length > 15 && path.startsWith('/surfing.http/')) {
-	return forwardHelper(res, req, "http://" + path.substr(14));
-    }
+  if (path.length > 15 && path.startsWith('/surfing.http/')) {
+    return forwardHelper(res, req, "http://" + path.substr(14));
+  }
 
-    if (path.length > 15 && path.startsWith('/surfing.https/')) {
-	return forwardHelper(res, req, "https://" + path.substr(15));
-    }
+  if (path.length > 15 && path.startsWith('/surfing.https/')) {
+    return forwardHelper(res, req, "https://" + path.substr(15));
+  }
 
-    if (path.startsWith('/-----http') || path == '/') {
-	return fetchAssets(res, "/404.html");
-    }
+  if (path.startsWith('/-----http') || path == '/') {
+    return fetchAssets(res, "/404.html");
+  }
 
-    switch (path) {
-	case '/http':
-	    return makeRes(res, '请更新 cfworker 到最新版本!')
-	case '/ws':
-	    return makeRes(res, 'not support', 400)
-	case '/works':
-	    return makeRes(res, 'it works')
-	default:
-	    // static files
-	    if (path.indexOf(".") === -1)
-		return makeRes(res, "not support", 400);
-	    return fetchAssets(res, path);
-    }
+  switch (path) {
+    case '/http':
+      return makeRes(res, '请更新 cfworker 到最新版本!')
+    case '/ws':
+      return makeRes(res, 'not support', 400)
+    case '/works':
+      return makeRes(res, 'it works')
+    default:
+      // static files
+      if (path.indexOf(".") === -1)
+        return makeRes(res, "not support", 400);
+      return fetchAssets(res, path);
+  }
 }
 
 /**
@@ -475,7 +479,7 @@ async function parseYtVideoRedir(urlObj, newLen, res) {
 }
 
 https.createServer(options, (req, res) => {
-    // console.log(JSON.stringify(req.url));
-    // console.log(JSON.stringify(req.headers));
-    fetchHandler(req, res).catch(e => makeRes(res, "", 500));
+  // console.log(JSON.stringify(req.url));
+  // console.log(JSON.stringify(req.headers));
+  fetchHandler(req, res).catch(e => makeRes(res, "", 500));
 }).listen(443);
