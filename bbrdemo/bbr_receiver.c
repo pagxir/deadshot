@@ -88,7 +88,7 @@ static int update_score_board(tcp_seq seq)
 
       if (SEQ_LT(seq, item->end) &&
 	  SEQ_GEQ(seq, item->start)) {
-	// printf("seq %x start %x end %x\n", seq, item->start, item->end);
+	printf("seq %x start %x end %x\n", seq, item->start, item->end);
 	old = 1;
       }
 
@@ -195,8 +195,8 @@ int main(int argc, char *argv[])
     }
 
     if (SEQ_LT(bbrinfo.seq_pkt, _seq_rcv_nxt)) {
-      // printf("out of date\n");
       _stat_dupdat ++;
+      printf("out of date: %d\n", _stat_dupdat);
       goto ack_then_drop;
     }
 
