@@ -64,9 +64,11 @@
 #include <linux/random.h>
 #include <linux/win_minmax.h>
 #endif
+#include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <assert.h>
 #include "minmax.h"
 
 /* Scale factor for rate in pkt/uSec unit to avoid truncation in bandwidth
@@ -247,7 +249,7 @@ static uint16_t bbr_extra_acked(const struct sock *sk)
  */
 static uint64_t bbr_rate_bytes_per_sec(struct sock *sk, uint64_t rate, int gain)
 {
-	unsigned int mss = 0; // tcp_sk(sk)->mss_cache;
+	unsigned int mss = tcp_sk(sk)->mss_cache;
 
 	rate *= mss;
 	rate *= gain;
@@ -294,6 +296,7 @@ static void bbr_set_pacing_rate(struct sock *sk, uint32_t bw, int gain)
 
 	if (unlikely(!bbr->has_seen_rtt && tp->srtt_us))
 		bbr_init_pacing_rate_from_rtt(sk);
+	// printf("BBR_UNIT %d %d %d %d %d\n", bw, gain, bbr->lt_use_bw, rate, sk->sk_pacing_rate);
 	if (bbr_full_bw_reached(sk) || rate > sk->sk_pacing_rate)
 		sk->sk_pacing_rate = rate;
 }
@@ -553,6 +556,10 @@ done:
 		tp->snd_cwnd = min(tp->snd_cwnd, bbr_cwnd_min_target);
 }
 
+static int dotest = 0;
+static int dotest1 = 0;
+static int dotest2 = 0;
+
 /* End cycle phase if it's time and/or we hit the phase's in-flight target. */
 static bool bbr_is_next_cycle_phase(struct sock *sk,
 				    const struct rate_sample *rs)
@@ -567,8 +574,10 @@ static bool bbr_is_next_cycle_phase(struct sock *sk,
 	/* The pacing_gain of 1.0 paces at the estimated bw to try to fully
 	 * use the pipe without increasing the queue.
 	 */
-	if (bbr->pacing_gain == BBR_UNIT)
+	if (bbr->pacing_gain == BBR_UNIT) {
+		dotest ++;
 		return is_full_length;		/* just use wall clock time */
+	}
 
 	inflight = bbr_packets_in_net_at_edt(sk, rs->prior_in_flight);
 	bw = bbr_max_bw(sk);
@@ -578,15 +587,18 @@ static bool bbr_is_next_cycle_phase(struct sock *sk,
 	 * small (e.g. on a LAN). We do not persist if packets are lost, since
 	 * a path with small buffers may not hold that much.
 	 */
-	if (bbr->pacing_gain > BBR_UNIT)
+	if (bbr->pacing_gain > BBR_UNIT) {
+		dotest1++;
 		return is_full_length &&
 			(rs->losses ||  /* perhaps pacing_gain*BDP won't fit */
 			 inflight >= bbr_inflight(sk, bw, bbr->pacing_gain));
+}
 
 	/* A pacing_gain < 1.0 tries to drain extra queue we added if bw
 	 * probing didn't find more bw. If inflight falls to match BDP then we
 	 * estimate queue is drained; persisting would underutilize the pipe.
 	 */
+	dotest2++;
 	return is_full_length ||
 		inflight <= bbr_inflight(sk, bw, BBR_UNIT);
 }
@@ -1143,6 +1155,46 @@ static void bbr_set_state(struct sock *sk, uint8_t new_state)
 	}
 }
 
+void do_bbr_main(struct sock *sk, const struct rate_sample *rs)
+{
+	bbr_main(sk, rs);
+}
+
+void do_bbr_init(struct sock *sk)
+{
+	bbr_init(sk);
+}
+
+void do_bbr_dump(struct sock *sk)
+{
+    uint64_t bw_thresh;
+    uint32_t bw = bbr_bw(sk);
+    struct tcp_sock *tp = tcp_sk(sk);
+    const struct bbr *bbr = inet_csk_ca(sk);
+
+    bw_thresh = (uint64_t)bbr->full_bw * bbr_full_bw_thresh >> BBR_SCALE;
+    int test = (bbr_max_bw(sk) >= bw_thresh);
+    bool is_full_length =
+	    tcp_stamp_us_delta(tp->delivered_mstamp, bbr->cycle_mstamp) >
+	    bbr->min_rtt_us;
+
+
+#if 0
+    fprintf(stderr, "bw %d, reached: %d test %d %d %d %d\n",
+	    bw, bbr->full_bw_reached, test, bw_thresh, bbr_max_bw(sk), bbr->cycle_idx);
+#endif
+    fprintf(stderr, "test %d %d %d, gain %d, idx %d, is_full %d, minrtt %d lt_use_bw: %d cycle_mstamp %ld\n",
+	    dotest, dotest1, dotest2, bbr->pacing_gain, bbr->cycle_idx, is_full_length, bbr->min_rtt_us, bbr->lt_use_bw, bbr->cycle_mstamp);
+    unsigned long rate = bbr_bw_to_pacing_rate(sk, bw, BBR_UNIT);
+
+    int inflight = 1;
+    static const char *bbr_mode_str[] = {"STARTUP", "DRAIN", "PROBE_BW", "PROBE_RTT"};
+
+    fprintf(stderr, "bbr_full_bw_reached: %d rate %ld bw %ld count %d %s inflight: %d %d %d\n",
+	    bbr_full_bw_reached(sk), rate, bw, bbr->rtt_cnt, bbr_mode_str[bbr->mode],
+	    tcp_packets_in_flight(tp), bbr_inflight(sk, bw, bbr->pacing_gain), tp->snd_cwnd);
+}
+
 #if 0
 static struct tcp_congestion_ops tcp_bbr_cong_ops __read_mostly = {
 	.flags		= TCP_CONG_NON_RESTRICTED,
@@ -1158,9 +1210,8 @@ static struct tcp_congestion_ops tcp_bbr_cong_ops __read_mostly = {
 	.get_info	= bbr_get_info,
 	.set_state	= bbr_set_state,
 };
-#endif
 
-#if 0
+
 static int __init bbr_register(void)
 {
 	BUILD_BUG_ON(sizeof(struct bbr) > ICSK_CA_PRIV_SIZE);

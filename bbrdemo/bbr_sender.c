@@ -10,81 +10,12 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 
+#include "minmax.h"
 #include "utils/queue.h"
 
-enum bbr_mode {
-    BBR_STARTUP,	/* ramp up sending rate rapidly to fill pipe */
-    BBR_DRAIN,	/* drain any queue created during startup */
-    BBR_PROBE_BW,	/* discover, share bw: pace around estimated bw */
-    BBR_PROBE_RTT,	/* cut inflight to min to probe min_rtt */
-};
-
-#define CYCLE_LEN	8	/* number of phases in a pacing gain cycle */
-#define BBR_SCALE       8
-
-/* Window length of bw filter (in rounds): */
-static const int bbr_bw_rtts = CYCLE_LEN + 2;
-
-struct minmax_sample {
-    uint32_t t;	/* time measurement was taken */
-    uint32_t v;	/* value measured */
-};
-
-struct minmax {
-    struct minmax_sample s[3];
-};
-
-static inline uint32_t minmax_get(const struct minmax *m)
-{
-    return m->s[0].v;
-}
-
-static inline uint32_t minmax_reset(struct minmax *m, uint32_t t, uint32_t meas)
-{
-    struct minmax_sample val = { .t = t, .v = meas };
-
-    m->s[2] = m->s[1] = m->s[0] = val;
-    return m->s[0].v;
-}
-
-static uint32_t minmax_subwin_update(struct minmax *m, uint32_t win,
-	const struct minmax_sample *val)
-{
-    uint32_t dt = val->t - m->s[0].t;
-
-    if (dt > win) {
-	m->s[1] = m->s[2];
-	m->s[2] = *val;
-	if (val->t - m->s[0].t > win) {
-	    m->s[0] = m->s[1];
-	    m->s[1] = m->s[2];
-	    m->s[2] = *val;
-	}
-    } else if (m->s[1].t == m->s[0].t && dt > win/4) {
-	m->s[2] = m->s[1] = *val;
-    } else if (m->s[2].t == m->s[1].t && dt > win/2) {
-	m->s[2] = *val;
-    }
-    return m->s[0].v;
-}
-
-uint32_t minmax_running_max(struct minmax *m, uint32_t win, uint32_t t, uint32_t meas)
-{
-    struct minmax_sample val = { .t = t, .v = meas };
-
-    if ((val.v >= m->s[0].v) ||
-	    (val.t - m->s[2].t > win)) {
-	m->s[2] = m->s[1] = m->s[0] = val;
-	return m->s[0].v;
-    }
-
-    if (val.v >= m->s[1].v)
-	m->s[2] = m->s[1] = val;
-    else if (val.v >= m->s[2].v)
-	m->s[2] = val;
-
-    return minmax_subwin_update(m, win, &val);
-}
+void do_bbr_init(struct sock *sk);
+void do_bbr_dump(struct sock *sk);
+void do_bbr_main(struct sock *sk, const struct rate_sample *rs);
 
 #define SEQ_LT(a, b) ((int)((int)(a) - (int)(b)) < 0)
 #define SEQ_GEQ(a, b) ((int)((int)(a) - (int)(b)) >= 0)
@@ -92,16 +23,6 @@ uint32_t minmax_running_max(struct minmax *m, uint32_t win, uint32_t t, uint32_t
 #define MAX(a, b) (SEQ_LT(a, b)? (b): (a))
 
 typedef unsigned int tcp_seq;
-
-static uint64_t _ts_recent = 0;
-static tcp_seq _seq_snd_nxt = 0;
-static tcp_seq _seq_snd_max = 0;
-static tcp_seq _seq_snd_una = 0;
-
-static tcp_seq _track_id = 0;
-static tcp_seq _stat_delivery = 0;
-static uint64_t _stat_delivery_mstamp = 0;
-static tcp_seq _skb_tx_max_seq = 0;
 
 struct bbr_info {
     tcp_seq trackid;
@@ -119,36 +40,11 @@ struct sack_score {
 };
 
 struct bbr_tcpcb {
-    int mode;
+    int update;
+    int ticks;
 
-    struct {
-	int round_start;
-
-	int rtt_cnt;
-        tcp_seq next_rtt_delivered;
-	struct minmax bw;
-
-	int lt_bw;
-	int lt_use_bw;
-	int lt_rtt_cnt;
-	int lt_last_lost;
-	int lt_last_delivered;
-        int lt_is_sampling;
-	uint64_t lt_last_stamp;
-
-	int cycle_idx;
-	uint64_t cycle_mstamp;
-	
-	float pacing_gain;
-    } bbr;
-
-    struct {
-	int delivered;
-	int losses;
-	int is_app_limited;
-	uint64_t interval_us;
-	tcp_seq prior_delivered;
-    } rs;
+    struct rate_sample rs;
+    struct sock sock;
 
     tcp_seq trackid;
     tcp_seq ts_echo;
@@ -156,7 +52,6 @@ struct bbr_tcpcb {
 
     tcp_seq snd_nxt;
     tcp_seq snd_una;
-    tcp_seq snd_cwnd;
 
     uint64_t min_rtt_us;             /* min RTT in min_rtt_win_sec window */
     uint64_t min_rtt_stamp;          /* timestamp of min_rtt_us */
@@ -166,10 +61,6 @@ struct bbr_tcpcb {
 
     tcp_seq prior_out;
     tcp_seq prior_delivered;
-    uint64_t tcp_mstamp;
-
-    tcp_seq delivered;
-    uint64_t delivered_mstamp;
 
     uint64_t first_tx_mstamp;
 
@@ -177,9 +68,7 @@ struct bbr_tcpcb {
     uint64_t app_limited_mstamp;
 
     uint64_t lost;
-    uint64_t packets_out;
 
-    uint64_t pacing_rate;
     uint64_t pacing_leach_mstamp;
 
     struct {
@@ -188,13 +77,12 @@ struct bbr_tcpcb {
 	uint64_t delivered_interval;
 	uint64_t xmit_counter;
  	uint64_t exceed_cwnd;
+	uint64_t minmax;
     } debug;
 };
 
 static unsigned char TUNNEL_PADDIND_DNS[] = {
-    0x20, 0x88, 0x81, 0x80, 0x00, 0x01, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x04, 0x77, 0x77, 0x77,
-    0x77, 0x00, 0x00, 0x01, 0x00, 0x01
+    0x20, 0x88, 0x81, 0x80
 };
 
 #define LEN_PADDING_DNS sizeof(TUNNEL_PADDIND_DNS)
@@ -229,10 +117,6 @@ struct tx_skb_head _skb_delivery_queue = TAILQ_HEAD_INITIALIZER(_skb_delivery_qu
 
 #define MAX_SND_CWND 40960
 static struct tx_skb tx_bitmap[MAX_SND_CWND] = {};
-static const uint32_t bbr_lt_bw_max_rtts = 48;
-static const uint32_t bbr_lt_intvl_min_rtts = 4;
-static const uint32_t bbr_lt_loss_thresh = 50;
-static const uint32_t bbr_lt_bw_ratio = 8;
 
 static uint64_t tcp_mstamp()
 {
@@ -248,201 +132,12 @@ static uint64_t tcp_mstamp()
 #define US_IN_SEC  (1000ll * 1000ll)
 #define US_TO_TS(us)   (uint32_t)((us)/1000ll)
 
-/* Start a new long-term sampling interval. */
-static void bbr_reset_lt_bw_sampling_interval(struct bbr_tcpcb *tp)
-{
-	tp->bbr.lt_last_stamp = tp->delivered_mstamp/1000;
-	tp->bbr.lt_last_delivered = tp->delivered;
-	tp->bbr.lt_last_lost = tp->lost;
-	tp->bbr.lt_rtt_cnt = 0;
-}
-
-/* Completely reset long-term bandwidth sampling. */
-static void bbr_reset_lt_bw_sampling(struct bbr_tcpcb *tp)
-{
-	tp->bbr.lt_bw = 0;
-	tp->bbr.lt_use_bw = 0;
-	tp->bbr.lt_is_sampling = 0;
-	bbr_reset_lt_bw_sampling_interval(tp);
-}
-
-static void bbr_lt_bw_interval_done(struct bbr_tcpcb *tp, uint32_t bw)
-{
-	uint32_t diff;
-
-	if (tp->bbr.lt_bw) {  /* do we have bw from a previous interval? */
-		/* Is new bw close to the lt_bw from the previous interval? */
-		diff = abs(bw - tp->bbr.lt_bw);
-		if ((diff * bbr_lt_bw_ratio <= tp->bbr.lt_bw) || (diff < 2)) {
-			tp->bbr.lt_bw = (bw + tp->bbr.lt_bw) >> 1;  /* avg 2 intvls */
-			tp->bbr.lt_use_bw = 1;
-			tp->bbr.pacing_gain = 1.0;  /* try to avoid drops */
-			tp->bbr.lt_rtt_cnt = 0;
-			return;
-		}
-	}
-	tp->bbr.lt_bw = bw;
-	bbr_reset_lt_bw_sampling_interval(tp);
-}
-
-static void bbr_advance_cycle_phase(struct bbr_tcpcb *tp);
-
-static void bbr_reset_probe_bw_mode(struct bbr_tcpcb *tp)
-{
-    tp->mode = BBR_PROBE_BW;
-    tp->bbr.cycle_idx = CYCLE_LEN - 1;
-    bbr_advance_cycle_phase(tp);
-}
-
-static void bbr_lt_bw_sampling(struct bbr_tcpcb *tp)
-{
-	uint32_t lost, delivered;
-	uint64_t bw;
-	uint32_t t;
-
-	if (tp->bbr.lt_use_bw) {
-		if (tp->mode == BBR_PROBE_BW && tp->bbr.round_start &&
-		    ++tp->bbr.lt_rtt_cnt >= bbr_lt_bw_max_rtts) {
-			bbr_reset_lt_bw_sampling(tp);    /* stop using lt_bw */
-			bbr_reset_probe_bw_mode(tp);  /* restart gain cycling */
-		}
-		return;
-	}
-
-	if (!tp->bbr.lt_is_sampling) {
-		if (!tp->rs.losses)
-			return;
-		bbr_reset_lt_bw_sampling_interval(tp);
-		tp->bbr.lt_is_sampling = 1;
-	}
-
-	if (tp->rs.is_app_limited) {
-		bbr_reset_lt_bw_sampling(tp);
-		return;
-	}
-
-	if (tp->bbr.round_start)
-		tp->bbr.lt_rtt_cnt++;
-	if (tp->bbr.lt_rtt_cnt < bbr_lt_intvl_min_rtts)
-		return;
-	if (tp->bbr.lt_rtt_cnt > 4 * bbr_lt_intvl_min_rtts) {
-		bbr_reset_lt_bw_sampling(tp);
-		return;
-	}
-
-	if (!tp->rs.losses)
-		return;
-
-	lost = tp->lost - tp->bbr.lt_last_lost;
-	delivered = tp->delivered - tp->bbr.lt_last_delivered;
-	if (!delivered || (lost << BBR_SCALE) < bbr_lt_loss_thresh * delivered)
-		return;
-
-	/* Find average delivery rate in this sampling interval. */
-	t = (tp->delivered_mstamp / 1000) - tp->bbr.lt_last_stamp;
-	if ((int32_t)t < 1)
-		return;		/* interval is less than one ms, so wait */
-	/* Check if can multiply without overflow */
-	if (t >= ~0U / 1000) {
-		bbr_reset_lt_bw_sampling(tp);  /* interval too long; reset */
-		return;
-	}
-	bw = (uint64_t)delivered * 1000 / t;
-	bbr_lt_bw_interval_done(tp, bw);
-}
-
-static void bbr_update_bw(struct bbr_tcpcb *cb)
-{
-    uint64_t bw;
-
-    cb->bbr.round_start = 0;
-    if (cb->rs.delivered < 0 || cb->rs.interval_us <= 0)
-	return;
-
-    if (SEQ_GEQ(cb->rs.prior_delivered, cb->bbr.next_rtt_delivered)) {
-	cb->bbr.next_rtt_delivered = cb->delivered;
-	cb->bbr.rtt_cnt++;
-	cb->bbr.round_start = 1;
-#if 0
-	cb->bbr.packet_conservation = 0;
-#endif
-    }
-
-    bbr_lt_bw_sampling(cb);
-
-    bw = (uint64_t)cb->rs.delivered * 1000000ull / cb->rs.interval_us;
-
-    if (!cb->rs.is_app_limited || bw >= minmax_get(&cb->bbr.bw)) {
-	minmax_running_max(&cb->bbr.bw, bbr_bw_rtts, cb->bbr.rtt_cnt, bw);
-    }
-
-    return;
-}
-
-static uint32_t bbr_inflight(struct bbr_tcpcb *tp, uint32_t bw, float gain)
-{
-    return tp->min_rtt_us * bw * gain / 1000000ull;
-}
-
-static int bbr_is_next_cycle_phase(struct bbr_tcpcb *tp)
-{
-    int is_full_length = (tp->delivered_mstamp - tp->bbr.cycle_mstamp) > tp->min_rtt_us;
-    uint32_t inflight, bw;
-
-    if (tp->bbr.pacing_gain == 1.0)
-	return is_full_length;          /* just use wall clock time */
-
-    inflight = tp->packets_out; // bbr_packets_in_net_at_edt(sk, rs->prior_in_flight);
-    bw = minmax_get(&tp->bbr.bw);
-
-    if (tp->bbr.pacing_gain > 1.0)
-	return is_full_length &&
-	    (tp->rs.losses ||
-	     inflight >= bbr_inflight(tp, bw, tp->bbr.pacing_gain));
-
-    return is_full_length ||
-	inflight <= bbr_inflight(tp, bw, 1.0);
-}
-
-static void bbr_advance_cycle_phase(struct bbr_tcpcb *tp)
-{
-    float pacing_gain[] = {1.25, 0.75, 1, 1, 1, 1, 1, 1};
-    tp->bbr.cycle_idx = (tp->bbr.cycle_idx + 1) & (CYCLE_LEN - 1);
-    tp->bbr.cycle_mstamp = tp->delivered_mstamp;
-    tp->bbr.pacing_gain = pacing_gain[tp->bbr.cycle_idx];
-}
-
-static void bbr_update_cycle_phase(struct bbr_tcpcb *cb)
-{
-    if (cb->mode == BBR_PROBE_BW && bbr_is_next_cycle_phase(cb))
-	bbr_advance_cycle_phase(cb);
-    return;
-}
-
 static void bbr_update_model(struct bbr_tcpcb *cb)
 {
-
-    bbr_update_bw(cb);
-    bbr_update_cycle_phase(cb);
-
-    uint32_t bw = minmax_get(&cb->bbr.bw);
-
-    if (cb->bbr.lt_use_bw) {
-	cb->pacing_rate = cb->bbr.lt_bw;
-    } else if (cb->bbr.rtt_cnt > 4 && bw * cb->bbr.pacing_gain > 128) {
-	cb->pacing_rate = bw * cb->bbr.pacing_gain;
-    }
-
-    if (cb->pacing_rate < 128)
-	cb->pacing_rate = 128;
-
-    if (cb->min_rtt_us > 0) {
-	cb->snd_cwnd  = (cb->pacing_rate * (cb->min_rtt_us << 1)) / 1000000ll;
-	cb->snd_cwnd += (cb->pacing_rate * (cb->min_rtt_us >> 1)) / 1000000ll;
-        cb->snd_cwnd += 3;
-    } else {
-	cb->snd_cwnd  = cb->pacing_rate;
-        cb->snd_cwnd += 3;
+    if (cb->update > 0) {
+	do_bbr_main(&cb->sock, &cb->rs);
+	cb->update = 0;
+	cb->ticks++;
     }
 
     cb->rs.interval_us = 0;
@@ -452,16 +147,16 @@ static void bbr_update_model(struct bbr_tcpcb *cb)
 
 static void bbr_show_status(struct bbr_tcpcb *cb)
 {
-    uint32_t bw;
     static time_t last_show_stamp = 0;
+    struct tcp_sock *tp = tcp_sk(&cb->sock);
 
     if (time(NULL) == last_show_stamp)
 	return;
 
-    bw = minmax_get(&cb->bbr.bw);
-    fprintf(stderr, "snd_una %d min_rtt %lld delivered %d inflight %lld loss %lld lt {%d/%d}, rexmt %lld rate {%lld,%ld} counter %lld/%lld bw %d\n",
-	    cb->snd_una, cb->min_rtt_us, cb->delivered, cb->packets_out, cb->lost, cb->bbr.lt_use_bw, cb->bbr.lt_bw,
-	    cb->debug.rexmt_out, cb->debug.delivered_rate, cb->debug.delivered_interval, cb->debug.xmit_counter, cb->debug.exceed_cwnd, bw);
+    fprintf(stderr, "%d snd_una %d min_rtt %lld delivered %d inflight %lld loss %lld rate %lld, rexmt %lld rate {%lld,%ld} counter %lld/%lld\n",
+	    cb->ticks, cb->snd_una, cb->min_rtt_us, tp->delivered, tp->packets_out, cb->lost, cb->sock.sk_pacing_rate,
+	    cb->debug.rexmt_out, cb->debug.delivered_rate, cb->debug.delivered_interval, cb->debug.xmit_counter, cb->debug.exceed_cwnd);
+    do_bbr_dump(&cb->sock);
 
     last_show_stamp  = time(NULL);
     return;
@@ -491,19 +186,29 @@ static int bbr_check_pacing_reached(struct bbr_tcpcb *cb, struct timeval *timeva
 static int tcpup_output(struct bbr_tcpcb *cb, int sockfd, const struct sockaddr *from, socklen_t size)
 {
     int error;
+    tcp_seq seq_rexmt;
     char buffer[1300];
-    struct tx_skb *skb;
+    struct tx_skb *skb, *hold;
     struct bbr_info *pbbr = NULL;
+    struct tcp_sock *tp = tcp_sk(&cb->sock);
 
-    skb = TAILQ_FIRST(&_skb_rexmt_queue);
-    if (skb != NULL) {
+    seq_rexmt = cb->snd_nxt;
+    TAILQ_FOREACH_SAFE(skb, &_skb_rexmt_queue, skb_next, hold) {
+	if (SEQ_LT(skb->pkt_seq, seq_rexmt)) {
+	    assert(skb->sacked & TCPCB_LOST);
+	    seq_rexmt = skb->pkt_seq;
+	}
+    }
+
+    skb = &tx_bitmap[seq_rexmt % MAX_SND_CWND];
+    if (seq_rexmt != cb->snd_nxt) {
         TAILQ_REMOVE(&_skb_rexmt_queue, skb, skb_next);
 	assert(skb->sacked & TCPCB_LOST);
 
-	skb->tx.delivered = cb->delivered;
-	skb->tx.delivered_mstamp = cb->delivered_mstamp;
+	skb->tx.delivered = tp->delivered;
+	skb->tx.delivered_mstamp = tp->delivered_mstamp;
 
-	skb->skb_mstamp = cb->tcp_mstamp;
+	skb->skb_mstamp = tp->tcp_mstamp;
 	skb->tx.first_tx_mstamp = cb->first_tx_mstamp;
 	if (skb->sacked & TCPCB_SACKED_RETRANS)
 	    skb->sacked |= TCPCB_EVER_RETRANS;
@@ -514,23 +219,23 @@ static int tcpup_output(struct bbr_tcpcb *cb, int sockfd, const struct sockaddr 
 	goto start_xmit;
     }
 
-    if (cb->packets_out == 0) {
+    if (tp->packets_out == 0) {
 	cb->app_limited_seq = cb->snd_nxt + 1;
-	cb->app_limited_mstamp = cb->tcp_mstamp;
-	cb->first_tx_mstamp = cb->tcp_mstamp;
+	cb->app_limited_mstamp = tp->tcp_mstamp;
+	cb->first_tx_mstamp = tp->tcp_mstamp;
     }
 
-    if (cb->min_rtt_us > 0 && cb->tcp_mstamp - cb->delivered_mstamp > 500000 + (cb->min_rtt_us << 1)) {
-	fprintf(stderr, "could not got acked for long time %d\n", cb->tcp_mstamp - cb->delivered_mstamp);
+    if (cb->min_rtt_us > 0 && tp->tcp_mstamp - tp->delivered_mstamp > 500000 + (cb->min_rtt_us << 1)) {
+	fprintf(stderr, "could not got acked for long time %d\n", tp->tcp_mstamp - tp->delivered_mstamp);
 	exit(0);
     }
 
     assert(SEQ_GEQ(cb->snd_nxt, cb->snd_una));
-    if (SEQ_LT(cb->snd_una + cb->snd_cwnd, cb->snd_nxt + 1) &&
-	    cb->packets_out > 3 && cb->delivered_mstamp + (cb->min_rtt_us >> 2) < cb->tcp_mstamp) {
-	assert(cb->min_rtt_us > 16);
-        cb->pacing_leach_mstamp += (US_IN_SEC / cb->pacing_rate);
-	cb->pacing_leach_mstamp += (cb->min_rtt_us / 16);
+    if (SEQ_LT(cb->snd_una + tp->snd_cwnd, cb->snd_nxt + 1) &&
+	    tp->packets_out > 2 /* && tp->delivered_mstamp + (cb->min_rtt_us >> 1) < tp->tcp_mstamp */ ) {
+	assert(cb->min_rtt_us > 16 || cb->min_rtt_us == 0);
+        cb->pacing_leach_mstamp += (US_IN_SEC * 1300 / cb->sock.sk_pacing_rate);
+	cb->pacing_leach_mstamp += (cb->min_rtt_us / 4);
 	cb->debug.exceed_cwnd ++;
 	return 0;
     }
@@ -542,13 +247,13 @@ static int tcpup_output(struct bbr_tcpcb *cb, int sockfd, const struct sockaddr 
     assert(skb->sacked == 0);
     skb->sacked = 0;
     skb->pkt_seq = cb->snd_nxt++;
-    skb->tx.delivered = cb->delivered;
+    skb->tx.delivered = tp->delivered;
     skb->tx.first_tx_mstamp = cb->first_tx_mstamp;
-    skb->tx.delivered_mstamp = cb->delivered_mstamp;
-    skb->skb_mstamp = cb->tcp_mstamp;
+    skb->tx.delivered_mstamp = tp->delivered_mstamp;
+    skb->skb_mstamp = tp->tcp_mstamp;
 
 start_xmit:
-    cb->packets_out++;
+    tp->packets_out++;
     TAILQ_INSERT_TAIL(&_skb_delivery_queue, skb, skb_next);
 
     pbbr = (struct bbr_info *)(buffer + LEN_PADDING_DNS);
@@ -556,15 +261,14 @@ start_xmit:
     pbbr->trackid = cb->trackid;
     pbbr->seq_pkt = ntohl(skb->pkt_seq);
     pbbr->seq_ack = ntohl(0);
-    pbbr->ts_val  = ntohl(US_TO_TS(cb->tcp_mstamp));
+    pbbr->ts_val  = ntohl(US_TO_TS(tp->tcp_mstamp));
     pbbr->ts_ecr  = ntohl(cb->ts_recent);
     pbbr->counter = ntohl(0);
 
     error = sendto(sockfd, buffer, sizeof(buffer), 0, from, size);
     assert (error > 0);
 
-    assert (cb->pacing_rate >= 128);
-    cb->pacing_leach_mstamp += (US_IN_SEC / cb->pacing_rate);
+    cb->pacing_leach_mstamp += (US_IN_SEC * tp->mss_cache / cb->sock.sk_pacing_rate);
     cb->debug.xmit_counter++;
     return 0;
 }
@@ -582,23 +286,30 @@ static int tcpup_acked(struct bbr_tcpcb *cb, int sockfd)
 
     uint32_t lost = cb->lost; 
     tcp_seq start, end;
-    tcp_seq snd_una = cb->snd_una;
-    tcp_seq delivered = cb->delivered;
-    uint64_t recent_skb_mstamp = 0ull;
+    tcp_seq prior_snd_una = cb->snd_una;
+    struct tcp_sock *tp = tcp_sk(&cb->sock);
+    tcp_seq delivered = tp->delivered;
+
+    int flags = 0;
+    uint64_t last_rtt_mstamp = 0ull;
+    uint64_t last_sack_rtt_mstamp = 0ull;
 
     struct tx_skb *skb, *skb_acked = NULL;
     struct bbr_info *pbbr = NULL;
     struct bbr_info bbrinfo = {};
     struct sockaddr_in client = {};
     struct sack_score * sacks = NULL;
+    struct rate_sample rs = {};
 
     socklen_t addr_len = sizeof(client);
-    int nbytes = recvfrom(sockfd, buffer, sizeof(buffer), MSG_DONTWAIT, (struct sockaddr *)&client, &addr_len);
+    int nbytes = recvfrom(sockfd, buffer, sizeof(buffer),
+	    MSG_DONTWAIT, (struct sockaddr *)&client, &addr_len);
 
     if (nbytes == -1 || nbytes < sizeof(bbrinfo) + LEN_PADDING_DNS) {
 	return (nbytes != -1);
     }
 	
+    rs.prior_in_flight = tp->packets_out;
     pbbr = (struct bbr_info *)(buffer + LEN_PADDING_DNS);
     bbrinfo.seq_pkt = ntohl(pbbr->seq_pkt);
     bbrinfo.seq_ack = ntohl(pbbr->seq_ack);
@@ -618,26 +329,29 @@ static int tcpup_acked(struct bbr_tcpcb *cb, int sockfd)
 	skb_acked = &tx_bitmap[start % MAX_SND_CWND];
 	if (SEQ_LT(start, bbrinfo.seq_ack)) {
 	    assert(skb_acked->sacked & TCPCB_SACKED_RETRANS);
-	    cb->delivered ++;
+	    tp->delivered ++;
 	}
 	/* update skb_acked */
     } else {
 #if 0
 	printf("old ack nsack=%d, snd_una %x seq_ack %x\n",
-		bbrinfo.nsack, snd_una, bbrinfo.seq_ack);
+		bbrinfo.nsack, prior_snd_una, bbrinfo.seq_ack);
 	printf("old ack tsecr=%d, tsval %u, mstamp %u seq_ack %x\n",
-		bbrinfo.ts_ecr, bbrinfo.ts_val, US_TO_TS(cb->delivered_mstamp), cb->ts_recent);
+		bbrinfo.ts_ecr, bbrinfo.ts_val, US_TO_TS(tp->delivered_mstamp), cb->ts_recent);
 #endif
-	assert(SEQ_LT(bbrinfo.ts_ecr, US_TO_TS(cb->delivered_mstamp)));
+	assert(SEQ_LT(bbrinfo.ts_ecr, US_TO_TS(tp->delivered_mstamp)));
 
 	if (SEQ_LT(cb->ts_recent, bbrinfo.ts_val)) {
 	    cb->ts_recent = bbrinfo.ts_val;
 	    cb->ts_echo = bbrinfo.ts_ecr;
-	    cb->delivered++;
+	    tp->delivered++;
 	} else {
 	    /* skip */
-	    assert(SEQ_GEQ(snd_una, bbrinfo.seq_ack));
+	    assert(SEQ_GEQ(prior_snd_una, bbrinfo.seq_ack));
 	}
+
+	cb->update = 1;
+	cb->rs = rs;
 	return 1;
     }
 
@@ -650,123 +364,103 @@ static int tcpup_acked(struct bbr_tcpcb *cb, int sockfd)
 	cb->ts_echo = bbrinfo.ts_ecr;
     }
 
-    start = snd_una;
-    end = bbrinfo.seq_ack;
-    while (SEQ_LT(start, end)) {
-	skb = &tx_bitmap[start++ % MAX_SND_CWND];
-	if (skb->sacked & TCPCB_SACKED_ACKED) 
-	    continue;
-	if ((~skb->sacked & TCPCB_SACKED_RETRANS)
-		&& skb->skb_mstamp > recent_skb_mstamp) {
-	    if (SEQ_LT(cb->prior_delivered, skb->tx.delivered)
-		    && cb->first_tx_mstamp < skb->skb_mstamp) {
-		cb->first_tx_mstamp = skb->skb_mstamp;
-		cb->prior_delivered = skb->tx.delivered;
+    struct sack_score scores[5];
+
+    for (i = 0; i < bbrinfo.nsack; i++) {
+	scores[i].start = htonl(sacks[i].start);
+	scores[i].end = htonl(sacks[i].end);
+    }
+
+    for (i = bbrinfo.nsack - 1; i > 0; i--) {
+	for (int j = 0; j < i; j++) {
+	    if (after(scores[j].start, scores[j + 1].start)) {
+		struct sack_score save = scores[j];
+		scores[j] = scores[j + 1];
+		scores[j + 1] = save;
 	    }
-	    recent_skb_mstamp = skb->skb_mstamp;
 	}
-
-	skb->sacked |= TCPCB_SACKED_ACKED;
-	if (skb->sacked & TCPCB_LOST) {
-	    TAILQ_REMOVE(&_skb_rexmt_queue, skb, skb_next);
-	    skb->sacked &= ~TCPCB_LOST;
-            skb->sacked = 0;
-	    // TAILQ_INSERT_TAIL(&_skb_delivery_queue, skb, skb_next);
-	}
-
-	cb->delivered ++;
     }
 
     for (i = 0; i < bbrinfo.nsack; i++) {
-	start = htonl(sacks[i].start);
-	end = htonl(sacks[i].end);
+	start = scores[i].start;
+	end = scores[i].end;
 
-	if (SEQ_LT(start, cb->snd_una)) {
-	    start = cb->snd_una;
+	if (SEQ_LT(start, prior_snd_una)) {
+	    start = prior_snd_una;
 	}
 
 	while (SEQ_LT(start, end)) {
 	    skb = &tx_bitmap[start++ % MAX_SND_CWND];
-	    if (skb->sacked & TCPCB_SACKED_ACKED) 
-		continue;
 
-	    if ((~skb->sacked & TCPCB_SACKED_RETRANS)
-		    && skb->skb_mstamp > recent_skb_mstamp) {
-		if (SEQ_LT(cb->prior_delivered, skb->tx.delivered)
-			&& cb->first_tx_mstamp < skb->skb_mstamp) {
-		    cb->first_tx_mstamp = skb->skb_mstamp;
-		    cb->prior_delivered = skb->tx.delivered;
-		}
-		recent_skb_mstamp = skb->skb_mstamp;
+	    if (~skb->sacked & TCPCB_SACKED_ACKED) {
+	        skb->sacked |= TCPCB_SACKED_ACKED;
+		if (~skb->sacked & TCPCB_SACKED_RETRANS)
+			last_sack_rtt_mstamp = skb->skb_mstamp;
+		tp->delivered ++;
 	    }
 
-	    skb->sacked |= TCPCB_SACKED_ACKED;
 	    if (skb->sacked & TCPCB_LOST) {
 		TAILQ_REMOVE(&_skb_rexmt_queue, skb, skb_next);
 		skb->sacked &= ~TCPCB_LOST;
-		skb->sacked = 0;
-		// TAILQ_INSERT_TAIL(&_skb_delivery_queue, skb, skb_next);
+		TAILQ_INSERT_TAIL(&_skb_delivery_queue, skb, skb_next);
 	    }
 
-	    cb->delivered ++;
+	    if (!rs.prior_delivered ||
+		    (skb->skb_mstamp > cb->first_tx_mstamp) ||
+		    (skb->skb_mstamp == cb->first_tx_mstamp &&
+		     SEQ_LT(rs.last_end_seq, skb->pkt_seq))) {
+		rs.prior_delivered = skb->tx.delivered;
+		rs.prior_mstamp    = skb->tx.delivered_mstamp;
+		rs.last_end_seq    = skb->pkt_seq;
+		rs.interval_us     = (skb->skb_mstamp - skb->tx.first_tx_mstamp);
+
+                assert(rs.prior_delivered > 0);
+		cb->first_tx_mstamp = skb->skb_mstamp;
+	    }
 	}
     }
 
-    if (cb->delivered != delivered) {
-	cb->delivered_mstamp = cb->tcp_mstamp;
-	cb->packets_out -= (cb->delivered - delivered);
-    }
+    start = prior_snd_una;
+    end = cb->snd_una;
 
-    if (cb->delivered < bbrinfo.counter) {
-	fprintf(stderr, "cb->delivered %d, counter %d\n", cb->delivered, bbrinfo.counter);
-	// assert(cb->delivered >= bbrinfo.counter);
-	cb->delivered = bbrinfo.counter;
-    }
+    while (SEQ_LT(start, end)) {
+	skb = &tx_bitmap[start++ % MAX_SND_CWND];
 
-    if (recent_skb_mstamp != 0) {
-	uint64_t rtt_us = cb->tcp_mstamp - recent_skb_mstamp;
-
-	assert(rtt_us > 1000);
-	assert(cb->delivered != delivered);
-        if (US_TO_TS(recent_skb_mstamp) != bbrinfo.ts_ecr)
-	    fprintf(stderr, "recent_skb_mstamp %d tsecr %d\n", US_TO_TS(recent_skb_mstamp), bbrinfo.ts_ecr);
-        assert(SEQ_GEQ(bbrinfo.ts_ecr, US_TO_TS(recent_skb_mstamp)));
-
-	if (cb->min_rtt_us > rtt_us
-		|| (cb->min_rtt_stamp + 10000000 < cb->tcp_mstamp && bbrinfo.ts_ecr == US_TO_TS(recent_skb_mstamp))) {
-            if (cb->min_rtt_us > rtt_us)
-		cb->min_rtt_stamp = cb->tcp_mstamp;
-	    cb->min_rtt_us = rtt_us;
+	if (~skb->sacked & TCPCB_SACKED_ACKED) {
+	    skb->sacked |= TCPCB_SACKED_ACKED;
+	    if (skb->sacked & TCPCB_SACKED_RETRANS)
+		flags |= TCPCB_SACKED_RETRANS;
+	    else
+		last_rtt_mstamp = skb->skb_mstamp;
+	    tp->delivered ++;
 	}
+
+	if (!rs.prior_delivered ||
+		(skb->skb_mstamp > cb->first_tx_mstamp) ||
+		(skb->skb_mstamp == cb->first_tx_mstamp &&
+		 SEQ_LT(rs.last_end_seq, skb->pkt_seq))) {
+	    rs.prior_delivered = skb->tx.delivered;
+	    rs.prior_mstamp    = skb->tx.delivered_mstamp;
+	    rs.last_end_seq    = skb->pkt_seq;
+	    rs.interval_us      = (skb->skb_mstamp - skb->tx.first_tx_mstamp);
+            
+            assert(rs.prior_delivered > 0);
+	    cb->first_tx_mstamp = skb->skb_mstamp;
+	}
+
+	if (skb->sacked & TCPCB_LOST) {
+	    TAILQ_REMOVE(&_skb_rexmt_queue, skb, skb_next);
+	    // TAILQ_INSERT_TAIL(&_skb_delivery_queue, skb, skb_next);
+	} else {
+	    TAILQ_REMOVE(&_skb_delivery_queue, skb, skb_next);
+	}
+
+	skb->sacked = 0;
     }
 
     struct tx_skb * hold = NULL;
     tcp_seq ts_recent = cb->ts_echo;
     uint64_t reord_wnd = (cb->min_rtt_us >> 3);
-
-    cb->rs.losses = cb->lost - lost;
-    cb->rs.delivered = 0;
-    cb->rs.prior_delivered = 0;
-
-    if ((skb_acked != NULL) && (cb->delivered != skb_acked->tx.delivered)) {
-	uint64_t snd_us = (skb_acked->skb_mstamp - skb_acked->tx.first_tx_mstamp);
-	uint64_t ack_us = (cb->tcp_mstamp - skb_acked->tx.delivered_mstamp);
-	uint64_t interval_us = MAX(ack_us, snd_us);
-
-#if 0
-	fprintf(stderr, "%ld %ld %ld %ld\n", skb_acked->skb_mstamp,
-		skb_acked->tx.first_tx_mstamp, skb_acked->tx.delivered_mstamp, cb->tcp_mstamp);
-#endif
-
-	if (interval_us >= cb->min_rtt_us) {
-	    cb->debug.delivered_rate = (cb->delivered - skb_acked->tx.delivered) * 1328 * 1000000ull / interval_us;
-	    cb->debug.delivered_interval = interval_us;
-
-            cb->rs.interval_us = interval_us;
-            cb->rs.delivered = cb->delivered - skb_acked->tx.delivered;
-            cb->rs.prior_delivered = skb_acked->tx.delivered;
-	}
-    }
 
     reord_wnd = (reord_wnd < 1000? 1000: reord_wnd);
     TAILQ_FOREACH_SAFE(skb, &_skb_delivery_queue, skb_next, hold) {
@@ -776,19 +470,76 @@ static int tcpup_acked(struct bbr_tcpcb *cb, int sockfd)
 	    continue;
 	}
 
-	if (skb->sacked & TCPCB_SACKED_ACKED) {
-	    continue;
-	}
-	
-	if (SEQ_LT(US_TO_TS(skb->skb_mstamp + reord_wnd), ts_recent)) {
+	if ((~skb->sacked & TCPCB_SACKED_ACKED) &&
+		SEQ_LT(US_TO_TS(skb->skb_mstamp + reord_wnd), ts_recent)) {
 	    TAILQ_REMOVE(&_skb_delivery_queue, skb, skb_next);
 	    cb->lost++;
-	    cb->packets_out--;
+	    tp->packets_out--;
             skb->sacked |= TCPCB_LOST;
 	    TAILQ_INSERT_TAIL(&_skb_rexmt_queue, skb, skb_next);
 	}
     }
 
+    if (tp->delivered != delivered) {
+	tp->delivered_mstamp = tp->tcp_mstamp;
+	tp->packets_out -= (tp->delivered - delivered);
+    }
+
+    if (tp->delivered < bbrinfo.counter) {
+	fprintf(stderr, "cb->delivered %d, counter %d\n", tp->delivered, bbrinfo.counter);
+	// assert(cb->delivered >= bbrinfo.counter);
+	tp->delivered = bbrinfo.counter;
+    }
+
+    rs.rtt_us = -1;
+    if (last_sack_rtt_mstamp)
+	rs.rtt_us = tp->tcp_mstamp - last_sack_rtt_mstamp;
+    else if (!flags && last_rtt_mstamp)
+	rs.rtt_us = tp->tcp_mstamp - last_rtt_mstamp;
+    rs.losses = cb->lost - lost;
+
+    // rs.is_app_limited = !(rs.losses > 0);
+    if (rs.prior_delivered )
+	rs.delivered = tp->delivered - rs.prior_delivered;
+
+    cb->rs = rs;
+    if (rs.prior_delivered == 0) {
+	assert(0);
+	return;
+    }
+    cb->update = 1;
+
+#if 0
+    fprintf(stderr, "last_sack_rtt_mstamp %ld last_rtt_mstamp %ld mstamp %ld\n",
+		    last_sack_rtt_mstamp, last_rtt_mstamp, cb->tcp_mstamp);
+#endif
+    if (rs.rtt_us != -1 && rs.rtt_us > 0) {
+	tcp_seq mstamp = US_TO_TS(tp->tcp_mstamp - rs.rtt_us);
+	if (mstamp != bbrinfo.ts_ecr)
+	    fprintf(stderr, "mstamp %d tsecr %d\n", mstamp, bbrinfo.ts_ecr);
+	assert(SEQ_GEQ(bbrinfo.ts_ecr, mstamp));
+
+	if (cb->min_rtt_us == 0 || cb->min_rtt_us >= rs.rtt_us) {
+	    cb->min_rtt_stamp = tp->tcp_mstamp;
+	    cb->min_rtt_us = rs.rtt_us;
+	}
+
+	if (cb->min_rtt_stamp + 10000000 < tp->tcp_mstamp && bbrinfo.ts_ecr == mstamp) {
+	    cb->min_rtt_us = rs.rtt_us;
+            /* min rtt is too old */
+	}
+    }
+
+    if (rs.delivered > 0 && rs.interval_us > 0) {
+#if 0
+	uint64_t snd_us = (skb_acked->skb_mstamp - skb_acked->tx.first_tx_mstamp);
+	uint64_t ack_us = (cb->tcp_mstamp - skb_acked->tx.delivered_mstamp);
+	uint64_t interval_us = MAX(ack_us, snd_us);
+#endif
+
+	cb->debug.delivered_rate = rs.delivered * 1328 * 1000000ull / rs.interval_us;
+	cb->debug.delivered_interval = rs.interval_us;
+    }
 
     return 1;
 }
@@ -797,6 +548,8 @@ enum Action {
     Action_Listen, Action_Connect
 };
 
+uint32_t tcp_jiffies32 = 0;
+
 int main(int argc, char *argv[])
 { 
     int action = 0, error = 0;
@@ -804,6 +557,7 @@ int main(int argc, char *argv[])
     struct sockaddr_in client;
     struct bbr_tcpcb cb = {};
     static char buff[1024] = {};
+    struct tcp_sock *tp = tcp_sk(&cb.sock);
 
     bzero(&serv, sizeof(serv));
     if (strcmp(argv[1], "-l") == 0) {
@@ -858,23 +612,32 @@ int main(int argc, char *argv[])
 	    break;
     }
 
-    minmax_reset(&cb.bbr.bw, cb.bbr.rtt_cnt, 0);
-    cb.pacing_rate = 128;
-    cb.delivered_mstamp = tcp_mstamp();
+    tp->delivered = 1;
+    tp->delivered_mstamp = tcp_mstamp();
     cb.ts_echo = US_TO_TS(tcp_mstamp());
     cb.ts_recent = 0;
-    cb.bbr.pacing_gain = 1.0;
+
+    tp->mss_cache = 1328;
+    tp->snd_cwnd = 655360;
+    tp->snd_cwnd_clamp = 655360;
+    cb.sock.sk_pacing_rate = 102400;
+    cb.sock.sk_pacing_status = SK_PACING_NONE;
+    cb.sock.sk_max_pacing_rate = 1024 * 1024 * 10;
+
+    tcp_jiffies32 = US_TO_TS(tcp_mstamp())/10;
+    do_bbr_init(&cb.sock);
 
     for ( ; ; ) {
+	tcp_jiffies32 = US_TO_TS(tcp_mstamp())/10;
 	bbr_update_model(&cb);
 
 	if (got_acked == 1) {
-            cb.tcp_mstamp = tcp_mstamp();
+            tp->tcp_mstamp = tcp_mstamp();
             got_acked = tcpup_acked(&cb, upfd);
 	}
 
 	if (!bbr_check_pacing_reached(&cb, NULL)) {
-            cb.tcp_mstamp = tcp_mstamp();
+            tp->tcp_mstamp = tcp_mstamp();
 	    tcpup_output(&cb, upfd, (struct sockaddr *)&client, sizeof(client));
 	}
 
