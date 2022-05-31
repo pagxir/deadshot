@@ -88,18 +88,26 @@ enum tcp_ca_event {
 struct rate_sample {
 	uint64_t  prior_mstamp; /* starting timestamp for interval */
 	uint32_t  prior_delivered;	/* tp->delivered at "prior_mstamp" */
+#if 0
 	uint32_t  prior_delivered_ce;/* tp->delivered_ce at "prior_mstamp" */
+#endif
 	int32_t  delivered;		/* number of packets delivered over interval */
+#if 0
 	int32_t  delivered_ce;	/* number of packets delivered w/ CE marks*/
+#endif
 	long interval_us;	/* time for tp->delivered to incr "delivered" */
+#if 0
 	uint32_t snd_interval_us;	/* snd interval for delivered packets */
 	uint32_t rcv_interval_us;	/* rcv interval for delivered packets */
+#endif
 	long rtt_us;		/* RTT of last (S)ACKed packet (or -1) */
 	int  losses;		/* number of packets marked lost upon ACK */
 	uint32_t  acked_sacked;	/* number of packets newly (S)ACKed upon ACK */
 	uint32_t  prior_in_flight;	/* in flight before this ACK */
 	bool is_app_limited;	/* is sample from packet with bubble in pipe? */
+#if 0
 	bool is_retrans;	/* is sample from retransmission? */
+#endif
 	bool is_ack_delayed;	/* is this (likely) a delayed ACK? */
 	int32_t last_end_seq;
 };
@@ -181,7 +189,7 @@ static uint32_t minmax_running_max(struct minmax *m, uint32_t win, uint32_t t, u
 #define div_u64(a, b)  (a/b)
 #define do_div(a,b)      a/=(b)
 #define msecs_to_jiffies(t) (t/10)
-#define tcp_min_rtt(a) 100000
+#define tcp_min_rtt(a) 1234567
 #define WARN_ONCE
 #define tcp_packets_in_flight(tp) tp->packets_out
 #define tcp_stamp_us_delta(p, c) (p - c)

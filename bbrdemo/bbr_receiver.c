@@ -245,7 +245,7 @@ int main(int argc, char *argv[])
 
 	if (SEQ_LT(bbrinfo.seq_pkt, _seq_rcv_nxt)) {
 	    _stat_dupdat ++;
-	    printf("out of date: %d\n", _stat_dupdat);
+	    // printf("out of date: %d\n", _stat_dupdat);
 	    goto ack_then_drop;
 	}
 
