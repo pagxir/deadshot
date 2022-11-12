@@ -50,6 +50,62 @@ function formatName(name) {
   return retval;
 }
 
+function fetchAssetsEx(res, path, range) {
+  const fsPath = path.substr(1);
+
+  if (fsPath === "" ||  !fs.existsSync(fsPath)) {
+    try {
+      var data = fs.readFileSync("404.html", 'utf8');
+      res.statusCode = 404;
+      res.end(data); 
+    } catch(e) {
+      console.log('XError:', e.stack);
+      res.end(); 
+    }
+    return;
+  }
+
+  const suffixes = path.substr(path.lastIndexOf('.'));
+
+  console.log(suffixes);
+  var mimeType = "application/octect-stream";
+  switch(suffixes) {
+    case ".js":
+      mimeType = "text/javascript";
+      break;
+    case ".png":
+      mimeType = "image/png";
+      break;
+    case ".txt":
+      mimeType = "text/plain";
+      break;
+    case ".html":
+      mimeType = "text/html";
+      break;
+  }
+
+  res.setHeader("Content-Type", mimeType);
+
+  try {
+    var stats = fs.statSync(fsPath);
+    var offset = parseInt(range[0]);
+
+    console.log('XXX length: ' + stats.size);
+    var contentRange = "bytes " + range[0] + "-" + (stats.size -1) + "/" + stats.size;
+
+    res.setHeader("Content-Length", stats.size - offset);
+    res.setHeader("Content-Range", contentRange);
+
+    fs.createReadStream(fsPath, {start: offset}).pipe(res);
+    res.statusCode = 206;
+  } catch(e) {
+    console.log('XError:', e.stack);
+    res.statusCode = 404;
+    res.end(); 
+  }
+}
+
+
 function fetchAssets(res, path) {
   const fsPath = path.substr(1);
 
@@ -440,6 +496,20 @@ async function fetchHandler(req, res) {
       // static files
       if (path.indexOf(".") === -1)
         return makeRes(res, "not support", 400);
+
+
+      if (req.headers["range"]) {
+	  var rangestr = req.headers["range"];
+	  console.log("range " + rangestr);
+	  if (rangestr.startsWith("bytes=")) {
+	      var ranges = rangestr.replace("bytes=", "").split("-");
+	      console.log("range " + ranges);
+	      if (ranges.length > 0) {
+                  return fetchAssetsEx(res, path, ranges);
+	      }
+	  }
+      }
+
       return fetchAssets(res, path);
   }
 }
@@ -483,3 +553,4 @@ https.createServer(options, (req, res) => {
   // console.log(JSON.stringify(req.headers));
   fetchHandler(req, res).catch(e => makeRes(res, "", 500));
 }).listen(443);
+
