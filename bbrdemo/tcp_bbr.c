@@ -1141,6 +1141,20 @@ static size_t bbr_get_info(struct sock *sk, uint32_t ext, int *attr,
 	return 0;
 }
 
+void bbr_set_lost(struct sock *sk)
+{
+	struct bbr *bbr = inet_csk_ca(sk);
+
+	struct rate_sample rs = { .losses = 1 };
+
+	if (bbr->mode == BBR_PROBE_BW) {
+		bbr->prev_ca_state = TCP_CA_Loss;
+		bbr->full_bw = 0;
+		bbr->round_start = 1;	/* treat RTO like end of a round */
+		bbr_lt_bw_sampling(sk, &rs);
+	}
+}
+
 static void bbr_set_state(struct sock *sk, uint8_t new_state)
 {
 	struct bbr *bbr = inet_csk_ca(sk);

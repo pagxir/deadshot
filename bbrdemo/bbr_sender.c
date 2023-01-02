@@ -55,6 +55,8 @@ struct bbr_tcpcb {
 
     uint64_t min_rtt_us;             /* min RTT in min_rtt_win_sec window */
     uint64_t min_rtt_stamp;          /* timestamp of min_rtt_us */
+    uint64_t last_interval_us;
+    int need_tail_lost_probe;
 
     tcp_seq last_ack;
     tcp_seq last_ack_seq;
@@ -100,6 +102,7 @@ struct tx_skb {
 #define TCPCB_REPAIRED		0x10	/* SKB repaired (no skb_mstamp_ns)	*/
 #define TCPCB_EVER_RETRANS	0x80	/* Ever retransmitted frame	*/
 #define TCPCB_PROBE_LOST	0x20	/* tail lost probe	*/
+#define TCPCB_SACKED_NEW	0x40	/* tail lost probe	*/
 #define TCPCB_RETRANS		(TCPCB_SACKED_RETRANS|TCPCB_EVER_RETRANS| \
 	TCPCB_REPAIRED)
 #define TCPCB_INFLIGHT          0x20
@@ -125,6 +128,8 @@ struct tx_skb_head _skb_delivery_queue = TAILQ_HEAD_INITIALIZER(_skb_delivery_qu
 static uint64_t skb_sack_rencent = 0;
 #define MAX_SND_CWND 40960
 static struct tx_skb tx_bitmap[MAX_SND_CWND] = {};
+int tcp_inflight(struct bbr_tcpcb *cb);
+int tcp_inflight1(struct bbr_tcpcb *cb);
 
 static uint64_t tcp_mstamp()
 {
@@ -148,6 +153,10 @@ static void bbr_update_model(struct bbr_tcpcb *cb)
 	cb->ticks++;
     }
 
+    if (cb->rs.interval_us > 0) {
+	cb->last_interval_us = cb->rs.interval_us;
+    }
+
     cb->rs.interval_us = 0;
     cb->rs.delivered = 0;
     return ;
@@ -161,7 +170,7 @@ static void bbr_show_status(struct bbr_tcpcb *cb)
     if (time(NULL) == last_show_stamp)
 	return;
 
-    int count = tcp_inflight();
+    int count = tcp_inflight(cb);
     fprintf(stderr, "%d snd_una %d min_rtt %lld delived %d inflight %lld loss %lld rate %lld, rexmt %lld rate {%lld,%ld} counter %lld/%lld cwnd %d/%d\n",
 	    cb->ticks, cb->snd_una, cb->min_rtt_us, tp->delivered, tp->packets_out, cb->lost, cb->sock.sk_pacing_rate,
 	    cb->debug.rexmt_out, cb->debug.delivered_rate, cb->debug.delivered_interval, cb->debug.xmit_counter, cb->debug.exceed_cwnd, tp->snd_cwnd, count);
@@ -215,10 +224,17 @@ static int tcpup_output(struct bbr_tcpcb *cb, int sockfd, const struct sockaddr 
 	skb = TAILQ_FIRST(&_skb_rexmt_queue);
     }
 
-    if (skb != NULL && (skb->hit_lost + 3 < cb->hit_lost ||
-		tp->tcp_mstamp - skb->hit_mstamp > (cb->min_rtt_us >> 3))) {
+    if (cb->need_tail_lost_probe == 0 && tcp_inflight1(cb) >= tp->snd_cwnd) {
+        cb->pacing_leach_mstamp += (US_IN_SEC * tp->mss_cache / cb->sock.sk_pacing_rate);
+	tp->app_limited = tp->delivered + tp->packets_out;
+	return 0;
+    }
+
+    if (skb != NULL && (skb->hit_lost < cb->hit_lost ||
+		tp->tcp_mstamp - skb->hit_mstamp > (cb->min_rtt_us >> 2))) {
 	TAILQ_REMOVE(&_skb_rexmt_queue, skb, skb_next);
 	assert(skb->sacked & TCPCB_LOST);
+	skb->sacked &= ~TCPCB_PROBE_LOST;
 
 	skb->tx.is_app_limited = tp->app_limited? 1: 0;
 	skb->tx.delivered = tp->delivered;
@@ -242,8 +258,14 @@ static int tcpup_output(struct bbr_tcpcb *cb, int sockfd, const struct sockaddr 
     }
 
     assert(SEQ_GEQ(cb->snd_nxt, cb->snd_una));
-    if (tcp_inflight() > tp->snd_cwnd &&
-	    tp->packets_out > 2 /* && tp->delivered_mstamp + (cb->min_rtt_us >> 1) < tp->tcp_mstamp */ ) {
+    if (cb->need_tail_lost_probe == 1) {
+	cb->last_receive_mstamp = tp->tcp_mstamp;
+	cb->need_tail_lost_probe = 0;
+	goto delivery_one;
+    }
+
+    if ((tcp_inflight(cb) >= tp->snd_cwnd || cb->snd_nxt - cb->snd_una > tp->snd_cwnd * 2) /* &&
+	    tp->packets_out > 2 && tp->delivered_mstamp + (cb->min_rtt_us >> 1) < tp->tcp_mstamp */ ) {
 	assert(cb->min_rtt_us > 16 || cb->min_rtt_us == 0);
 	cb->pacing_leach_mstamp += (US_IN_SEC * 1300 / cb->sock.sk_pacing_rate);
 	// cb->pacing_leach_mstamp += (cb->min_rtt_us / 8);
@@ -253,10 +275,12 @@ static int tcpup_output(struct bbr_tcpcb *cb, int sockfd, const struct sockaddr 
 	return 0;
     }
 
+delivery_one:
     skb = &tx_bitmap[cb->snd_nxt % MAX_SND_CWND];
     if (skb->sacked != 0 && skb->sacked != TCPCB_SACKED_ACKED) {
 	fprintf(stderr, "sacked %x snd_nxt %x %x\n", skb->sacked, cb->snd_nxt, cb->snd_una);
     }
+    skb->sacked &= ~TCPCB_PROBE_LOST;
     assert(skb->sacked == 0 || skb->sacked == TCPCB_SACKED_ACKED);
     skb->sacked = 0;
     skb->pkt_seq = cb->snd_nxt++;
@@ -292,7 +316,7 @@ static void failure(void)
     abort();
 }
 
-int tcp_inflight()
+int tcp_inflight1(struct bbr_tcpcb *cb)
 {
     int count = 0;
     int count1 = 0;
@@ -300,12 +324,43 @@ int tcp_inflight()
 
     TAILQ_FOREACH(skb, &_skb_delivery_queue, skb_next) {
 	int sacked = skb->sacked;
-	if (sacked & TCPCB_SACKED_ACKED) continue;
-	if (sacked & TCPCB_PROBE_LOST) count1++;
+        if ((sacked & TCPCB_SACKED_ACKED) &&
+                (!(sacked & TCPCB_SACKED_RETRANS) || 
+                 cb->first_tx_mstamp > skb->skb_mstamp)) continue;
 	count++;
     }
 
-    return count > count1 * 2? count/2: count - count1;
+    return count;
+}
+
+
+int tcp_inflight(struct bbr_tcpcb *cb)
+{
+    int count = 0;
+    int count1 = 0;
+    struct tx_skb *skb = NULL;
+
+    TAILQ_FOREACH(skb, &_skb_delivery_queue, skb_next) {
+	int sacked = skb->sacked;
+        if ((sacked & TCPCB_SACKED_ACKED) &&
+                (!(sacked & TCPCB_SACKED_RETRANS) || 
+                 cb->first_tx_mstamp > skb->skb_mstamp)) continue;
+	// if (sacked & TCPCB_PROBE_LOST) count1++;
+	count++;
+    }
+
+    TAILQ_FOREACH(skb, &_skb_rexmt_queue, skb_next) {
+	count++;
+    }
+
+#if 0
+    if (cb->snd_nxt - cb->snd_una > count * 2) {
+	return cb->snd_nxt - cb->snd_una;
+    }
+#endif
+
+    return count - (count1 >> 1);
+    // return count > count1 * 2? count - count1: count/2;
 }
 
 static int tcpup_acked(struct bbr_tcpcb *cb, int sockfd)
@@ -339,7 +394,7 @@ static int tcpup_acked(struct bbr_tcpcb *cb, int sockfd)
 	return (nbytes != -1);
     }
 
-    rs.prior_in_flight = tp->packets_out = tcp_inflight();
+    rs.prior_in_flight = tp->packets_out = tcp_inflight(cb);
     pbbr = (struct bbr_info *)(buffer + LEN_PADDING_DNS);
     bbrinfo.seq_pkt = ntohl(pbbr->seq_pkt);
     bbrinfo.seq_ack = ntohl(pbbr->seq_ack);
@@ -421,7 +476,7 @@ static int tcpup_acked(struct bbr_tcpcb *cb, int sockfd)
 	    skb = &tx_bitmap[start++ % MAX_SND_CWND];
 
 	    if (~skb->sacked & TCPCB_SACKED_ACKED) {
-		skb->sacked |= TCPCB_SACKED_ACKED;
+	        skb->sacked |= (TCPCB_SACKED_ACKED| TCPCB_SACKED_NEW);
 		if (~skb->sacked & TCPCB_SACKED_RETRANS)
 		    last_sack_rtt_mstamp = skb->skb_mstamp;
 		tp->delivered ++;
@@ -461,13 +516,20 @@ static int tcpup_acked(struct bbr_tcpcb *cb, int sockfd)
 	skb = &tx_bitmap[start++ % MAX_SND_CWND];
 
 	if (~skb->sacked & TCPCB_SACKED_ACKED) {
-	    skb->sacked |= TCPCB_SACKED_ACKED;
+	    skb->sacked |= (TCPCB_SACKED_ACKED| TCPCB_SACKED_NEW);
 	    if (skb->sacked & TCPCB_SACKED_RETRANS)
 		flags |= TCPCB_SACKED_RETRANS;
 	    else
 		last_rtt_mstamp = skb->skb_mstamp;
 	    tp->delivered ++;
 	}
+
+#if 1
+        if (skb->sacked & TCPCB_LOST) {
+            skb->sacked &= ~TCPCB_LOST;
+            tp->lost--;
+        }
+#endif
 
 	if (!skb->tx.delivered_mstamp) {
 	    continue;
@@ -514,11 +576,19 @@ static int tcpup_acked(struct bbr_tcpcb *cb, int sockfd)
     struct tx_skb * hold = NULL;
 
     TAILQ_FOREACH_SAFE(skb, &_skb_delivery_queue, skb_next, hold) {
+#if 0
 	if (SEQ_LT(US_TO_TS(skb->skb_mstamp), ts_recent) && !(skb->sacked & TCPCB_PROBE_LOST) &&
 		(!(skb->sacked & TCPCB_RETRANS) || tp->tcp_mstamp - skb->skb_mstamp > cb->min_rtt_us * 2)) {
 	    cb->hit_lost++;
 	}
+#endif
+	if (SEQ_LT(US_TO_TS(skb->skb_mstamp), ts_recent)
+		&& (skb->sacked & TCPCB_SACKED_NEW)) {
+            skb->sacked &= ~TCPCB_SACKED_NEW;
+	    cb->hit_lost++;
+	}
 
+	skb->sacked &= ~TCPCB_SACKED_NEW;
 	if (SEQ_LT(skb->pkt_seq, cb->snd_una)) {
 	    TAILQ_REMOVE(&_skb_delivery_queue, skb, skb_next);
 	    skb->sacked = 0;
@@ -537,9 +607,9 @@ static int tcpup_acked(struct bbr_tcpcb *cb, int sockfd)
 
 	cb->lost++;
 	skb->sacked |= TCPCB_LOST;
-	skb->sacked &= ~TCPCB_PROBE_LOST;
-	skb->hit_lost = cb->hit_lost;
-	skb->hit_mstamp = tp->tcp_mstamp - ts_recent * 1000 + skb->skb_mstamp;
+	// skb->sacked &= ~TCPCB_PROBE_LOST;
+	skb->hit_lost = cb->hit_lost +3;
+	skb->hit_mstamp = tp->tcp_mstamp; // - ts_recent * 1000 + skb->skb_mstamp;
 	TAILQ_INSERT_TAIL(&_skb_rexmt_queue, skb, skb_next);
     }
 
@@ -556,7 +626,7 @@ static int tcpup_acked(struct bbr_tcpcb *cb, int sockfd)
 	rs.acked_sacked = tp->delivered - delivered;
     }
 
-    tp->packets_out = tcp_inflight();
+    tp->packets_out = tcp_inflight(cb);
     rs.losses = cb->lost - lost;
 
     if (tp->app_limited && before(tp->delivered, tp->app_limited)) {
@@ -595,6 +665,11 @@ static int tcpup_acked(struct bbr_tcpcb *cb, int sockfd)
 		    rs.interval_us, cb->min_rtt_us, rs.prior_delivered, snd_us, ack_us);
 	rs.interval_us = -1;
     }
+
+    if (rs.interval_us > 0) {
+	cb->need_tail_lost_probe = 0;
+    }
+
     cb->rs = rs;
     cb->update = 1;
 
@@ -612,6 +687,7 @@ enum Action {
 
 uint32_t tcp_jiffies32 = 0;
 
+void bbr_set_lost(void *p);
 int main(int argc, char *argv[])
 { 
     int action = 0, error = 0;
@@ -686,6 +762,7 @@ int main(int argc, char *argv[])
     cb.sock.sk_pacing_shift = 10;
     cb.sock.sk_pacing_status = SK_PACING_NONE;
     cb.sock.sk_max_pacing_rate = 1024 * 1024 * 8;
+    // cb.sock.sk_max_pacing_rate = 740000;
 
     tcp_jiffies32 = US_TO_TS(tcp_mstamp())/10;
     do_bbr_init(&cb.sock);
@@ -704,7 +781,8 @@ int main(int argc, char *argv[])
 	    tcpup_output(&cb, upfd, (struct sockaddr *)&client, sizeof(client));
 	}
 
-	if (cb.min_rtt_us > 0 && tp->tcp_mstamp - cb.last_receive_mstamp > cb.min_rtt_us) {
+	if (cb.min_rtt_us > 0 && cb.last_receive_mstamp > cb.min_rtt_us &&
+		tp->tcp_mstamp - cb.last_receive_mstamp > cb.last_interval_us && !cb.need_tail_lost_probe) {
 	    struct tx_skb *skb, *hold;
 	    tp->tcp_mstamp = tcp_mstamp();
 	    tp->packets_out = 0;
@@ -722,17 +800,20 @@ int main(int argc, char *argv[])
 		}
 
 		if (skb->pkt_seq == cb.snd_una) {
+		    cb.need_tail_lost_probe = 1;
+#if 0
 		    TAILQ_REMOVE(&_skb_delivery_queue, skb, skb_next);
 		    cb.lost++;
 		    skb->sacked |= TCPCB_LOST;
 		    skb->sacked &= ~TCPCB_PROBE_LOST;
-		    skb->hit_lost = cb.hit_lost;
+		    skb->hit_lost = cb.hit_lost - 1;
 		    skb->hit_mstamp = tp->tcp_mstamp - ts_recent * 1000 + skb->skb_mstamp;
 		    TAILQ_INSERT_TAIL(&_skb_rexmt_queue, skb, skb_next);
+#endif
 		    continue;
 		}
 
-		if ((~skb->sacked & TCPCB_SACKED_ACKED) &&
+		if (!(skb->sacked & TCPCB_SACKED_ACKED) &&
 				(tp->tcp_mstamp - skb->skb_mstamp > cb.min_rtt_us * 2)) {
 		    skb->sacked |= TCPCB_PROBE_LOST;
 		    continue;
@@ -741,6 +822,7 @@ int main(int argc, char *argv[])
 		tp->packets_out++;
 	    }
 
+	    bbr_set_lost(&cb.sock);
             cb.last_receive_mstamp = tp->tcp_mstamp;
             fprintf(stderr, "xmit timeout: %d %d\n", cb.sock.sk_pacing_rate, cb.min_rtt_us);
 	}

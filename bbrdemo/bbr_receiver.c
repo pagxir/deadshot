@@ -163,6 +163,7 @@ int main(int argc, char *argv[])
 		error = bind(s, (struct sockaddr *)&serv, sizeof(serv));
 		fprintf(stderr, "listen %s %s %s\n", argv[last + 1], argv[last+2], strerror(errno));
 		assert (error == 0);
+		nbytes = recvfrom(s, buff, sizeof(buff), 0, (struct sockaddr *)&client, &addr_len); // once success, we get client.
 	    } else if (cmd == 'c') {
 		client.sin_family = AF_INET;
 		client.sin_addr.s_addr = inet_addr(argv[last + 1]);
