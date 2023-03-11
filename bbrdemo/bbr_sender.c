@@ -231,7 +231,7 @@ static int tcpup_output(struct bbr_tcpcb *cb, int sockfd, const struct sockaddr 
     }
 
     if (skb != NULL && (skb->hit_lost < cb->hit_lost ||
-		tp->tcp_mstamp - skb->hit_mstamp > (cb->min_rtt_us >> 2))) {
+		tp->tcp_mstamp - skb->skb_mstamp > cb->last_interval_us + (cb->min_rtt_us >> 2))) {
 	TAILQ_REMOVE(&_skb_rexmt_queue, skb, skb_next);
 	assert(skb->sacked & TCPCB_LOST);
 	skb->sacked &= ~TCPCB_PROBE_LOST;
