@@ -36,6 +36,9 @@ struct tls_header {
 #define HANDSHAKE_TYPE_KEY_EXCHAGE         12
 #define HANDSHAKE_TYPE_SERVER_HELLO_DONE   14
 
+#define LOG(fmt, arg...) 
+#define LOGV(fmt, arg...) 
+
 int read_flush(int fd, void *buf, size_t count)
 {
     int rc = 0;
@@ -75,35 +78,36 @@ char * get_sni_name(uint8_t *snibuff, size_t len, char *hostname)
     uint8_t *p = snibuff;
 
     if (*p != HANDSHAKE_TYPE_CLIENT_HELLO) {
-        fprintf(stderr, "bad\n");
+        LOG("bad\n");
         return NULL;
     }
 
-    fprintf(stderr, "type: %x\n", *p++);
+    int type = *p++;
+    LOG("type: %x\n", type);
     length = p[2]|(p[1]<<8)|(p[0]<<16); p+=3;
-    fprintf(stderr, "length: %d\n", length);
-    fprintf(stderr, "version: %x.%x\n", p[0], p[1]);
+    LOG("length: %d\n", length);
+    LOG("version: %x.%x\n", p[0], p[1]);
     p += 2; // version;
             //
     p += 32; //random;
-    fprintf(stderr, "session id length: %d\n", *p);
+    LOG("session id length: %d\n", *p);
     p += *p;
     p++;
     int cipher_suite_length = p[1]|(p[0]<<8); p+=2;
-    fprintf(stderr, "cipher_suite_length: %d\n", cipher_suite_length);
+    LOG("cipher_suite_length: %d\n", cipher_suite_length);
     p += cipher_suite_length;
     int compress_method_len = *p++;
-    fprintf(stderr, "compress_method_len: %d\n", compress_method_len);
+    LOG("compress_method_len: %d\n", compress_method_len);
     p += compress_method_len;
     int extention_length = p[1]|(p[0]<<8); p+=2;
-    fprintf(stderr, "extention_lengh: %d\n", extention_length);
+    LOG("extention_lengh: %d\n", extention_length);
     const uint8_t *limit = p + extention_length;
 
     *hostname = 0;
     while (p < limit) {
         uint16_t tag = p[1]|(p[0]<<8);
         uint16_t len = p[3]|(p[2]<<8);
-        fprintf(stderr, "ext tag: %d %d\n", tag, len);
+        LOG("ext tag: %d %d\n", tag, len);
         if (tag == TAG_SNI) {
             const uint8_t *sni = (p + 4);
             assert (sni[2] == 0);
@@ -145,7 +149,7 @@ int rewind_client_hello(uint8_t *snibuff, size_t length)
 
     memcpy(hold, snibuff, 5);
     if (*p != HANDSHAKE_TYPE_CLIENT_HELLO) {
-        fprintf(stderr, "bad\n");
+        LOG("bad\n");
         return 0;
     }
 
@@ -200,7 +204,7 @@ int rewind_client_hello(uint8_t *snibuff, size_t length)
     while (p < limit) {
         uint16_t tag = p[1]|(p[0]<<8);
         uint16_t len = p[3]|(p[2]<<8);
-        fprintf(stderr, "ext tag: %d %d\n", tag, len);
+        LOG("ext tag: %d %d\n", tag, len);
         uint16_t fqdn_name_len = 0;
 
         if (tag == TAG_SNI) {
@@ -253,13 +257,13 @@ int rewind_client_hello(uint8_t *snibuff, size_t length)
     int extlen = (dest - extention_lengthp - 2);
     extention_lengthp[0] = extlen >> 8;
     extention_lengthp[1] = extlen;
-    fprintf(stderr, "extlen: %d %d\n", extlen, extention_length);
+    LOG("extlen: %d %d\n", extlen, extention_length);
 
     int newlen = dest - lengthp - 3;
     lengthp[0] = newlen >> 16;
     lengthp[1] = newlen >> 8;
     lengthp[2] = newlen;
-    fprintf(stderr, "newlen: %d %d\n", newlen, mylength);
+    LOG("newlen: %d %d\n", newlen, mylength);
 
     memcpy(hold, snibuff, 5);
     int fulllength = (dest - hold - 5);
@@ -267,7 +271,7 @@ int rewind_client_hello(uint8_t *snibuff, size_t length)
     hold[4] = fulllength;
 
     int oldlen = (snibuff[3] << 8) | snibuff[4];
-    fprintf(stderr, "fulllen: %d %d %ld\n", fulllength, oldlen, length);
+    LOG("fulllen: %d %d %ld\n", fulllength, oldlen, length);
 
     memcpy(snibuff, hold, dest - hold);
     return dest - hold;
@@ -276,6 +280,7 @@ int rewind_client_hello(uint8_t *snibuff, size_t length)
 int unwind_client_hello(uint8_t *snibuff, size_t length)
 {
     int i;
+    int modify = 0;
     int mylength = 0;
     uint8_t hold[4096];
     uint8_t *p = snibuff + 5;
@@ -283,7 +288,7 @@ int unwind_client_hello(uint8_t *snibuff, size_t length)
 
     memcpy(hold, snibuff, 5);
     if (*p != HANDSHAKE_TYPE_CLIENT_HELLO) {
-        fprintf(stderr, "bad\n");
+        LOG("bad\n");
         return 0;
     }
 
@@ -339,7 +344,7 @@ int unwind_client_hello(uint8_t *snibuff, size_t length)
     while (p < limit) {
         uint16_t tag = p[1]|(p[0]<<8);
         uint16_t len = p[3]|(p[2]<<8);
-        fprintf(stderr, "ext tag: %d %d\n", tag, len);
+        LOG("ext tag: %d %d\n", tag, len);
         uint16_t fqdn_name_len = 0;
 
         if (tag == TAG_SNI) {
@@ -350,14 +355,14 @@ int unwind_client_hello(uint8_t *snibuff, size_t length)
             assert (fqdn_name_len + 3 == list_name_len);
             memcpy(hostname, sni + 5, fqdn_name_len);
             hostname[fqdn_name_len] = 0;
-            fprintf(stderr, "source: %s\n", hostname);
+            LOG("source: %s\n", hostname);
         } else if (tag == TAG_SESSION_TICKET && last_tag == TAG_SNI) {
             if (strcmp(hostname, YOUR_DOMAIN) == 0) {
                 memcpy(hostname, p + 4, len);
                 hostname[len] = 0;
                 fqdn_name_len = strlen(hostname);
                 for (i = 0; i < fqdn_name_len; i++) hostname[i] ^= 0xf;
-                fprintf(stderr, "target: %s\n", hostname);
+                LOG("target: %s\n", hostname);
             }
         }
 
@@ -382,6 +387,7 @@ int unwind_client_hello(uint8_t *snibuff, size_t length)
             dest[2] = (namelen + 5) >> 8;
 
             dest += (namelen + 4 + 5);
+	    modify = 1;
         }
 
         last_tag = tag;
@@ -392,13 +398,13 @@ int unwind_client_hello(uint8_t *snibuff, size_t length)
     int extlen = (dest - extention_lengthp - 2);
     extention_lengthp[0] = extlen >> 8;
     extention_lengthp[1] = extlen;
-    fprintf(stderr, "extlen: %d %d\n", extlen, extention_length);
+    LOG("extlen: %d %d\n", extlen, extention_length);
 
     int newlen = dest - lengthp - 3;
     lengthp[0] = newlen >> 16;
     lengthp[1] = newlen >> 8;
     lengthp[2] = newlen;
-    fprintf(stderr, "newlen: %d %d\n", newlen, mylength);
+    LOG("newlen: %d %d\n", newlen, mylength);
 
     memcpy(hold, snibuff, 5);
     int fulllength = (dest - hold - 5);
@@ -406,50 +412,52 @@ int unwind_client_hello(uint8_t *snibuff, size_t length)
     hold[4] = fulllength;
 
     int oldlen = (snibuff[3] << 8) | snibuff[4];
-    fprintf(stderr, "fulllen: %d %d %ld\n", fulllength, oldlen, length);
+    LOG("fulllen: %d %d %ld\n", fulllength, oldlen, length);
 
+    if (modify == 0) return length;
     memcpy(snibuff, hold, dest - hold);
     return dest - hold;
 }
 
 void dump(char *buff, size_t len, struct tls_header *header, const char *title)
 {
-    fprintf(stderr, "%s: %d %x.%x %d\n", title, header->type, header->major, header->minor, header->length);
+    LOG("%s: %d %x.%x %d\n", title, header->type, header->major, header->minor, header->length);
     if (22 == header->type) {
         int length = 0;
         uint8_t *p = buff;
         if (*p == 11) {
-            fprintf(stderr, "certificate\n");
+            LOG("certificate\n");
             return ;
         }
-        fprintf(stderr, "type: %x\n", *p++);
+	int type = *p++;
+        LOG("type: %x\n", type);
         length = p[2]|(p[1]<<8)|(p[0]<<16); p+=3;
-        fprintf(stderr, "length: %d\n", length);
-        fprintf(stderr, "version: %x.%x\n", p[0], p[1]);
+        LOG("length: %d\n", length);
+        LOG("version: %x.%x\n", p[0], p[1]);
         p += 2; // version;
                 //
         p += 32; //random;
-        fprintf(stderr, "session id length: %d\n", *p);
+        LOG("session id length: %d\n", *p);
         p += *p;
         p++;
         int cipher_suite_length = p[1]|(p[0]<<8); p+=2;
         if (buff[0] == 2) {
-            fprintf(stderr, "cipher_suite: %x\n", cipher_suite_length);
+            LOG("cipher_suite: %x\n", cipher_suite_length);
         } else {
-            fprintf(stderr, "cipher_suite_length: %d\n", cipher_suite_length);
+            LOG("cipher_suite_length: %d\n", cipher_suite_length);
             p += cipher_suite_length;
         }
         int compress_method_len = *p++;
-        fprintf(stderr, "compress_method_len: %d\n", compress_method_len);
+        LOG("compress_method_len: %d\n", compress_method_len);
         p += compress_method_len;
         int extention_length = p[1]|(p[0]<<8); p+=2;
-        fprintf(stderr, "extention_lengh: %d\n", extention_length);
+        LOG("extention_lengh: %d\n", extention_length);
         const uint8_t *limit = p + extention_length;
 
         while (p < limit) {
             uint16_t tag = p[1]|(p[0]<<8);
             uint16_t len = p[3]|(p[2]<<8);
-            fprintf(stderr, "ext tag: %d %d\n", tag, len);
+            LOG("ext tag: %d %d\n", tag, len);
             p += len;
             p += 4;
         }
@@ -466,10 +474,10 @@ int pull(int connfd, int remotefd)
 
     // read the message from client and copy it in buffer
     l = read_flush(connfd, buff, 5);
-    // fprintf(stderr, "%d l %d\n", connfd, l);
+    LOGV("%d l %d\n", connfd, l);
     if (l <= 0) return l;
     // perror("read");
-    // fprintf(stderr, "l %d\n", l);
+    LOGV("l %d\n", l);
     assert(l == 5);
     // print buffer which contains the client contents
     header.type = buff[0];
@@ -495,7 +503,7 @@ int push(int connfd, int remotefd)
 
     // read the message from client and copy it in buffer
     l = read_flush(connfd, buff, 5);
-    // fprintf(stderr, "%d l %d\n", connfd, l);
+    LOGV("%d l %d\n", connfd, l);
     if (l <= 0) return l;
     assert(l == 5);
     header.type = buff[0];
@@ -508,6 +516,14 @@ int push(int connfd, int remotefd)
 
     // dump(buff + 5, l, &header, "PUSH");
     return write_flush(remotefd, buff, l + 5);
+}
+
+int pipling(int connfd, int remotefd)
+{
+    char buff[65536];
+    size_t len = read(connfd, buff, sizeof(buff));
+    if (len == -1) return -1;
+    return write_flush(remotefd, buff, len);
 }
 
 int setup_remote(struct sockaddr_in *cli, char *hostname)
@@ -531,7 +547,7 @@ int setup_remote(struct sockaddr_in *cli, char *hostname)
     }
 
     if (RELAY_MODE != MODE_RELAY_SERVER) {
-	fprintf(stderr, "relay mode unkown: %d\n", RELAY_MODE);
+	LOG("relay mode unkown: %d\n", RELAY_MODE);
 	return -1;
     }
 
@@ -545,7 +561,7 @@ int setup_remote(struct sockaddr_in *cli, char *hostname)
     for (i = 0; addr_list[i] != NULL; i++) {
         remotefd = socket(AF_INET, SOCK_STREAM, 0);
 
-        fprintf(stderr, "connect %s \n", inet_ntoa(*addr_list[i]));
+        LOG("connect %s \n", inet_ntoa(*addr_list[i]));
 
         cli->sin_addr = *addr_list[i];
         rc = connect(remotefd, (struct sockaddr *)cli, sizeof(*cli));
@@ -594,7 +610,7 @@ void func(int connfd)
     header.length = newlen - 5;
 
     get_sni_name(snibuff + 5, header.length, hostname);
-    fprintf(stderr, "hostname: %s\n", hostname);
+    LOG("hostname: %s\n", hostname);
     if (*hostname == 0) {
         close(connfd);
         return;
@@ -627,18 +643,20 @@ void func(int connfd)
         assert(n > 0);
 
         if (FD_ISSET(connfd, &test)) {
-            if (push(connfd, remotefd) <= 0) stat |= 1;
+            // if (push(connfd, remotefd) <= 0) stat |= 1;
+            if (pipling(connfd, remotefd) <= 0) stat |= 1;
         }
 
         if (FD_ISSET(remotefd, &test)) {
-            if (pull(remotefd, connfd) <= 0) stat |= 2;
+            // if (pull(remotefd, connfd) <= 0) stat |= 2;
+            if (pipling(remotefd, connfd) <= 0) stat |= 2;
         }
 
 	if (stat != 0 || n  <= 0)
-		fprintf(stderr, "stat=%x n=%d\n", stat, n);
+		LOG("stat=%x n=%d\n", stat, n);
     } while (n > 0 && stat != 3);
 
-    fprintf(stderr, "release connection\n");
+    LOG("release connection\n");
     close(remotefd);
     close(connfd);
     return;
@@ -647,9 +665,10 @@ void func(int connfd)
 void clean_pcb(int signo)
 {
     int st;
-    fprintf(stderr, "clean_pcb\n");
-    while(0 == waitpid(-1, &st, WNOHANG));
-    signal(SIGCHLD, clean_pcb);
+    LOG("clean_pcb\n");
+    write(2, "clean_pcb\n", 10);
+    while(-1 != waitpid(-1, &st, WNOHANG));
+    // signal(SIGCHLD, clean_pcb);
 }
 
 /*
@@ -660,7 +679,7 @@ void parse_argopt(int argc, char *argv[])
 {
     int i;
 
-    fprintf(stderr, "parse_argopt>");
+    LOG("parse_argopt>");
     for (i = 1; i < argc; i++) {
 	const char *optname = argv[i];
 	if (strcmp(optname, "-p") == 0) {
@@ -687,7 +706,7 @@ void parse_argopt(int argc, char *argv[])
 	    strcpy(YOUR_ADDRESS, argv[i]);
 	}
     }
-    fprintf(stderr, "<parse_argopt\n");
+    LOG("<parse_argopt\n");
 
     assert(RELAY_MODE != MODE_RELAY_NONE);
 }
@@ -696,14 +715,14 @@ void parse_argopt(int argc, char *argv[])
 int main(int argc, char *argv[])
 {
     int sockfd, connfd, len;
-    struct sockaddr_in servaddr, cli;
+    struct sockaddr_in6 servaddr, cli;
     signal(SIGCHLD, clean_pcb);
 
 
     parse_argopt(argc, argv);
 
     // socket create and verification
-    sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    sockfd = socket(AF_INET6, SOCK_STREAM, 0);
     if (sockfd == -1) {
         printf("socket creation failed...\n");
         exit(0);
@@ -713,9 +732,9 @@ int main(int argc, char *argv[])
     bzero(&servaddr, sizeof(servaddr));
 
     // assign IP, PORT
-    servaddr.sin_family = AF_INET;
-    servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
-    servaddr.sin_port = htons(PORT);
+    servaddr.sin6_family = AF_INET6;
+    servaddr.sin6_port = htons(PORT);
+    servaddr.sin6_addr = in6addr_any;
 
     int enable = 1;
     setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
@@ -748,7 +767,7 @@ int main(int argc, char *argv[])
         else
             printf("server accept the client...\n");
 
-        if (fork() == 0) {close(sockfd); func(connfd); }
+        if (fork() == 0) {close(sockfd); func(connfd); exit(0); }
         close(connfd);
         // Function for chatting between client and server
     } while (1);
