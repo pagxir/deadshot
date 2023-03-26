@@ -38,6 +38,7 @@ struct tls_header {
 
 #define LOG(fmt, arg...) 
 #define LOGV(fmt, arg...) 
+#define LOGI(fmt, arg...) fprintf(stderr, fmt, ##arg)
 
 int read_flush(int fd, void *buf, size_t count)
 {
@@ -70,6 +71,8 @@ int write_flush(int fd, void *buf, size_t count)
 
     return process == 0? rc: process;
 }
+
+static int set_hook_name = 0;
 
 char * get_sni_name(uint8_t *snibuff, size_t len, char *hostname)
 {
@@ -125,6 +128,9 @@ char * get_sni_name(uint8_t *snibuff, size_t len, char *hostname)
         p += len;
         p += 4;
     }
+
+    if (set_hook_name)
+	strcpy(hostname, "www.cloudflare.com");
 
     return hostname;
 }
@@ -414,6 +420,8 @@ int unwind_client_hello(uint8_t *snibuff, size_t length)
     int oldlen = (snibuff[3] << 8) | snibuff[4];
     LOG("fulllen: %d %d %ld\n", fulllength, oldlen, length);
 
+    set_hook_name = 0;
+    if (modify == 0 && strcmp(YOUR_DOMAIN, hostname)) { set_hook_name = 1; }
     if (modify == 0) return length;
     memcpy(snibuff, hold, dest - hold);
     return dest - hold;
@@ -586,6 +594,13 @@ void func(int connfd)
     struct tls_header header;
     int remotefd = -1;
 
+#if 0
+    struct timeval tv;
+    tv.tv_sec = 30;  /* 30 Secs Timeout */
+    int ret = setsockopt(connfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    assert(ret == 0);
+#endif
+
     l = read(connfd, snibuff, 5);
     assert (l == 5);
 
@@ -594,13 +609,16 @@ void func(int connfd)
     header.major = snibuff[2];
     memcpy(&header.length, &snibuff[3], 2);
     header.length = htons(header.length);
-    assert(header.length + 5 < sizeof(snibuff));
 
     if (header.type != HANDSHAKE_TYPE) {
         close(remotefd);
         close(connfd);
         return;
     }
+
+    if (header.length + 5 > sizeof(snibuff))
+	fprintf(stderr, "len: %d\n", header.length);
+    assert(header.length + 5 < sizeof(snibuff));
 
     int nbyte = read_flush(connfd, snibuff + 5, header.length);
     assert (nbyte == header.length);
@@ -610,7 +628,7 @@ void func(int connfd)
     header.length = newlen - 5;
 
     get_sni_name(snibuff + 5, header.length, hostname);
-    LOG("hostname: %s\n", hostname);
+    LOGI("hostname: %s\n", hostname);
     if (*hostname == 0) {
         close(connfd);
         return;
@@ -637,7 +655,7 @@ void func(int connfd)
         if (~stat & 2) FD_SET(remotefd, &test);
         assert(stat != 3);
 
-        struct timeval timeo = {5, 5};
+        struct timeval timeo = {23, 5};
         n = select(maxfd + 1, &test, NULL, NULL, &timeo);
         if (n == 0) break;
         assert(n > 0);
@@ -657,6 +675,7 @@ void func(int connfd)
     } while (n > 0 && stat != 3);
 
     LOG("release connection\n");
+    write(2, "RELEASE\n", 8);
     close(remotefd);
     close(connfd);
     return;
@@ -667,7 +686,7 @@ void clean_pcb(int signo)
     int st;
     LOG("clean_pcb\n");
     write(2, "clean_pcb\n", 10);
-    while(-1 != waitpid(-1, &st, WNOHANG));
+    while(waitpid(-1, &st, WNOHANG) > 0);
     // signal(SIGCHLD, clean_pcb);
 }
 
@@ -718,7 +737,6 @@ int main(int argc, char *argv[])
     struct sockaddr_in6 servaddr, cli;
     signal(SIGCHLD, clean_pcb);
 
-
     parse_argopt(argc, argv);
 
     // socket create and verification
@@ -761,11 +779,11 @@ int main(int argc, char *argv[])
         // Accept the data packet from client and verification
         connfd = accept(sockfd, (SA*)&cli, &len);
         if (connfd < 0) {
-            printf("server accept failed...\n");
+            LOGI("server accept failed...\n");
             exit(0);
         }
         else
-            printf("server accept the client...\n");
+            LOGI("server accept the client...\n");
 
         if (fork() == 0) {close(sockfd); func(connfd); exit(0); }
         close(connfd);
