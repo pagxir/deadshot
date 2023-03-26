@@ -548,6 +548,87 @@ async function parseYtVideoRedir(urlObj, newLen, res) {
   return urlObj
 }
 
+async function doHttpRequest(req, res) {
+    const path = req.url;
+    let host = "www.baidu.com";
+
+    for (const [k, v] of Object.entries(req.headers)) {
+	k === "host" && (host = v);
+    }
+
+    var key = "";
+    var headers = {};
+
+    for (const k of req.rawHeaders) {
+	if (key === "") {
+	    key = k;
+	} else {
+	    headers[key] = k;
+	    key = "";
+	}
+    }
+
+    const requestOpt = {
+	highWaterMark: 1024000,
+	hostname: host,
+	host: host,
+	port: 80,
+	path: path,
+	setHost: true,
+	method: req.method,
+	headers: headers,
+	body: req,
+    };
+
+    console.log("TODO:XXX Host:" + host + " Path:" + path + " type=" + JSON.stringify(headers));
+
+    const cb = (resolv, reject) => {
+	try {
+	    const cReq = http.request(requestOpt, (nRes) => resolv(nRes));
+	    cReq.on('error', reject);
+	    if (options.method === 'POST') {
+		options.body.pipe(cReq);
+	    } else {
+		cReq.end();
+	    }
+	} catch (e) {
+	    reject(e);
+	}
+    };
+
+    const nRes = await new Promise(cb);
+    var redirect = nRes.statusCode === 302 || nRes.statusCode === 301;
+
+    console.log("TODO:XXX: redirect " + redirect + " code=" + nRes.statusCode);
+    if (redirect) {
+	for (const [k, v] of Object.entries(nRes.headers)) {
+	    if ((k === "location" || k === "Location") &&
+		(v.startsWith("https://") || v.startsWith("http://"))) {
+		var urlObj = newUrl(v);
+		delete headers["host"];
+		delete headers["Host"];
+		headers["Host"] = urlObj.host;
+		nRes = await urlRequest(v, requestOpt);
+		break;
+	    }
+	}
+    }
+
+    res.statusCode = nRes.statusCode;
+
+    key = "";
+    for (const k of nRes.rawHeaders) {
+        if (key === "") {
+            key = k;
+        } else {
+            res.setHeader(key, k); key = "";
+        }
+    }
+
+    console.log("XXXX: redirect finish");
+    return nRes.pipe(res);
+}
+
 https.createServer(options, (req, res) => {
   // console.log(JSON.stringify(req.url));
   // console.log(JSON.stringify(req.headers));
