@@ -321,8 +321,6 @@ async function proxy(urlObj, reqInit, acehOld, rawLen, retryTimes) {
 
 async function httpHandler(aRes, req, pathname) {
   var headers = {};
-  // const url = "https://ssx.hh1488.com/http/" + pathname;
-  // console.log("httpURL " + url + "HEADER: " + JSON.stringify(req.rawHeaders));
 
   for (const [k, v] of Object.entries(req.headers)) {
     console.log("|key: " + k + " value: " + v);
@@ -453,20 +451,58 @@ async function forwardHelper(aRes, req, url) {
   return nRes.pipe(aRes);
 }
 
+async function dns_query(message, server, port)
+{
+    const client = dgram.createSocket('udp4');
+
+    const buffers = [];
+    for await (const data of message) {
+        buffers.push(data);
+    }
+
+    const finalBuffer = Buffer.concat(buffers);
+
+    var cb = (resolv, reject) => {
+        client.on('error', (err) => { console.error(`server error:\n${err.stack}`); client.close(); });
+        client.on('message', (msg, rinfo) => { console.log(`server got: ${rinfo.address}:${rinfo.port}`); resolv(msg); client.close(); clearTimeout(client.timer); });
+	client.timer = setTimeout(v => { client.close(); reject(); }, 3300);
+    };
+
+    client.send(finalBuffer, port, server, (err) => { console.log(`message: ${err}`); });
+    return new Promise(cb);
+}
+
 async function fetchHandler(req, res) {
   let host = "";
   let refer = "";
   const path = req.url;
 
-  // https://shy-unit-c0d5.cachefiles.workers.dev/
-  // return forwardHelper(res, req, "https://shy-unit-c0d5.cachefiles.workers.dev/" + path);
   for (const [k, v] of Object.entries(req.headers)) {
     k === "host" && (host = v);
     k === "refer" && (refer = v);
   }
 
   if (path.startsWith("/dns-query")) {
-    return forwardHelper(res, req, "https://cloudflare-dns.com" + path);
+      var cb = b => {
+          res.statusCode = 200;
+
+          res.setHeader("Server", "cloudflare");
+          res.setHeader("Date", new Date());
+          res.setHeader("Content-Type", "application/dns-message");
+          res.setHeader("Connection", "keep-alive");
+          res.setHeader("Access-Control-Allow-Origin", "*");
+          res.setHeader("Content-Length", b.length);
+
+          res.end(b);
+      };
+
+      const args = path.split("/");
+      const host = args[2] || "8.8.8.8";
+      const port = args[3] || 53;
+      console.log("dns-query host: " + host + " port: " + port);
+
+      if (req.method === "POST") return dns_query(req, host, port).then(cb);
+      return forwardHelper(res, req, "https://cloudflare-dns.com" + path);
   }
 
   if (path.startsWith('/http/')) {
