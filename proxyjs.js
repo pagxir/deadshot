@@ -604,7 +604,7 @@ async function doHttpRequest(req, res) {
 	}
     }
 
-    const requestOpt = {
+    var requestOpt = {
 	highWaterMark: 1024000,
 	hostname: host,
 	host: host,
@@ -632,7 +632,7 @@ async function doHttpRequest(req, res) {
 	}
     };
 
-    const nRes = await new Promise(cb);
+    var nRes = await new Promise(cb);
     var redirect = nRes.statusCode === 302 || nRes.statusCode === 301;
 
     console.log("TODO:XXX: redirect " + redirect + " code=" + nRes.statusCode);
