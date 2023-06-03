@@ -1,6 +1,7 @@
 const fs = require('fs');
 const http = require('http');
 const https = require('https');
+const dgram = require('dgram');
 
 const JS_VER = 10
 const MAX_RETRY = 1
@@ -585,7 +586,7 @@ async function parseYtVideoRedir(urlObj, newLen, res) {
 }
 
 async function doHttpRequest(req, res) {
-    const path = req.url;
+    var path = req.url;
     let host = "www.baidu.com";
 
     for (const [k, v] of Object.entries(req.headers)) {
@@ -602,6 +603,15 @@ async function doHttpRequest(req, res) {
 	    headers[key] = k;
 	    key = "";
 	}
+    }
+
+    if (path.startsWith("/surfing.http/")) {
+        var hosts = path.split("/");
+        headers["Host"] = host = hosts[2];
+
+        var off = path.indexOf("/", 14);
+        path = path.substr(off); 
+        console.log("host = " + host + " path = " + path);
     }
 
     var requestOpt = {

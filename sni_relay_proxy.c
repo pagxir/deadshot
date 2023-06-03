@@ -1,9 +1,9 @@
-
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <signal.h>
 #include <unistd.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
 
 #include <stdio.h>
@@ -29,6 +29,10 @@ struct tls_header {
 
 #define TAG_SNI        0
 #define TAG_SESSION_TICKET 35
+
+#ifndef IPPROTO_MPTCP
+#define IPPROTO_MPTCP 0
+#endif
 
 #define HANDSHAKE_TYPE_CLIENT_HELLO         1
 #define HANDSHAKE_TYPE_SERVER_HELLO         2
@@ -141,6 +145,7 @@ static int PORT = 4430;
 static int RELAY_MODE = MODE_RELAY_NONE;
 
 static int YOUR_PORT = 4430;
+static char YOUR_PORT_TEXT[64] = "4430";
 static char YOUR_DOMAIN[256] = "app.yrli.bid";
 static char YOUR_ADDRESS[256] = "100.42.78.149";
 static int (*unwind_rewind_client_hello)(uint8_t *, size_t) = NULL;
@@ -534,6 +539,25 @@ int pipling(int connfd, int remotefd)
     return write_flush(remotefd, buff, len);
 }
 
+int mptcp_enable(int sockfd)
+{
+    int error;
+    int enable = 1;
+    char pathmanager[] = "ndiffports";
+
+    error = setsockopt(sockfd, SOL_TCP, TCP_FASTOPEN_CONNECT, &enable, sizeof(enable)); 
+
+#ifdef MPTCP_PATH_MANAGER
+    error = setsockopt(sockfd, SOL_TCP, MPTCP_PATH_MANAGER, pathmanager, sizeof(pathmanager));
+#endif
+
+#ifdef MPTCP_ENABLED
+    error = setsockopt(sockfd, SOL_TCP, MPTCP_ENABLED, &enable, sizeof(int));
+#endif
+
+    return 0;
+}
+
 int setup_remote(struct sockaddr_in *cli, char *hostname)
 {
     int i;
@@ -542,9 +566,10 @@ int setup_remote(struct sockaddr_in *cli, char *hostname)
     struct hostent *phostent = NULL;
 
     if (RELAY_MODE == MODE_RELAY_CLIENT) {
-	remotefd = socket(AF_INET, SOCK_STREAM, 0);
+	remotefd = socket(AF_INET, SOCK_STREAM, IPPROTO_MPTCP);
 
 	cli->sin_addr.s_addr = inet_addr(YOUR_ADDRESS);
+	mptcp_enable(remotefd);
 	rc = connect(remotefd, (struct sockaddr *)cli, sizeof(*cli));
 	if (rc == -1) {
 	    close(remotefd);
@@ -559,6 +584,40 @@ int setup_remote(struct sockaddr_in *cli, char *hostname)
 	return -1;
     }
 
+#if 1
+    struct addrinfo hints;
+    struct addrinfo *result, *rp;
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;    /* Allow IPv4 or IPv6 */
+    hints.ai_socktype = SOCK_STREAM; /* Datagram socket */
+    hints.ai_flags = 0;
+    hints.ai_protocol = 0;          /* Any protocol */
+
+    int sfd, s;
+    s = getaddrinfo(hostname, YOUR_PORT_TEXT, &hints, &result);
+    if (s != 0) {
+        fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(s));
+        return -1;
+    }
+
+    for (rp = result; rp != NULL; rp = rp->ai_next) {
+        sfd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+        if (sfd == -1)
+            continue;
+
+        if (connect(sfd, rp->ai_addr, rp->ai_addrlen) != -1)
+            break;                  /* Success */
+
+        close(sfd);
+	sfd = -1;
+    }
+
+    fprintf(stderr, "fd=%d, %s\n", sfd, hostname);
+    freeaddrinfo(result);           /* No longer needed */
+    return sfd;
+#endif
+
     phostent = gethostbyname(hostname);
     if (phostent == NULL) {
         return -1;
@@ -567,9 +626,10 @@ int setup_remote(struct sockaddr_in *cli, char *hostname)
     struct in_addr ** addr_list = (struct in_addr **)phostent->h_addr_list;
 
     for (i = 0; addr_list[i] != NULL; i++) {
-        remotefd = socket(AF_INET, SOCK_STREAM, 0);
+        remotefd = socket(AF_INET, SOCK_STREAM, IPPROTO_MPTCP);
 
         LOG("connect %s \n", inet_ntoa(*addr_list[i]));
+	mptcp_enable(remotefd);
 
         cli->sin_addr = *addr_list[i];
         rc = connect(remotefd, (struct sockaddr *)cli, sizeof(*cli));
@@ -704,6 +764,7 @@ void parse_argopt(int argc, char *argv[])
 	if (strcmp(optname, "-p") == 0) {
 	    assert(i + 1 < argc);
 	    YOUR_PORT = atoi(argv[++i]);
+            sprintf(YOUR_PORT_TEXT, "%d", YOUR_PORT);
 	} else
 	if (strcmp(optname, "-l") == 0) {
 	    assert(i + 1 < argc);
@@ -740,7 +801,7 @@ int main(int argc, char *argv[])
     parse_argopt(argc, argv);
 
     // socket create and verification
-    sockfd = socket(AF_INET6, SOCK_STREAM, 0);
+    sockfd = socket(AF_INET6, SOCK_STREAM, IPPROTO_MPTCP);
     if (sockfd == -1) {
         printf("socket creation failed...\n");
         exit(0);
@@ -756,6 +817,7 @@ int main(int argc, char *argv[])
 
     int enable = 1;
     setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
+    mptcp_enable(sockfd);
 
     // Binding newly created socket to given IP and verification
     if ((bind(sockfd, (SA*)&servaddr, sizeof(servaddr))) != 0) {
@@ -794,3 +856,4 @@ int main(int argc, char *argv[])
     close(sockfd);
     return 0;
 }
+
