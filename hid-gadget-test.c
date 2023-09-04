@@ -673,6 +673,9 @@ int main(int argc, const char *argv[])
 				perror(filename);
 				return 5;
 			}
+
+			if (report[0] && argv[2][0] == 'k') usleep(10000);
+
 			if (!hold) {
 				memset(report, 0x0, sizeof(report));
 				if (write(fd, report, to_send) != to_send) {
