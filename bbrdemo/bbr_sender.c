@@ -195,6 +195,7 @@ static int bbr_check_pacing_reached(struct bbr_tcpcb *cb, struct timeval *timeva
     if (timevalp != NULL) {
 	timevalp->tv_sec = 0;
 	timevalp->tv_usec = (cb->pacing_leach_mstamp - now);
+	if (timevalp->tv_usec < 2000) timevalp->tv_usec = 2000;
 	assert(timevalp->tv_usec < 1000000);
     }
 
@@ -211,7 +212,7 @@ static int tcpup_output(struct bbr_tcpcb *cb, int sockfd, const struct sockaddr 
     struct tcp_sock *tp = tcp_sk(&cb->sock);
 
     seq_rexmt = cb->snd_nxt;
-    if (cb->min_rtt_us > 0 && tp->tcp_mstamp - tp->delivered_mstamp > 1500000 + (cb->min_rtt_us << 1)) {
+    if (cb->min_rtt_us > 0 && tp->tcp_mstamp - tp->delivered_mstamp > 4500000 + (cb->min_rtt_us << 1)) {
 	fprintf(stderr, "could not got acked for long time %d\n", tp->tcp_mstamp - tp->delivered_mstamp);
 	exit(0);
     }
@@ -226,6 +227,16 @@ static int tcpup_output(struct bbr_tcpcb *cb, int sockfd, const struct sockaddr 
 
     if (cb->need_tail_lost_probe == 0 && tcp_inflight1(cb) >= tp->snd_cwnd) {
         cb->pacing_leach_mstamp += (US_IN_SEC * tp->mss_cache / cb->sock.sk_pacing_rate);
+
+#if 1
+	fd_set readfds;
+	FD_ZERO(&readfds);
+	FD_SET(sockfd, &readfds);
+	struct timeval timeout = {0, 2000};
+
+	select(sockfd + 1, &readfds, NULL, NULL, &timeout);
+#endif
+
 	tp->app_limited = tp->delivered + tp->packets_out;
 	return 0;
     }
@@ -267,11 +278,19 @@ static int tcpup_output(struct bbr_tcpcb *cb, int sockfd, const struct sockaddr 
     if ((tcp_inflight(cb) >= tp->snd_cwnd || cb->snd_nxt - cb->snd_una > tp->snd_cwnd * 2) /* &&
 	    tp->packets_out > 2 && tp->delivered_mstamp + (cb->min_rtt_us >> 1) < tp->tcp_mstamp */ ) {
 	assert(cb->min_rtt_us > 16 || cb->min_rtt_us == 0);
-	cb->pacing_leach_mstamp += (US_IN_SEC * 1300 / cb->sock.sk_pacing_rate);
+	cb->pacing_leach_mstamp += (US_IN_SEC * 1328 / cb->sock.sk_pacing_rate);
 	// cb->pacing_leach_mstamp += (cb->min_rtt_us / 8);
 	cb->debug.exceed_cwnd ++;
 	// fprintf(stderr, "exceed: %d %d\n", tcp_inflight(), tp->snd_cwnd);
 	tp->app_limited = tp->delivered + tp->packets_out;
+#if 1
+	fd_set readfds;
+	FD_ZERO(&readfds);
+	FD_SET(sockfd, &readfds);
+	struct timeval timeout = {0, 2000};
+
+	select(sockfd + 1, &readfds, NULL, NULL, &timeout);
+#endif
 	return 0;
     }
 
@@ -761,7 +780,10 @@ int main(int argc, char *argv[])
     cb.sock.sk_pacing_rate = 102400;
     cb.sock.sk_pacing_shift = 10;
     cb.sock.sk_pacing_status = SK_PACING_NONE;
-    cb.sock.sk_max_pacing_rate = 1024 * 1024 * 8;
+
+    // 81274 pps for 1000Mbps bandwidth network
+    // 8127  pps for 100Mbps  bandwidth network
+    cb.sock.sk_max_pacing_rate = (8127 * tp->mss_cache);
     // cb.sock.sk_max_pacing_rate = 740000;
 
     tcp_jiffies32 = US_TO_TS(tcp_mstamp())/10;
@@ -824,7 +846,7 @@ int main(int argc, char *argv[])
 
 	    bbr_set_lost(&cb.sock);
             cb.last_receive_mstamp = tp->tcp_mstamp;
-            fprintf(stderr, "xmit timeout: %d %d\n", cb.sock.sk_pacing_rate, cb.min_rtt_us);
+            fprintf(stderr, "xmit timeout: %d %d %d\n", cb.sock.sk_pacing_rate, cb.min_rtt_us, cb.need_tail_lost_probe);
 	}
 
 	if (got_acked == 1 ||

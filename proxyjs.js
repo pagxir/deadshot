@@ -483,26 +483,27 @@ async function fetchHandler(req, res) {
     k === "refer" && (refer = v);
   }
 
+  var dns_cb = b => {
+      res.statusCode = 200;
+
+      res.setHeader("Server", "cloudflare");
+      res.setHeader("Date", new Date());
+      res.setHeader("Content-Type", "application/dns-message");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Content-Length", b.length);
+
+      res.end(b);
+  };
+
+
   if (path.startsWith("/dns-query")) {
-      var cb = b => {
-          res.statusCode = 200;
-
-          res.setHeader("Server", "cloudflare");
-          res.setHeader("Date", new Date());
-          res.setHeader("Content-Type", "application/dns-message");
-          res.setHeader("Connection", "keep-alive");
-          res.setHeader("Access-Control-Allow-Origin", "*");
-          res.setHeader("Content-Length", b.length);
-
-          res.end(b);
-      };
-
       const args = path.split("/");
       const host = args[2] || "8.8.8.8";
       const port = args[3] || 53;
       console.log("dns-query host: " + host + " port: " + port);
 
-      if (req.method === "POST") return dns_query(req, host, port).then(cb);
+      if (req.method === "POST") return dns_query(req, host, port).then(dns_cb);
       return forwardHelper(res, req, "https://cloudflare-dns.com" + path);
   }
 

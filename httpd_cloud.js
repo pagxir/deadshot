@@ -21,6 +21,54 @@ function dns_nomalize(data) {
   return data;
 }
 
+function dns_inject(packet, ip) {
+    var message = dns_nomalize(dnspacket.decode(packet));
+    console.log("response: " + JSON.stringify(message));
+
+    var cb = item => {
+        if (item.type == 'A' && isInOverseaNet(item.data)) {
+            item.data = ip;
+        }
+        return item;
+    };
+
+    message.answers = message.answers.map(cb);
+    return dnspacket.encode(message);
+}
+
+function dns_client_subnet(data, clientip) {
+
+    var parts = clientip.split(".");
+    var clientipstr = parts[0] + "." + parts[1] + "." + parts[2] + ".0";
+        console.log("clientipstr " + clientipstr);
+    var additionals0 = {"name":".","type":"OPT","udpPayloadSize":4096,"extendedRcode":0,"ednsVersion":0,"flags":0,"flag_do":false,"options":[{"code":8,"type":"CLIENT_SUBNET","family":1,"sourcePrefixLength":24,"scopePrefixLength":22,"ip":clientipstr}]};
+
+  if (data.questions && !data.questions.find(item => item.type == 'A')) {
+      return data;
+  }
+
+  if (data.additionals) {
+    var injected = false;
+
+    var opt_map = item => {
+      if (!item.options) return item;
+
+      if (item.name == '.' && item.type == "OPT") {
+        item.options = item.options.filter(item => !item.type || item.type != "CLIENT_SUBNET");
+        item.options.push(additionals0.options[0]);
+        injected = true;
+      }
+
+      return item;
+    };
+
+    data.additionals = data.additionals.map(opt_map);
+    if (!injected) data.additionals.push(additionals0);
+  }
+
+  return data;
+}
+
 function makeRes(res, body, status = 200, headers = {}) {
 
     res.statusCode = status;
@@ -48,6 +96,10 @@ async function dns_query(message, server, port)
         client.on('message', (msg, rinfo) => { console.log(`server got: ${rinfo.address}:${rinfo.port}`); resolv(msg); client.close(); clearTimeout(client.timer); });
 	client.timer = setTimeout(v => { client.close(); reject(); }, 3300);
     };
+
+    var message = dns_nomalize(dnspacket.decode(finalBuffer));
+    var packet  = dnspacket.encode(dns_client_subnet(message, clientip));
+    console.log("query " + JSON.stringify(message));
 
     client.send(finalBuffer, port, server, (err) => { console.log(`message: ${err}`); });
     return new Promise(cb);

@@ -15,6 +15,9 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h> // read(), write(), close()
+
+#include "tx_debug.h"
+
 #define MAX 65536
 #define SA struct sockaddr
 
@@ -42,7 +45,7 @@ struct tls_header {
 
 #define LOG(fmt, arg...) 
 #define LOGV(fmt, arg...) 
-#define LOGI(fmt, arg...) fprintf(stderr, fmt, ##arg)
+#define LOGI(fmt, args...)   log_tag_putlog("D", fmt, ##args)
 
 int read_flush(int fd, void *buf, size_t count)
 {
@@ -139,7 +142,7 @@ char * get_sni_name(uint8_t *snibuff, size_t len, char *hostname)
     return hostname;
 }
 
-enum {MODE_RELAY_SERVER, MODE_RELAY_CLIENT, MODE_RELAY_NONE};
+enum { MODE_RELAY_SERVER, MODE_RELAY_CLIENT,  MODE_RELAY_NONE};
 
 static int PORT = 4430;
 static int RELAY_MODE = MODE_RELAY_NONE;
@@ -287,6 +290,12 @@ int rewind_client_hello(uint8_t *snibuff, size_t length)
     memcpy(snibuff, hold, dest - hold);
     return dest - hold;
 }
+
+int rewind_client_zero(uint8_t *snibuff, size_t length)
+{
+    return length;
+}
+
 
 int unwind_client_hello(uint8_t *snibuff, size_t length)
 {
@@ -536,6 +545,7 @@ int pipling(int connfd, int remotefd)
     char buff[65536];
     size_t len = read(connfd, buff, sizeof(buff));
     if (len == -1) return -1;
+    if (len == 0) return 0;
     return write_flush(remotefd, buff, len);
 }
 
@@ -566,22 +576,22 @@ int setup_remote(struct sockaddr_in *cli, char *hostname)
     struct hostent *phostent = NULL;
 
     if (RELAY_MODE == MODE_RELAY_CLIENT) {
-	remotefd = socket(AF_INET, SOCK_STREAM, IPPROTO_MPTCP);
+        remotefd = socket(AF_INET, SOCK_STREAM, IPPROTO_MPTCP);
 
-	cli->sin_addr.s_addr = inet_addr(YOUR_ADDRESS);
-	mptcp_enable(remotefd);
-	rc = connect(remotefd, (struct sockaddr *)cli, sizeof(*cli));
-	if (rc == -1) {
-	    close(remotefd);
-	    remotefd = -1;
-	}
+        cli->sin_addr.s_addr = inet_addr(YOUR_ADDRESS);
+        mptcp_enable(remotefd);
+        rc = connect(remotefd, (struct sockaddr *)cli, sizeof(*cli));
+        if (rc == -1) {
+            close(remotefd);
+            remotefd = -1;
+        }
 
-	return remotefd;
+        return remotefd;
     }
 
     if (RELAY_MODE != MODE_RELAY_SERVER) {
-	LOG("relay mode unkown: %d\n", RELAY_MODE);
-	return -1;
+        LOG("relay mode unkown: %d\n", RELAY_MODE);
+        return -1;
     }
 
 #if 1
@@ -610,10 +620,10 @@ int setup_remote(struct sockaddr_in *cli, char *hostname)
             break;                  /* Success */
 
         close(sfd);
-	sfd = -1;
+        sfd = -1;
     }
 
-    fprintf(stderr, "fd=%d, %s\n", sfd, hostname);
+    LOGI("fd=%d, %s\n", sfd, hostname);
     freeaddrinfo(result);           /* No longer needed */
     return sfd;
 #endif
@@ -629,7 +639,7 @@ int setup_remote(struct sockaddr_in *cli, char *hostname)
         remotefd = socket(AF_INET, SOCK_STREAM, IPPROTO_MPTCP);
 
         LOG("connect %s \n", inet_ntoa(*addr_list[i]));
-	mptcp_enable(remotefd);
+        mptcp_enable(remotefd);
 
         cli->sin_addr = *addr_list[i];
         rc = connect(remotefd, (struct sockaddr *)cli, sizeof(*cli));
@@ -637,7 +647,7 @@ int setup_remote(struct sockaddr_in *cli, char *hostname)
             break;
         }
 
-	perror("connect");
+        perror("connect");
         close(remotefd);
         remotefd = -1;
     }
@@ -677,13 +687,16 @@ void func(int connfd)
     }
 
     if (header.length + 5 > sizeof(snibuff))
-	fprintf(stderr, "len: %d\n", header.length);
+	LOGI(stderr, "len: %d\n", header.length);
     assert(header.length + 5 < sizeof(snibuff));
 
     int nbyte = read_flush(connfd, snibuff + 5, header.length);
     assert (nbyte == header.length);
 
     char hostname[128];
+    get_sni_name(snibuff + 5, header.length, hostname);
+    LOGI("hostname: %s\n", hostname);
+
     int newlen = unwind_rewind_client_hello(snibuff, header.length + 5);
     header.length = newlen - 5;
 
@@ -715,7 +728,7 @@ void func(int connfd)
         if (~stat & 2) FD_SET(remotefd, &test);
         assert(stat != 3);
 
-        struct timeval timeo = {23, 5};
+        struct timeval timeo = {360, 360};
         n = select(maxfd + 1, &test, NULL, NULL, &timeo);
         if (n == 0) break;
         assert(n > 0);
@@ -735,7 +748,6 @@ void func(int connfd)
     } while (n > 0 && stat != 3);
 
     LOG("release connection\n");
-    write(2, "RELEASE\n", 8);
     close(remotefd);
     close(connfd);
     return;
@@ -745,7 +757,6 @@ void clean_pcb(int signo)
 {
     int st;
     LOG("clean_pcb\n");
-    write(2, "clean_pcb\n", 10);
     while(waitpid(-1, &st, WNOHANG) > 0);
     // signal(SIGCHLD, clean_pcb);
 }
@@ -782,6 +793,10 @@ void parse_argopt(int argc, char *argv[])
 	    RELAY_MODE = MODE_RELAY_CLIENT;
 	    unwind_rewind_client_hello = rewind_client_hello;
 	} else
+	if (strcmp(optname, "-z") == 0) {
+	    RELAY_MODE = MODE_RELAY_SERVER;
+	    unwind_rewind_client_hello = rewind_client_zero;
+	} else
 	if (*optname != '-') {
 	    strcpy(YOUR_ADDRESS, argv[i]);
 	}
@@ -803,11 +818,11 @@ int main(int argc, char *argv[])
     // socket create and verification
     sockfd = socket(AF_INET6, SOCK_STREAM, IPPROTO_MPTCP);
     if (sockfd == -1) {
-        printf("socket creation failed...\n");
+        LOGI("socket creation failed...\n");
         exit(0);
     }
     else
-        printf("Socket successfully created..\n");
+        LOGI("Socket successfully created..\n");
     bzero(&servaddr, sizeof(servaddr));
 
     // assign IP, PORT
@@ -821,19 +836,19 @@ int main(int argc, char *argv[])
 
     // Binding newly created socket to given IP and verification
     if ((bind(sockfd, (SA*)&servaddr, sizeof(servaddr))) != 0) {
-        printf("socket bind failed...\n");
+        LOGI("socket bind failed...\n");
         exit(0);
     }
     else
-        printf("Socket successfully binded..\n");
+        LOGI("Socket successfully binded..\n");
 
     // Now server is ready to listen and verification
     if ((listen(sockfd, 5)) != 0) {
-        printf("Listen failed...\n");
+        LOGI("Listen failed...\n");
         exit(0);
     }
     else
-        printf("Server listening..\n");
+        LOGI("Server listening..\n");
     len = sizeof(cli);
 
     do {

@@ -1,15 +1,18 @@
 left=89.117.113.248
+left_subnet=192.168.1.0/24
+
 right=114.92.113.240
+right_subnet=192.168.111.0/24
 
 right_to_left_dir=in
 left_to_right_dir=out
 
-if ip r get $left|grep local; then
+if ip r get $left|grep local > /dev/null; then
   right_to_left_dir=in
   left_to_right_dir=out
 fi
 
-if ip r get $right|grep local; then
+if ip r get $right|grep local > /dev/null; then
    right_to_left_dir=out
    left_to_right_dir=in
 fi
@@ -34,7 +37,7 @@ ip xfrm state add src $right dst $left \
         sel src 0.0.0.0/0 dst 0.0.0.0/0 
 
 ip xfrm policy flush
-ip xfrm policy add src 192.168.1.0/24 dst 192.168.111.0/24 dir ${right_to_left_dir} ptype main tmpl src $right dst $left proto esp reqid 0 mode tunnel
-ip xfrm policy add dst 192.168.1.0/24 src 192.168.111.0/24 dir ${left_to_right_dir} ptype main tmpl dst $right src $left proto esp reqid 0 mode tunnel
+ip xfrm policy add src ${right_subnet} dst ${left_subnet} dir ${right_to_left_dir} ptype main tmpl src $right dst $left proto esp reqid 0 mode tunnel
+ip xfrm policy add dst ${right_subnet} src ${left_subnet} dir ${left_to_right_dir} ptype main tmpl dst $right src $left proto esp reqid 0 mode tunnel
 
 EOF

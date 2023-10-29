@@ -29,54 +29,6 @@ static struct options kmod[] = {
 	{.opt = "right-alt",		.val = 0x40},
 	{.opt = "left-meta",		.val = 0x08},
 	{.opt = "right-meta",		.val = 0x80},
-	{.opt = "~",	.val = 0x02},
-	{.opt = "!",	.val = 0x02},
-	{.opt = "@",	.val = 0x02},
-	{.opt = "#",	.val = 0x02},
-	{.opt = "$",	.val = 0x02},
-	{.opt = "%",	.val = 0x02},
-	{.opt = "^",	.val = 0x02},
-	{.opt = "&",	.val = 0x02},
-	{.opt = "*",	.val = 0x02},
-	{.opt = "(",	.val = 0x02},
-	{.opt = ")",	.val = 0x02},
-	{.opt = "_",	.val = 0x02},
-	{.opt = "+",	.val = 0x02},
-	{.opt = "{",	.val = 0x02},
-	{.opt = "}",	.val = 0x02},
-	{.opt = "|",	.val = 0x02},
-	{.opt = ":",	.val = 0x02},
-	{.opt = "\"",	.val = 0x02},
-	{.opt = "<",	.val = 0x02},
-	{.opt = ">",	.val = 0x02},
-	{.opt = "?",	.val = 0x02},
-	{.opt = "A",			.val = 0x02},
-	{.opt = "B",			.val = 0x02},
-	{.opt = "C",			.val = 0x02},
-	{.opt = "D",			.val = 0x02},
-	{.opt = "E",			.val = 0x02},
-	{.opt = "F",			.val = 0x02},
-	{.opt = "G",			.val = 0x02},
-	{.opt = "H",			.val = 0x02},
-	{.opt = "I",			.val = 0x02},
-	{.opt = "J",			.val = 0x02},
-	{.opt = "K",			.val = 0x02},
-	{.opt = "L",			.val = 0x02},
-	{.opt = "M",			.val = 0x02},
-	{.opt = "N",			.val = 0x02},
-	{.opt = "O",			.val = 0x02},
-	{.opt = "P",			.val = 0x02},
-	{.opt = "Q",			.val = 0x02},
-	{.opt = "R",			.val = 0x02},
-	{.opt = "S",			.val = 0x02},
-	{.opt = "T",			.val = 0x02},
-	{.opt = "U",			.val = 0x02},
-	{.opt = "V",			.val = 0x02},
-	{.opt = "W",			.val = 0x02},
-	{.opt = "X",			.val = 0x02},
-	{.opt = "Y",			.val = 0x02},
-	{.opt = "Z",			.val = 0x02},
-	{.opt = "\x1b\x5b\x5a",		.val = 0x01},
 	{.opt = NULL}
 };
 
@@ -123,91 +75,6 @@ static struct options kval[] = {
 	{.opt = "escape",		.val = 0x29},
 	{.opt = "bckspc",		.val = 0x2a},
 	{.opt = "backspace",	.val = 0x2a},
-
-	{.opt = "\x7f",	.val = 0x2a},
-	{.opt = "\xd",	.val = 0x28},
-	{.opt = " ",	.val = 0x2c},
-	{.opt = "\t",	.val = 0x2b},
-	{.opt = "-",	.val = 0x2d},
-	{.opt = "=",	.val = 0x2e},
-	{.opt = "/",	.val = 0x38},
-	{.opt = "\\",	.val = 0x31},
-	{.opt = ",",	.val = 0x36},
-	{.opt = ";",	.val = 0x33},
-	{.opt = "[",	.val = 0x2f},
-	{.opt = "]",	.val = 0x30},
-	{.opt = "'",	.val = 0x34},
-	{.opt = "`",	.val = 0x35},
-	{.opt = ".",	.val = 0x37},
-
-	{.opt = "~",	.val = 0x35},
-	{.opt = "!",	.val = 0x1e},
-	{.opt = "@",	.val = 0x1f},
-	{.opt = "#",	.val = 0x20},
-	{.opt = "$",	.val = 0x21},
-	{.opt = "%",	.val = 0x22},
-	{.opt = "^",	.val = 0x23},
-	{.opt = "&",	.val = 0x24},
-	{.opt = "*",	.val = 0x25},
-	{.opt = "(",	.val = 0x26},
-	{.opt = ")",	.val = 0x27},
-	{.opt = "_",	.val = 0x2d},
-	{.opt = "+",	.val = 0x2e},
-	{.opt = "{",	.val = 0x2f},
-	{.opt = "}",	.val = 0x30},
-	{.opt = "|",	.val = 0x31},
-	{.opt = ":",	.val = 0x33},
-	{.opt = "\"",	.val = 0x34},
-	{.opt = "<",	.val = 0x36},
-	{.opt = ">",	.val = 0x37},
-	{.opt = "?",	.val = 0x38},
-	{.opt = "A",			.val = 0x04},
-	{.opt = "B",			.val = 0x05},
-	{.opt = "C",			.val = 0x06},
-	{.opt = "D",			.val = 0x07},
-	{.opt = "E",			.val = 0x08},
-	{.opt = "F",			.val = 0x09},
-	{.opt = "G",			.val = 0x0a},
-	{.opt = "H",			.val = 0x0b},
-	{.opt = "I",			.val = 0x0c},
-	{.opt = "J",			.val = 0x0d},
-	{.opt = "K",			.val = 0x0e},
-	{.opt = "L",			.val = 0x0f},
-	{.opt = "M",			.val = 0x10},
-	{.opt = "N",			.val = 0x11},
-	{.opt = "O",			.val = 0x12},
-	{.opt = "P",			.val = 0x13},
-	{.opt = "Q",			.val = 0x14},
-	{.opt = "R",			.val = 0x15},
-	{.opt = "S",			.val = 0x16},
-	{.opt = "T",			.val = 0x17},
-	{.opt = "U",			.val = 0x18},
-	{.opt = "V",			.val = 0x19},
-	{.opt = "W",			.val = 0x1a},
-	{.opt = "X",			.val = 0x1b},
-	{.opt = "Y",			.val = 0x1c},
-	{.opt = "Z",			.val = 0x1d},
-	{.opt = "\x1b",			.val = 0x29},
-	{.opt = "\x1b\x5b\x43",		.val = 0x4f}, //right
-	{.opt = "\x1b\x5b\x44",		.val = 0x50}, //left
-	{.opt = "\x1b\x5b\x42",		.val = 0x51}, //down
-	{.opt = "\x1b\x5b\x41",		.val = 0x52}, //up
-	{.opt = "\x1b\x5b\x35\x7e",	.val = 0x4b}, //pgup
-	{.opt = "\x1b\x5b\x36\x7e",	.val = 0x4e}, //pgdown
-	{.opt = "\x1b\x4f\x50",		.val = 0x3a},
-	{.opt = "\x1b\x4f\x51",		.val = 0x3b},
-	{.opt = "\x1b\x4f\x52",		.val = 0x3c},
-	{.opt = "\x1b\x4f\x53",		.val = 0x3d},
-	{.opt = "\x1b\x4f\x54",		.val = 0x3e},
-	{.opt = "\x1b\x4f\x55",		.val = 0x3f},
-	{.opt = "\x1b\x4f\x56",		.val = 0x40},
-	{.opt = "\x1b\x4f\x57",		.val = 0x41},
-	{.opt = "\x1b\x4f\x58",		.val = 0x42},
-	{.opt = "\x1b\x4f\x59",		.val = 0x43},
-	{.opt = "\x1b\x5b\x5a",		.val = 0x2b},
-	{.opt = "\x1b\x4f\x60",		.val = 0x44},
-	{.opt = "\x1b\x4f\x61",		.val = 0x45},
-	{.opt = "\x1b\x5f\x33\x7e",	.val = 0x4c},
 
 	{.opt = "tab",			.val = 0x2b},
 	{.opt = "space",		.val = 0x2c},
@@ -312,52 +179,169 @@ static struct options kval[] = {
 	{.opt = NULL}
 };
 
-int keyboard_fill_report_one(char report[8], char buf[BUF_LEN], int *hold)
+struct telnet_keycode_translate {
+	const char    *opt;
+        const char    *seq;
+};
+
+struct telnet_keycode_translate _doto_keyboard[] = {
+	{.opt = "~",	.seq = "left-shift backquote"},
+	{.opt = "!",	.seq = "left-shift 1"},
+	{.opt = "@",	.seq = "left-shift 2"},
+	{.opt = "#",	.seq = "left-shift 3"},
+	{.opt = "$",	.seq = "left-shift 4"},
+	{.opt = "%",	.seq = "left-shift 5"},
+	{.opt = "^",	.seq = "left-shift 6"},
+	{.opt = "&",	.seq = "left-shift 7"},
+	{.opt = "*",	.seq = "left-shift 8"},
+	{.opt = "(",	.seq = "left-shift 9"},
+	{.opt = ")",	.seq = "left-shift 0"},
+	{.opt = "_",	.seq = "left-shift minus"},
+	{.opt = "+",	.seq = "left-shift equal"},
+	{.opt = "{",	.seq = "left-shift lbracket"},
+	{.opt = "}",	.seq = "left-shift rbracket"},
+	{.opt = "|",	.seq = "left-shift backslash"},
+	{.opt = ":",	.seq = "left-shift semicolon"},
+	{.opt = "\"",	.seq = "backslash"},
+	{.opt = "<",	.seq = "left-shift comma"},
+	{.opt = ">",	.seq = "left-shift stop"},
+	{.opt = "?",	.seq = "left-shift slash"},
+	{.opt = "A",	.seq = "left-shift a"},
+	{.opt = "B",	.seq = "left-shift b"},
+	{.opt = "C",	.seq = "left-shift c"},
+	{.opt = "D",	.seq = "left-shift d"},
+	{.opt = "E",	.seq = "left-shift e"},
+	{.opt = "F",	.seq = "left-shift f"},
+	{.opt = "G",	.seq = "left-shift g"},
+	{.opt = "H",	.seq = "left-shift h"},
+	{.opt = "I",	.seq = "left-shift i"},
+	{.opt = "J",	.seq = "left-shift j"},
+	{.opt = "K",	.seq = "left-shift k"},
+	{.opt = "L",	.seq = "left-shift l"},
+	{.opt = "M",	.seq = "left-shift m"},
+	{.opt = "N",	.seq = "left-shift n"},
+	{.opt = "O",	.seq = "left-shift o"},
+	{.opt = "P",	.seq = "left-shift p"},
+	{.opt = "Q",	.seq = "left-shift q"},
+	{.opt = "R",	.seq = "left-shift r"},
+	{.opt = "S",	.seq = "left-shift s"},
+	{.opt = "T",	.seq = "left-shift t"},
+	{.opt = "U",	.seq = "left-shift u"},
+	{.opt = "V",	.seq = "left-shift w"},
+	{.opt = "W",	.seq = "left-shift w"},
+	{.opt = "X",	.seq = "left-shift x"},
+	{.opt = "Y",	.seq = "left-shift y"},
+	{.opt = "Z",	.seq = "left-shift z"},
+
+	{.opt = "\x7f",	.seq = "backspace"},
+	{.opt = "\xd",	.seq = "return"},
+	{.opt = " ",	.seq = "space"},
+	{.opt = "\t",	.seq = "tab"},
+	{.opt = "-",	.seq = "minus"},
+	{.opt = "=",	.seq = "equal"},
+	{.opt = "/",	.seq = "backslash"},
+	{.opt = "\\",	.seq = "slash"},
+	{.opt = ",",	.seq = "comma"},
+	{.opt = ";",	.seq = "semicolon"},
+	{.opt = "[",	.seq = "lbracket"},
+	{.opt = "]",	.seq = "rbracket"},
+	{.opt = "'",	.seq = "quote"},
+	{.opt = "`",	.seq = "backquote"},
+	{.opt = ".",	.seq = "stop"},
+
+	{.opt = "a",	.seq = "a"},
+	{.opt = "b",	.seq = "b"},
+	{.opt = "c",	.seq = "c"},
+	{.opt = "d",	.seq = "d"},
+	{.opt = "e",	.seq = "e"},
+	{.opt = "f",	.seq = "f"},
+	{.opt = "g",	.seq = "g"},
+	{.opt = "h",	.seq = "h"},
+	{.opt = "i",	.seq = "i"},
+	{.opt = "j",	.seq = "j"},
+	{.opt = "k",	.seq = "k"},
+	{.opt = "l",	.seq = "l"},
+	{.opt = "m",	.seq = "m"},
+	{.opt = "n",	.seq = "n"},
+	{.opt = "o",	.seq = "o"},
+	{.opt = "p",	.seq = "p"},
+	{.opt = "q",	.seq = "q"},
+	{.opt = "r",	.seq = "r"},
+	{.opt = "s",	.seq = "s"},
+	{.opt = "t",	.seq = "t"},
+	{.opt = "u",	.seq = "u"},
+	{.opt = "v",	.seq = "v"},
+	{.opt = "w",	.seq = "w"},
+	{.opt = "x",	.seq = "x"},
+	{.opt = "y",	.seq = "y"},
+	{.opt = "z",	.seq = "z"},
+
+	{.opt = "\x1b\x5b\x43",		.seq = "right"}, //right
+	{.opt = "\x1b\x5b\x44",		.seq = "left"}, //left
+	{.opt = "\x1b\x5b\x42",		.seq = "down"}, //down
+	{.opt = "\x1b\x5b\x41",		.seq = "up"}, //up
+	{.opt = "\x1b\x5b\x35\x7e",	.seq = "pgup"}, //pgup
+	{.opt = "\x1b\x5b\x36\x7e",	.seq = "pgdown"}, //pgdown
+	{.opt = "\x1b\x5f\x33\x7e",	.seq = "delete"},
+	{.opt = "\x1b\x5b\x5a",		.seq = "tab"},
+
+	{.opt = "\x1b\x4f\x50",		.seq = "f1"},
+	{.opt = "\x1b\x4f\x51",		.seq = "f2"},
+	{.opt = "\x1b\x4f\x52",		.seq = "f3"},
+	{.opt = "\x1b\x4f\x53",		.seq = "f4"},
+	{.opt = "\x1b\x4f\x54",		.seq = "f5"},
+	{.opt = "\x1b\x4f\x55",		.seq = "f6"},
+	{.opt = "\x1b\x4f\x56",		.seq = "f7"},
+	{.opt = "\x1b\x4f\x57",		.seq = "f8"},
+	{.opt = "\x1b\x4f\x58",		.seq = "f9"},
+	{.opt = "\x1b\x4f\x59",		.seq = "f10"},
+	{.opt = "\x1b\x4f\x60",		.seq = "f11"},
+	{.opt = "\x1b\x4f\x61",		.seq = "f12"},
+	{.opt = "\x1b",			.seq = "escape"},
+};
+
+int read_doto_code(int peerfd, char buf[], size_t len)
 {
-	int i = 0;
-	int key = 0;
+    int i;
+    char keybuf[6];
+#define ARRAY_SIZE(a) (sizeof(a)/sizeof(a[0]))
+    
+    int keylen = read(peerfd, keybuf, sizeof(keybuf) -1);
+    if (keylen <= 0) return keylen;
 
-	fprintf(stderr, "receive: %x %x %x %x -> %s\n", buf[0],  buf[1], buf[2], buf[3], buf);
-	if (buf[0] == 255 || (buf[0] & 0x80)) {
-		fprintf(stderr, "option: %s\n", buf);
-		return 0;
+    keybuf[keylen] = 0;
+
+    char *optout = buf;
+    const char *optkey = keybuf;
+
+    while (*optkey) {
+	for (i = 0; i < ARRAY_SIZE(_doto_keyboard); i++) {
+	    const char *key = _doto_keyboard[i].opt;
+	    size_t klen = strlen(key);
+
+	    if (strncmp(key, optkey, klen) == 0 && buf + len > optout) {
+		int size = buf + len - optout;
+		optout += snprintf(optout, size, "%s ", _doto_keyboard[i].seq);
+		optkey += (klen -1);
+		break;
+	    }
 	}
 
-	for (i = 0; kmod[i].opt != NULL; i++)
-		if (strcmp(buf, kmod[i].opt) == 0) {
-			report[0] = report[0] | kmod[i].val;
-			break;
-		}
+	optkey++;
+    }
 
-	for (i = 0; kval[i].opt != NULL; i++)
-		if (strcmp(buf, kval[i].opt) == 0) {
-			report[2 + key++] = kval[i].val;
-			break;
-		}
-
-	if (kval[i].opt == NULL && (buf[0] <= 26 && buf[0] >= 0) && buf[1] == 0) {
-		report[0] = report[0] | 0x01;
-		buf[0] += 'a'; buf[0]--;
-		for (i = 0; kval[i].opt != NULL; i++)
-			if (strcmp(buf, kval[i].opt) == 0) {
-				report[2 + key++] = kval[i].val;
-				break;
-			}
-	}
-
-
-	return 8;
+    for (i = 0; i < keylen; i++)fprintf(stderr, "%02x ", keybuf[i]);
+    fprintf(stderr, "LINE: %s\n", buf);
+    return optout - buf;
 }
 
 int keyboard_fill_report(char report[8], char buf[BUF_LEN], int *hold)
 {
-		printf("report: %s\n", buf);
 	char *tok = strtok(buf, " ");
 	int key = 0;
 	int i = 0;
 
 	for (; tok != NULL; tok = strtok(NULL, " ")) {
-		printf("tok: %s\n", tok);
 
 		if (strncmp(tok, "--", 2) == 0)
 			tok += 2;
@@ -392,7 +376,6 @@ int keyboard_fill_report(char report[8], char buf[BUF_LEN], int *hold)
 			fprintf(stderr, "unknown option: %s\n", tok);
 	}
 
-	fprintf(stderr, "key = %d\n", key);
 	return 8;
 }
 
@@ -565,7 +548,7 @@ int main(int argc, const char *argv[])
 	int sockfd = socket(AF_INET6, SOCK_STREAM, 0);
 
 	servaddr.sin6_family = AF_INET6;
-	servaddr.sin6_port = htons(PORT);
+	servaddr.sin6_port = htons(*argv[3]? atoi(argv[3]): PORT);
 	servaddr.sin6_addr = in6addr_any;
 	setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
 
@@ -614,44 +597,15 @@ int main(int argc, const char *argv[])
 
 		if (peerfd != -1 && FD_ISSET(peerfd, &rfds)) {
 			memset(report, 0x0, sizeof(report));
-			cmd_len = read(peerfd, buf, BUF_LEN - 1);
-
-			if (cmd_len == 0) {
-				close(peerfd);
-				peerfd = -1;
-				break;
-			}
-
-			buf[cmd_len] = '\0';
-			hold = 0;
-
-			memset(report, 0x0, sizeof(report));
-			to_send = keyboard_fill_report_one(report, buf, &hold);
-			// to_send = keyboard_fill_report(report, buf, &hold);
-			printf("to_send: %d %d %x\n", to_send, cmd_len, buf[0]);
-			if (to_send == 0) continue;
-			if (to_send == -1)
-				break;
-
-			if (report[0] != 0) usleep(10000);
-
-			if (write(fd, report, to_send) != to_send) {
-				perror(filename);
-				return 5;
-			}
-			if (!hold) {
-				memset(report, 0x0, sizeof(report));
-				if (write(fd, report, to_send) != to_send) {
-					perror(filename);
-					return 6;
-				}
-			}
+			cmd_len = read_doto_code(peerfd, buf, BUF_LEN - 1);
+			if (cmd_len > 0) goto doto_code;
 		}
 
 		if (FD_ISSET(STDIN_FILENO, &rfds)) {
 			memset(report, 0x0, sizeof(report));
 			cmd_len = read(STDIN_FILENO, buf, BUF_LEN - 1);
 
+doto_code:
 			if (cmd_len == 0)
 				break;
 

@@ -13,6 +13,5 @@ ip xfrm state add dst $REMOTE_IPv4_ADDR src $LOCAL_IPv4_ADDR spi 0xbd270b9c prot
 ip xfrm policy add dir in tmpl src $REMOTE_IPv4_ADDR dst $LOCAL_IPv4_ADDR proto esp mode tunnel mark $VTI_KEY
 ip xfrm policy add dir out tmpl src $LOCAL_IPv4_ADDR dst $REMOTE_IPv4_ADDR proto esp mode tunnel mark $VTI_KEY
 
-
 # encap type espinudp sport 4500 dport 4500 addr 0.0.0.0
 EOF
