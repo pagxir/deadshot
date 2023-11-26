@@ -768,7 +768,7 @@ static void load_ipv6_domain(const char *mydomain)
 	for (rp = result; rp != NULL; rp = rp->ai_next) {
 		struct sockaddr_in6 *inp6 = (struct sockaddr_in6*)rp->ai_addr;
 		if (rp->ai_family == AF_INET6) {
-			fprintf(stderr, "getaddrinfo: %s\n", ntop6(inp6->sin6_addr));
+			fprintf(stderr, "getaddrinfo6: %s\n", ntop6(inp6->sin6_addr));
 			append_entry_point(&inp6->sin6_addr);
 		}
 	}

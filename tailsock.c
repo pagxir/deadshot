@@ -78,15 +78,15 @@ int pipling(int connfd, int remotefd)
     return write_flush(remotefd, buff, len);
 }
 
-int setup_remote(struct sockaddr_in *cli, char *hostname)
+int setup_remote(struct sockaddr_in6 *cli, char *hostname)
 {
     int i;
     int rc = -1;
     int remotefd = -1;
 
-    remotefd = socket(AF_INET, SOCK_STREAM, 0);
+    remotefd = socket(AF_INET6, SOCK_STREAM, 0);
 
-    cli->sin_addr.s_addr = inet_addr(hostname);
+    inet_pton(AF_INET6, hostname, &cli->sin6_addr);
     rc = connect(remotefd, (struct sockaddr *)cli, sizeof(*cli));
     if (rc == -1) {
 	    close(remotefd);
@@ -156,11 +156,11 @@ void func(int connfd)
     rc = write(connfd, snibuff, newlen);
     assert(rc == newlen);
 
-    struct sockaddr_in cli;
-    cli.sin_family = AF_INET;
-    cli.sin_port   = htons(port);
-   if (port == 443) cli.sin_port   = htons(4430);
-    remotefd = setup_remote(&cli, "127.0.0.1");
+    struct sockaddr_in6 cli;
+    cli.sin6_family = AF_INET6;
+    cli.sin6_port   = htons(port);
+   if (port == 443) cli.sin6_port   = htons(4430);
+    remotefd = setup_remote(&cli, "::ffff:127.0.0.1");
 
     if (remotefd == -1) {
         close(connfd);
