@@ -105,6 +105,7 @@ int write_flush(int fd, void *buf, size_t count)
 }
 
 static int set_hook_name = 0;
+static char YOUR_DOMAIN[256] = "app.yrli.bid";
 
 char * get_sni_name(uint8_t *snibuff, size_t len, char *hostname)
 {
@@ -162,7 +163,7 @@ char * get_sni_name(uint8_t *snibuff, size_t len, char *hostname)
     }
 
     if (set_hook_name)
-	strcpy(hostname, "www.cloudflare.com");
+	strcpy(hostname, YOUR_DOMAIN);
 
     return hostname;
 }
@@ -174,7 +175,6 @@ static int RELAY_MODE = MODE_RELAY_NONE;
 
 static int YOUR_PORT = 4430;
 static char YOUR_PORT_TEXT[64] = "4430";
-static char YOUR_DOMAIN[256] = "app.yrli.bid";
 static char YOUR_ADDRESS[256] = "100.42.78.149";
 static int (*unwind_rewind_client_hello)(uint8_t *, size_t) = NULL;
 
