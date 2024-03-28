@@ -2,6 +2,7 @@
 #include <errno.h>
 #include <assert.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
 #include <time.h>
 #include <signal.h>
@@ -21,6 +22,449 @@ typedef unsigned short in_port_t;
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #endif
+
+#define LOG_DEBUG(fmt...) log_put(LEVEL_DEBUG, fmt)
+#define LOG_INFO(fmt...) log_put(LEVEL_INFO, fmt)
+#define LOG_ERROR(fmt...) log_put(LEVEL_ERROR, fmt)
+#define LOG_VERBOSE(fmt...) log_put(LEVEL_VERBOSE, fmt)
+
+enum {LEVEL_VERBOSE, LEVEL_DEBUG, LEVEL_INFO, LEVEL_WARNING, LEVEL_ERROR, LEVEL_FATAL};
+static int _log_level = LEVEL_INFO;
+
+int log_put(int level, const char *format, ...)
+{
+	va_list args;
+
+	if (level >= _log_level) {
+		va_start(args, format);
+		vprintf(format, args);
+		va_end(args);
+	}
+
+	return 0;
+}
+
+
+enum noop_subtype {NOOP_NOOP, NOOP_CONTINUE, NOOP_PONG, NOOP_ACCEPT, NOOP_UNKOWN};
+enum session_method {REQUEST, ACCEPT, NOOP, PING, SELECT, REJECT, SELECTED, UNKOWN_METHOD};
+
+struct frame_t {
+	int type;
+	int subtype;
+	int seq, ack;
+	char session[64];
+	char src[64], dst[64];
+
+	time_t birth;
+	time_t refresh;
+	struct sockaddr_in6 via;
+};
+
+struct nat_session_t {
+	char name[64];
+	int una_seq;
+	int nxt_seq;
+	int rcv_nxt;
+	int init_seq;
+	int ping_seq;
+	int accept_seq;
+	int short_ttl, got_ping, select;
+	int output, send_ack;
+
+	char peer[64];
+	const char *self;
+	struct sockaddr_in6 gateway;
+
+	struct frame_t frames[2];
+};
+
+#define HELP_CHANNEL 0
+#define PEER_CHANNEL 1
+#define PEER_CHANNEL_MASK (1 << PEER_CHANNEL)
+#define HELP_CHANNEL_MASK (1 << HELP_CHANNEL)
+
+static noop_subtype noop_by_name(const char *name)
+{
+	if (strcmp(name, "CONTINUE") == 0) {
+		return NOOP_CONTINUE;
+	} else if (strcmp(name, "ACCEPT") == 0) {
+		return NOOP_ACCEPT;
+	} else if (strcmp(name, "PONG") == 0) {
+		return NOOP_PONG;
+	}
+
+	return NOOP_UNKOWN;
+}
+
+static const char * method_to_name(int type)
+{
+	switch (type) {
+		case REQUEST: return "REQUEST";
+		case ACCEPT: return "ACCEPT";
+		case NOOP: return "NOOP";
+		case PING: return "PING";
+		case SELECT: return "SELECT";
+		case SELECTED: return "SELECTED";
+		case REJECT: return "REJECT";
+	}
+
+	return "UNKOWN_METHOD";
+}
+
+static session_method method_by_name(const char *name)
+{
+	if (strncmp(name, "REQUEST", 7) == 0) {
+		return REQUEST;
+	} else if (strncmp(name, "NOOP", 4) == 0) {
+		return NOOP;
+	} else if (strncmp(name, "PING", 4) == 0) {
+		return PING;
+	} else if (strncmp(name, "REJECT", 6) == 0) {
+		return REJECT;
+	} else if (strncmp(name, "SELECTED", 8) == 0) {
+		return SELECTED;
+	} else if (strncmp(name, "SELECT", 6) == 0) {
+		return SELECT;
+	} else if (strncmp(name, "ACCEPT", 6) == 0) {
+		return ACCEPT;
+	}
+
+	return UNKOWN_METHOD;
+}
+
+static int get_method_name(char *buf, int type, int subtype)
+{
+	const char *name = "";
+	const char *subname = "";
+
+	if (type == NOOP) {
+		switch (subtype) {
+			case NOOP_PONG:
+				subname = "PONG";
+				break;
+
+			case NOOP_ACCEPT:
+				subname = "ACCEPT";
+				break;
+
+			case NOOP_CONTINUE:
+				subname = "CONTINUE";
+				break;
+		}
+
+		return sprintf(buf, "NOOP %s", subname);
+	}
+
+	switch (type) {
+		case REQUEST:
+			name = "REQUEST";
+			break;
+
+		case ACCEPT:
+			name = "ACCEPT";
+			break;
+
+		case SELECT:
+			name = "SELECT";
+			break;
+
+		case PING:
+			name = "PING";
+			break;
+
+		case REJECT:
+			name = "REJECT";
+			break;
+
+		case SELECTED:
+			name = "SELECTED";
+			break;
+
+		default:
+			name = "NOOP UNKOWN";
+			break;
+	}
+
+	return sprintf(buf, "%s", name);
+}
+
+enum field_member { fm_ack, fm_seq, fm_via, fm_dst, fm_src, fm_session, fm_unkown };
+
+static int field_by_name(const char *name)
+{
+	if (strcmp(name, "ack") == 0) {
+		return fm_ack;
+	} else if (strcmp(name, "seq") == 0) {
+		return fm_seq;
+	} else if (strcmp(name, "dst") == 0) {
+		return fm_dst;
+	} else if (strcmp(name, "via") == 0) {
+		return fm_via;
+	} else if (strcmp(name, "src") == 0) {
+		return fm_src;
+	} else if (strcmp(name, "session") == 0) {
+		return fm_session;
+	}
+
+	return fm_unkown;
+}
+
+#define TYPE_CHAR(v) (char *)v
+
+static frame_t *nat_parse_frame(const char *buf)
+{
+	int port;
+	int first = 1;
+	char addr[64];
+	char key[128], value[256];
+	char* token = strtok(TYPE_CHAR(buf), "\n");
+	static struct frame_t frame;
+ 
+	frame.via.sin6_port = 0;
+	frame.via.sin6_addr = {};
+	for (; (token != NULL); token = strtok(NULL, "\n")) {
+		if (first) {
+			frame.type = method_by_name(token);
+			if (frame.type == NOOP)
+				frame.subtype = noop_by_name(token + 5);
+			first = 0;
+			continue;
+		}
+
+		if (2 != sscanf(token, "%[a-z]: %s", key, value)) {
+			continue;
+		}
+
+		LOG_VERBOSE("key=%s value=%s\n", key, value);
+		switch(field_by_name(key)) {
+			case fm_session:
+				strncpy(frame.session, value, sizeof(frame.session) -1);
+				break;
+
+			case fm_seq:
+				frame.seq = atoi(value);
+				break;
+
+			case fm_ack:
+				frame.ack = atoi(value);
+				break;
+
+			case fm_via:
+				if (2 == sscanf(value, "[%[:a-zA-Z0-9.]]:%d", addr, &port)) {
+					int test = inet_pton(AF_INET6, addr, &frame.via.sin6_addr);
+					frame.via.sin6_family = AF_INET6;
+					frame.via.sin6_port = htons(port);
+				}
+				break;
+
+			case fm_src:
+				strncpy(frame.src, value, sizeof(frame.src) -1);
+				break;
+
+			case fm_dst:
+				strncpy(frame.dst, value, sizeof(frame.dst) -1);
+				break;
+
+			default:
+				break;
+		}
+    }
+
+	return &frame;
+}
+
+static nat_session_t session0;
+static nat_session_t *get_session_by_frame(frame_t *frame)
+{
+	return &session0;
+}
+
+static frame_t *nat_session_frame(nat_session_t *session, int type, int ch)
+{
+	frame_t *frame = &session->frames[ch];
+
+	frame->type = type;
+	frame->subtype = 0;
+
+	assert(session->nxt_seq <= session->una_seq + 1);
+	frame->seq = session->nxt_seq;
+	frame->ack = session->rcv_nxt;
+
+	strcpy(frame->src, session->self);
+	strcpy(frame->dst, session->peer);
+	strcpy(frame->session, session->name);
+
+	memset(&frame->via, 0, sizeof(frame->via));
+	session->output |= (1 << ch);
+	session->send_ack = 0;
+	time(&frame->birth);
+	frame->refresh = 0;
+
+	return frame;
+}
+
+static void nat_session_request(nat_session_t *session)
+{
+	frame_t *frame = nat_session_frame(session, REQUEST, HELP_CHANNEL);
+	session->nxt_seq++;
+	return;
+}
+
+static void nat_session_accept(nat_session_t *session)
+{
+	frame_t *frame = nat_session_frame(session, ACCEPT, HELP_CHANNEL);
+	session->accept_seq = frame->seq;
+	session->nxt_seq++;
+	return;
+}
+
+static void nat_session_select(nat_session_t *session)
+{
+	frame_t *frame = nat_session_frame(session, SELECT, PEER_CHANNEL);
+	session->nxt_seq++;
+	return;
+}
+
+static void nat_session_selected(nat_session_t *session)
+{
+	frame_t *frame = nat_session_frame(session, SELECTED, PEER_CHANNEL);
+	session->nxt_seq++;
+	return;
+}
+
+static void nat_session_pong(nat_session_t *session)
+{
+	if (session->output & PEER_CHANNEL_MASK) return;
+	frame_t *frame = nat_session_frame(session, NOOP, PEER_CHANNEL);
+	frame->subtype = NOOP_PONG;
+	return;
+}
+
+static void nat_session_ping(nat_session_t *session)
+{
+	frame_t *frame = nat_session_frame(session, PING, PEER_CHANNEL);
+	session->ping_seq = frame->seq;
+	session->nxt_seq++;
+	return;
+}
+
+static void nat_session_continue(nat_session_t *session)
+{
+	if (session->output & HELP_CHANNEL_MASK) return;
+	frame_t *frame = nat_session_frame(session, NOOP, HELP_CHANNEL);
+	frame->subtype = NOOP_CONTINUE;
+	return;
+}
+
+static void nat_session_noop(nat_session_t *session, int ch)
+{
+	frame_t *frame;
+	if (session->output & (1 << ch)) return;
+	frame = nat_session_frame(session, NOOP, ch);
+	frame->subtype = 0;
+	return;
+}
+
+static void nat_process_session(frame_t *frame)
+{
+	char tmp[64];
+	int updated = 0;
+	nat_session_t *session = get_session_by_frame(frame);
+
+	if ((frame->type == REQUEST ||
+				frame->type == ACCEPT) &&
+			session->init_seq != frame->seq) {
+		if (frame->type == REQUEST) {
+			const char *save = session->self;
+			memset(session, 0, sizeof(*session));
+
+			session->una_seq = rand() % 1747;
+			session->nxt_seq = session->una_seq;
+			strcpy(session->name, frame->session);
+			strcpy(session->peer, frame->src);
+			session->self = save;
+		}
+		session->init_seq = frame->seq;
+		session->rcv_nxt = frame->seq;
+		session->output = 0;
+		LOG_DEBUG("set session->output=0 by init\n");
+		updated = 1;
+	} else if (frame->ack > session->una_seq) {
+		session->una_seq = frame->ack;
+		if (frame->ack >= session->nxt_seq)
+			session->output = 0;
+		LOG_DEBUG("set session->output=0 by ack %d %d %x\n", frame->ack, session->nxt_seq, session->output);
+		updated = 1;
+	}
+
+	LOG_DEBUG("nat_process_session: seq=%d rcv_nxt=%d una_seq=%d output=%x\n", frame->seq, session->rcv_nxt, session->una_seq, session->output);
+	LOG_DEBUG("nat_process_session: type=%s subtype=%d update=%d\n", method_to_name(frame->type), frame->subtype, updated);
+
+	if (frame->type == NOOP) {
+		if (updated == 0) return;
+		get_method_name(tmp, frame->type, frame->subtype);
+		LOG_INFO("NOOP: %s\n", tmp);
+	} else if (frame->seq == session->rcv_nxt) {
+		session->frames[0].subtype = 0;
+		session->frames[1].subtype = 0;
+		session->send_ack = 1;
+		session->rcv_nxt++;
+		updated = 1;
+	} else if (frame->seq < session->rcv_nxt) {
+		session->frames[0].subtype = 0;
+		session->frames[1].subtype = 0;
+		session->send_ack = 1;
+	}
+
+	if (updated) {
+		switch (frame->type) {
+			case REQUEST:
+				session->gateway = frame->via;
+				nat_session_accept(session);
+				session->short_ttl = 1;
+				nat_session_pong(session);
+				break;
+
+			case ACCEPT:
+				session->gateway = frame->via;
+				nat_session_continue(session);
+				nat_session_ping(session);
+				break;
+
+			case SELECT:
+				nat_session_selected(session);
+				session->select = 1;
+				break;
+
+			case REJECT:
+			case SELECTED:
+				nat_session_noop(session, PEER_CHANNEL);
+				session->select = 1;
+				break;
+
+			case PING:
+				if (memcmp(&session->gateway, &frame->via, sizeof(frame->via)))
+					session->gateway = frame->via;
+				else 
+					session->select = 1;
+				nat_session_pong(session);
+				session->got_ping = 1;
+			case NOOP:
+			default:
+				if (session->accept_seq > 0 &&
+						(session->ping_seq == 0) &&
+						(session->accept_seq < session->una_seq))
+					nat_session_ping(session);
+
+				if (session->ping_seq > 0 &&
+						session->got_ping && !session->select &&
+						session->ping_seq < session->una_seq)
+					nat_session_select(session);
+
+				break;
+		}
+	}
+}
 
 #define getmappedbybuf(buff, buflen, addrptr, portptr) \
     getaddrbybuf(buff, buflen, MAPPED_ADDRESS, addrptr, portptr)
@@ -130,10 +574,27 @@ static const char *inet_4to6(void *v6ptr, const void *v4ptr)
 	return "";
 }
 
+#define MAX_EVENT 10
+static int _nevent = 0;
+static struct pending_event {void *context; int event; }  _events[MAX_EVENT];
+
+enum {EVENT_PONG, EVENT_PING, EVENT_SESSION_EXECUTE, EVENT_SESSION_PING, EVENT_SESSION_PONG};
+
+static int event_list_push(void *context, int event)
+{
+	if (_nevent + 1 < MAX_EVENT) {
+		_events[_nevent].context = context;
+		_events[_nevent].event = event;
+		_nevent++;
+	}
+
+	return 0;
+}
+
 static void dump_peer(const char *title, const void *target)
 {
 	const struct sockaddr_in6 *inp = (const struct sockaddr_in6 *)target;
-	fprintf(stderr, "%s TO %s:%d\n", title, ntop6(inp->sin6_addr), htons(inp->sin6_port));
+	LOG_VERBOSE("%s TO [%s]:%d\n", title, ntop6(inp->sin6_addr), htons(inp->sin6_port));
 }
 
 void update_session(struct session_t *s)
@@ -151,9 +612,9 @@ void update_session(struct session_t *s)
         return;
     }
 
-	dump_peer("update_session", &s->target);
+    dump_peer("update_session", &s->target);
     nbyte = sendto(s->sockfd, s->cache, strlen(s->cache), 0,
-            (const struct sockaddr *)&s->target, sizeof(s->target));
+		    (const struct sockaddr *)&s->target, sizeof(s->target));
 
     if (s->ttl > 0) {
         s->ttl --;
@@ -181,9 +642,10 @@ struct natcb_t {
     int passfd;
     int sack_want;
     int exit_child;
-    int got_pong;
     int out_ping;
+    int got_pong;
     int got_session_pong;
+    int got_session_execute;
 
     pid_t childpid;
     char ident[128];
@@ -195,6 +657,11 @@ struct natcb_t {
     socklen_t size;
     struct sockaddr_in6 stun;
     struct sockaddr_in6 from;
+
+	int waiting;
+	char *pong_cmd;
+	char *session_ping_cmd;
+	char *session_pong_cmd;
 };
 
 struct natcb_t * natcb_setup(struct natcb_t *cb)
@@ -318,9 +785,10 @@ void set_session_action(struct natcb_t *cb, int patch)
         }
     }
 
-	dump_peer("set_session_action", &s->target);
-    nbyte = sendto(s->sockfd, s->cache, strlen(s->cache), 0,
-            (const struct sockaddr *)&s->target, sizeof(s->target));
+    dump_peer("set_session_action", &s->target);
+    if (patch) {
+	nbyte = sendto(s->sockfd, s->cache, strlen(s->cache), 0, (const struct sockaddr *)&s->target, sizeof(s->target));
+    }
 
     if (patch) {
         setsockopt(s->sockfd, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl_origin));
@@ -328,8 +796,27 @@ void set_session_action(struct natcb_t *cb, int patch)
 
     if (nbyte > 0) s->readable++;
 
-    fprintf(stderr, ">> %s\n", s->cache);
+    LOG_DEBUG(">> %s set_session_action patch = %d\n", s->cache, patch);
     return;
+}
+
+static const char *COMMANDS[] = {
+	"REQUEST", "ACCEPT", "PING", "NOOP CONTINUE", "NOOP PONG",
+	"REJECT", "NOOP SELECTED", "NOOP", "SELECT", NULL
+};
+
+static int is_new_version(const char *title)
+{
+	int i, n;
+
+	for (i = 0; COMMANDS[i]; i++) {
+		const char *command = COMMANDS[i];
+		n = strlen(command);
+		if (0 == strncmp(command, title, n)) 
+			return 1;
+	}
+
+	return 0;
 }
 
 void do_receive_update(struct natcb_t *cb)
@@ -337,7 +824,7 @@ void do_receive_update(struct natcb_t *cb)
     struct sockaddr_in  _schgaddr, _sinaddr;
     struct mapping_args *r = (struct mapping_args *)cb->stunbuf;
 
-    printf("\r<<  from: %s:%d\n",
+    LOG_DEBUG("\r<<<<< from: %s:%d\n",
             ntop6(cb->from.sin6_addr), htons(cb->from.sin6_port));
 
     if (r->tid0 == (uint32_t)(uint64_t)&MAGIC_MAPPING
@@ -347,22 +834,30 @@ void do_receive_update(struct natcb_t *cb)
                     (in_addr_t*)&_schgaddr.sin_addr, &_schgaddr.sin_port))
             return;
 
-        printf("<<  mapped address: %s:%d\n",
+        LOG_DEBUG("<<  mapped address: %s:%d\n",
                 inet_ntoa(_schgaddr.sin_addr), htons(_schgaddr.sin_port));
 
         if (-1 == getchangedbybuf(cb->stunbuf, cb->buflen,
                     (in_addr_t*)&_schgaddr.sin_addr, &_schgaddr.sin_port))
             return;
 
-        printf("<< changed server address: %s:%d\n",
+        LOG_DEBUG("<< changed server address: %s:%d\n",
                 inet_ntoa(_schgaddr.sin_addr), htons(_schgaddr.sin_port));
     } else if (cb->buflen > 0) {
-        printf("<<  %s\n", cb->stunbuf);
+        LOG_VERBOSE("<<<<<<\n %s\nEND\n", cb->stunbuf);
         // receive FROM dupit8@gmail.com TO pagxir@gmail.com SESSION xxxx EXCHANGE 103.119.224.18:51901
-        // send    FROM pagxir@gmail.com TO dupit8@gmail.com SESSION xxxx EXCHANGE 0.0.0.0:0
+        // send    FROM pagxir@gmail.com TO dupit8@gmail.com SESSION xxxx EXCHANGE 0.0.0.0:0 ACK
         // send    FROM pagxir@gmail.com SESSION xxxx (SYN|SYN+ACK) # check SESSION is receive any packet
         char peer_cmd[2048];
         char from[128], to[128], session[128], exchange[128], flags[128];
+
+		if (is_new_version(cb->stunbuf)) {
+			frame_t * frame = nat_parse_frame(cb->stunbuf);
+			if (!frame->via.sin6_port) frame->via = cb->from;
+			LOG_DEBUG("start nat_parse_frame\n");
+			nat_process_session(frame);
+			return;
+		}
 
         int match = sscanf(cb->stunbuf, "FROM %s TO %s SESSION %s EXCHANGE %s%s", from, to, session, exchange, flags);
         if (match == 4 || match == 5) {
@@ -374,15 +869,20 @@ void do_receive_update(struct natcb_t *cb)
                 cb->sack_want = 1;
             }
 
-            fprintf(stderr, "start session %s handshake %s\n", session, exchange);
-            strcpy(cb->acked_session, "");
+            LOG_DEBUG("start session %s handshake %s flags %s\n", session, exchange, flags);
             strcpy(cb->session, session);
 
-            cb->got_session_pong = 0;
-            cb->got_pong = 0;
+            LOG_INFO("reset got_session_pong and got_pong\n");
+			if (strcmp(cb->session, cb->acked_session) || cb->sack_want == 0) {
+				strcpy(cb->acked_session, "");
+				cb->got_session_pong = 0;
+				cb->got_pong = 0;
+			}
+
             cb->peer.ttl = 4;
             cb->ready = 0;
-			set_session_action(cb, !!strstr(flags, "PING"));
+	    // set_session_action(cb, !!strstr(flags, "PING"));
+			set_session_action(cb, 1);
             return;
         }
 
@@ -394,15 +894,19 @@ void do_receive_update(struct natcb_t *cb)
             if (strcmp(flags, "ING") == 0) {
                 snprintf(peer_cmd, sizeof(peer_cmd), "FROM %s SESSION %s PONG [%s]:%d", cb->ident, session, ntop6(cb->from.sin6_addr), htons(cb->from.sin6_port));
                 do_peer_exchange(cb, peer_cmd);
+
+				event_list_push(cb, EVENT_SESSION_PING);
             } else if (2 == sscanf(cb->stunbuf, "FROM %*s SESSION %*s P%[OING] %s", flags, good_resp) && cb->sack_want){
-                snprintf(peer_cmd, sizeof(peer_cmd), "FROM %s TO %s SESSION %s EXCHANGE %s ACK", cb->ident, from, session, good_resp);
+                snprintf(peer_cmd, sizeof(peer_cmd), "FROM %s TO %s SESSION %s ESTABLISED %s ", cb->ident, from, session, good_resp);
                 do_bear_exchange(cb, peer_cmd);
                 cb->sack_want = 0;
+
+				cb->got_session_pong = 1;
+				event_list_push(cb, EVENT_SESSION_PONG);
             }
 
-            fprintf(stderr, "receive session %s handshake %s %d\n", session, flags, cb->peer.ttl);
+            LOG_DEBUG("receive session %s handshake %s %d\n", session, flags, cb->peer.ttl);
             strcpy(cb->acked_session, session);
-            cb->got_session_pong = 1;
             cb->peer.ttl = 0;
             return;
         }
@@ -416,9 +920,11 @@ void do_receive_update(struct natcb_t *cb)
 				dump_peer("do_receive_update", &cb->from);
                 sent = sendto(cb->peer.sockfd, cb->stunbuf, strlen(cb->stunbuf), 0, 
                         (const struct sockaddr *)&cb->from, sizeof(cb->from));
+				event_list_push(cb, EVENT_PING);
             } else if (strcmp(flags, "ONG") == 0) {
-                fprintf(stderr, "receive %s %d %s\n", from, sent, flags);
+                LOG_DEBUG("receive %s %d %s\n", from, sent, flags);
                 cb->got_pong = 1;
+				event_list_push(cb, EVENT_PONG);
                 cb->out_ping = 0;
             }
 
@@ -433,13 +939,12 @@ void do_receive_update(struct natcb_t *cb)
                 return;
             }
 
-            fprintf(stderr, "receive session %s command %s\n", session, from);
+            LOG_DEBUG("receive session %s command %s\n", session, from);
             snprintf(peer_cmd, sizeof(peer_cmd), "FROM %s TO %s SESSION %s ACK+COMMAND", cb->ident, from, session);
-            if (*cb->command) {
-                do_bear_exchange(cb, peer_cmd);
-                do_fork_exec(cb, cb->command);
-                strcpy(cb->acked_session, "");
-            }
+			do_bear_exchange(cb, peer_cmd);
+
+			cb->got_session_execute = 1;
+			event_list_push(cb, EVENT_SESSION_EXECUTE);
 
             return;
         }
@@ -463,11 +968,102 @@ void session_receive(struct natcb_t *cb, struct session_t *sb)
     return;
 }
 
+#define SIZE(len) (sizeof(buf) - len)
+
+static int nat_session_output(struct natcb_t *cb, nat_session_t *session)
+{
+    char buf[2038];
+    frame_t *frame = session->frames;
+	int output = session->output;
+
+	frame = &session->frames[PEER_CHANNEL];
+    if ((output & PEER_CHANNEL_MASK) && (session->send_ack || frame->refresh < time(NULL))) {
+            int len = get_method_name(buf, frame->type, frame->subtype);
+            frame->ack = session->rcv_nxt;
+            session->send_ack = 0;
+
+            len += snprintf(buf + len, SIZE(len), "\n");
+            len += snprintf(buf + len, SIZE(len), "session: %s\n", frame->session);
+            len += snprintf(buf + len, SIZE(len), "src: %s\n", frame->src);
+            len += snprintf(buf + len, SIZE(len), "dst: %s\n", frame->dst);
+
+            len += snprintf(buf + len, SIZE(len), "seq: %d\n", frame->seq);
+            len += snprintf(buf + len, SIZE(len), "ack: %d\n", frame->ack);
+
+            LOG_DEBUG(">>>>>>>>>>>>>>>>> peer: %d via %x >>>>>>>>>>>>>>> \n", len, session->output);
+            LOG_DEBUG("%s\n", buf);
+
+            time(&frame->refresh);
+
+            int ttl = 3;
+            int ttl_origin = 0;
+            int should_reset = 0;
+            struct session_t *s = &cb->peer;
+
+            socklen_t ttl_length = sizeof(ttl_origin);
+            if (session->short_ttl && !getsockopt(s->sockfd, IPPROTO_IP, IP_TTL, &ttl_origin, &ttl_length))
+                should_reset = !setsockopt(s->sockfd, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl));
+			LOG_DEBUG("short_ttl: %d %d %d\n", session->short_ttl, ttl_origin, should_reset);
+
+            int nbyte = sendto(s->sockfd, buf, len, 0, (const struct sockaddr *)&session->gateway, sizeof(session->gateway));
+			assert(nbyte > 0);
+
+            if (should_reset) {
+                setsockopt(s->sockfd, IPPROTO_IP, IP_TTL, &ttl_origin, sizeof(ttl_origin));
+                session->short_ttl = 0;
+			}
+
+			if (frame->seq < session->una_seq
+					|| frame->type == NOOP
+					|| frame->refresh > frame->birth + 15)
+				session->output &= ~PEER_CHANNEL_MASK;
+    }
+
+    if (session->send_ack && !(output & HELP_CHANNEL_MASK)) {
+        nat_session_noop(session, HELP_CHANNEL);
+        output |= HELP_CHANNEL_MASK;
+    }
+
+    frame = &session->frames[HELP_CHANNEL];
+    if ((output & HELP_CHANNEL_MASK) && (session->send_ack || frame->refresh < time(NULL))) {
+        int len = get_method_name(buf, frame->type, frame->subtype);
+
+        len += snprintf(buf + len, SIZE(len), "\n");
+        len += snprintf(buf + len, SIZE(len), "session: %s\n", frame->session);
+        len += snprintf(buf + len, SIZE(len), "src: %s\n", frame->src);
+        len += snprintf(buf + len, SIZE(len), "dst: %s\n", frame->dst);
+
+        if (!IN6_IS_ADDR_UNSPECIFIED(&frame->via.sin6_addr)) {
+            len += snprintf(buf + len, SIZE(len), "via: [%s]:%d\n", ntop6(frame->via.sin6_addr), htons(frame->via.sin6_port));
+        } else {
+            len += snprintf(buf + len, SIZE(len), "via: GATEWAY\n");
+        }
+
+        len += snprintf(buf + len, SIZE(len), "seq: %d\n", frame->seq);
+        len += snprintf(buf + len, SIZE(len), "ack: %d\n", frame->ack);
+
+		LOG_DEBUG(">>>>>>>>>>>>>>>>> help: %d via %x >>>>>>>>>>>>>>> \n", len, session->output);
+        LOG_DEBUG("%s\n", buf);
+
+		time(&frame->refresh);
+		if (frame->seq < session->una_seq
+				|| frame->type == NOOP
+				|| frame->refresh > frame->birth + 15)
+            session->output &= ~HELP_CHANNEL_MASK;
+
+        return do_peer_bearing(cb, buf);
+    }
+
+    assert(!session->send_ack);
+    return 0;
+}
+
 void check_and_receive(struct natcb_t *cb, int usestdin)
 {
     fd_set myfds;
     int maxfd = STDIN_FILENO;
     int readycount = 0;
+	int save_nevent = _nevent;
 
     do {
         FD_ZERO(&myfds);
@@ -497,6 +1093,20 @@ void check_and_receive(struct natcb_t *cb, int usestdin)
             } while (child > 0);
         }
 
+		nat_session_output(cb, &session0);
+		if (session0.select == 1 &&
+				session0.nxt_seq == session0.una_seq) {
+			event_list_push(cb, EVENT_SESSION_PONG);
+			cb->peer.target = session0.gateway;
+			session0.select++;
+		}
+
+		if (cb->waiting == 1 && session0.select == 2) {
+			event_list_push(cb, EVENT_SESSION_EXECUTE);
+			cb->got_session_execute = 1;
+			session0.select++;
+		}
+
         readycount = select(maxfd + 1, &myfds, NULL, NULL, &timeout);
         if (readycount == 0) {
             update_timer_list(cb);
@@ -514,10 +1124,49 @@ void check_and_receive(struct natcb_t *cb, int usestdin)
 
         if (readycount > 0 && FD_ISSET(STDIN_FILENO, &myfds)) {
             /* handle next command */
-            return;
+            break;
         }
 
+		if (_nevent > save_nevent) {
+			break;
+		}
+
     } while ((cb->bear.readable || cb->peer.readable) && usestdin);
+
+    /* process pending events */
+    if (cb->waiting == 0) {
+	    int nevent = _nevent;
+	    _nevent = 0;
+	    for (int i = 0; i < nevent; i++) {
+		    struct pending_event pe = _events[i];
+		    switch (pe.event) {
+			    case EVENT_SESSION_PING:
+				    setenv("EVENT", "session_ping", 1);
+				    do_fork_exec(cb, cb->session_ping_cmd);
+				    strcpy(cb->acked_session, "");
+				    break;
+
+			    case EVENT_SESSION_PONG:
+				    setenv("EVENT", "session_pong", 1);
+				    do_fork_exec(cb, cb->session_pong_cmd);
+				    break;
+
+			    case EVENT_SESSION_EXECUTE:
+				    setenv("EVENT", "session_execute", 1);
+					cb->got_session_execute = 0;
+					break;
+
+			    case EVENT_PONG:
+				    setenv("EVENT", "pong", 1);
+				    do_fork_exec(cb, cb->pong_cmd);
+				    break;
+
+			    default:
+				    LOG_ERROR("unsupported event: %d\n", pe.event);
+				    break;
+		    }
+	    }
+    }
 
     return;
 }
@@ -567,11 +1216,13 @@ int do_bear_exchange(struct natcb_t *cb, const char *buf)
     return sent;
 }
 
-int set_config_host(struct sockaddr_in6 *target, char *value)
+int set_config_host(struct sockaddr_in6 *target, char *value0)
 {
     char *port;
+    char value[128] = {};
     struct hostent *phost;
 
+    strncpy(value, value0, sizeof(value) -1);
     target->sin6_family = AF_INET6;
 
 	if (*value != '[') {
@@ -611,12 +1262,36 @@ void config_ident_lock(struct natcb_t *cb)
         nbyte = sendto(s->sockfd, s->cache, strlen(s->cache), 0,
                 (const struct sockaddr *)&s->target, sizeof(s->target));
 
-        fprintf(stderr, ">> %s\n", cb->peer.cache);
+        LOG_INFO(">> %s\n", cb->peer.cache);
         if (nbyte > 0) s->readable++;
         s->ttl = -1;
     }
 
     return;
+}
+
+int nametologlevel(const char *level)
+{
+	if (strcmp(level, "verbose") == 0) {
+		return LEVEL_VERBOSE;
+	} else
+	if (strcmp(level, "debug") == 0) {
+		return LEVEL_DEBUG;
+	} else
+	if (strcmp(level, "info") == 0) {
+		return LEVEL_INFO;
+	} else
+	if (strcmp(level, "error") == 0) {
+		return LEVEL_ERROR;
+	} else
+	if (strcmp(level, "warn") == 0) {
+		return LEVEL_WARNING;
+	} else
+	if (strcmp(level, "fatal") == 0) {
+		return LEVEL_FATAL;
+	}
+
+	return LEVEL_INFO;
 }
 
 int nametomode(const char *mode, int initval)
@@ -700,7 +1375,13 @@ int do_update_ready(struct natcb_t *cb, const char *buf)
 
     int dowait = strcmp(action, "wait") == 0;
 
-    if (strcmp(key, "session.pong") == 0) {
+    if (strcmp(key, "any") == 0) {
+        cb->ready = (_nevent > 0);
+		dowait = cb->peer.ttl > 0 ||  cb->out_ping > 0 || session0.output;
+    } else if (strcmp(key, "session") == 0) {
+        cb->ready = cb->got_session_execute;
+		dowait = 1;
+    } else if (strcmp(key, "session.pong") == 0) {
         cb->ready = cb->got_session_pong;
         dowait = cb->peer.ttl <= 0? 0: dowait;
     } else if (strcmp(key, "pong") == 0) {
@@ -711,6 +1392,13 @@ int do_update_ready(struct natcb_t *cb, const char *buf)
     }
 
     return cb->ready == 0 && dowait;
+}
+
+char * do_wrap_command(struct natcb_t *cb, const char *value)
+{
+	if (strcmp(value, "COMMAND") == 0)
+		return cb->command;
+	return strdup(value);
 }
 
 int do_update_config(struct natcb_t *cb, const char *buf)
@@ -730,6 +1418,8 @@ int do_update_config(struct natcb_t *cb, const char *buf)
     } else if (strcmp(key, "mode") == 0) {
         cb->mode = nametomode(value, cb->mode);
         mode_reconfig(cb);
+    } else if (strcmp(key, "loglevel") == 0) {
+        _log_level = nametologlevel(value);
     } else if (strcmp(key, "exitchild") == 0) {
         cb->exit_child = atoi(value);
     } else if (strcmp(key, "peer") == 0) {
@@ -743,10 +1433,25 @@ int do_update_config(struct natcb_t *cb, const char *buf)
         cb->bear.interval = atoi(value);
     } else if (strcmp(key, "passfd") == 0) {
         cb->passfd = atoi(value);
+    } else if (strcmp(key, "pong_cmd") == 0) {
+		if (cb->pong_cmd && cb->pong_cmd != cb->command)
+			free(cb->pong_cmd);
+		cb->pong_cmd = do_wrap_command(cb, value);
+    } else if (strcmp(key, "session.ping_cmd") == 0) {
+		if (cb->session_ping_cmd &&
+				cb->session_ping_cmd != cb->command)
+			free(cb->session_ping_cmd);
+		cb->session_ping_cmd = do_wrap_command(cb, value);
+    } else if (strcmp(key, "session.pong_cmd") == 0) {
+		if (cb->session_pong_cmd &&
+				cb->session_pong_cmd != cb->command)
+			free(cb->session_pong_cmd);
+		cb->session_pong_cmd = do_wrap_command(cb, value);
     } else if (strcmp(key, "command") == 0) {
         strncpy(cb->command, value, sizeof(cb->command) -1);
     } else if (strcmp(key, "ident") == 0) {
         strncpy(cb->ident, value, sizeof(cb->ident) -1);
+		session0.self = cb->ident;
         config_ident_lock(cb);
     } else if (strcmp(key, "help") == 0) {
         fprintf(stderr, "  key list\n");
@@ -808,6 +1513,9 @@ void do_dump_status(struct natcb_t *cb)
     fprintf(stderr, "set lock.key  %s\n", cb->lock_key);
     fprintf(stderr, "set lock.interval  %ld\n", cb->bear.interval);
     fprintf(stderr, "set command %s\n", cb->command);
+    fprintf(stderr, "set pong_command %s\n", cb->pong_cmd);
+    fprintf(stderr, "set session.ping_command %s\n", cb->session_ping_cmd);
+    fprintf(stderr, "set session.pong_command %s\n", cb->session_pong_cmd);
     fprintf(stderr, "set exitchild %d\n", cb->exit_child);
     fprintf(stderr, "set passfd %d\n", cb->passfd);
     fprintf(stderr, "set mode %s\n", cb->mode==MODE_PAIR?"pair":"once");
@@ -836,7 +1544,7 @@ void do_dump_status(struct natcb_t *cb)
     fprintf(stderr, "  session %s\n", cb->session);
     fprintf(stderr, "  acked_session %s\n", cb->acked_session);
     fprintf(stderr, "  got_session_pong %d\n", cb->got_session_pong);
-
+    fprintf(stderr, "  got_session_execute %d\n", cb->got_session_execute);
 
     inp = &selfaddr;
     printf("  self-bear: [%s]:%d\n",
@@ -909,6 +1617,8 @@ void do_fork_exec(struct natcb_t *cb, const char *buf)
     pid_t pid;
     char value[1024];
     struct sockaddr_in6 selfaddr;
+
+	if (buf == NULL) return;
 
     socklen_t selflen = sizeof(selfaddr);
     int error = getsockname(cb->peer.sockfd, (struct sockaddr *)&selfaddr, &selflen);
@@ -987,6 +1697,16 @@ void signal_child_handler(int signo)
     have_child_exited = 1;
 }
 
+static void nat_session_parse(nat_session_t *session, const char *line)
+{
+	char name[63], dest[63];
+	sscanf(line, "%s %s", name, dest);
+	strcpy(session->name, name);
+	strcpy(session->peer, dest);
+	nat_session_request(session);
+	return;
+}
+
 int main(int argc, char *argv[])
 {
     int change;
@@ -997,6 +1717,7 @@ int main(int argc, char *argv[])
     struct natcb_t cb = {};
 
     natcb_setup(&cb);
+	srand(time(NULL));
     do_update_config(&cb, "set stun stun.ekiga.net:3478");
 
     setvbuf(stdin, NULL, _IONBF, 0);
@@ -1030,8 +1751,10 @@ int main(int argc, char *argv[])
         } else if (strcmp(action, "check") == 0) {
             do_update_ready(&cb, stdbuf);
         } else if (strcmp(action, "wait") == 0) {
+			cb.waiting = 1;
             while (do_update_ready(&cb, stdbuf))
                 check_and_receive(&cb, 0);
+			cb.waiting = 0;
             goto check_pending;
         } else if (strcmp(action, "set") == 0) {
             do_update_config(&cb, stdbuf);
@@ -1043,6 +1766,7 @@ int main(int argc, char *argv[])
         } else if (strcmp(action, "peer.bear") == 0) {
             strncpy(last_line, stdbuf, sizeof(last_line) -1);
             do_peer_bearing(&cb, stdbuf +10);
+            cb.peer.ttl = 2;
         } else if (strcmp(action, "bear") == 0) {
             strncpy(last_line, stdbuf, sizeof(last_line) -1);
             do_bear_exchange(&cb, stdbuf +5);
@@ -1051,6 +1775,13 @@ int main(int argc, char *argv[])
             do_peer_bearing(&cb, helo_line);
         } else if (strcmp(action, "print") == 0) {
             fprintf(stderr, "%s\n", stdbuf + 5);
+        } else if (strcmp(action, "session") == 0) {
+			memset(&session0, 0, sizeof(session0));
+			session0.self = cb.ident;
+			session0.una_seq = rand() % 1747;
+			session0.nxt_seq = session0.una_seq;
+			nat_session_parse(&session0, stdbuf + 8);
+			nat_session_output(&cb, &session0);
         } else if (strcmp(action, "ping.start") == 0) {
             snprintf(cb.peer.cache, sizeof(cb.peer.cache), "FROM %s PING", cb.ident);
             cb.peer.interval = 5;
@@ -1073,7 +1804,7 @@ int main(int argc, char *argv[])
         } else if (strcmp(action, "delay") == 0) {
             int delay = 0;
             if (sscanf(stdbuf, "delay %d", &delay) == 1 &&
-                    delay > 0 && delay < 30) {
+                    delay > 0 && delay < 1030) {
                 time_t start = time(NULL);
                 while (start + delay > time(NULL))
                     check_and_receive(&cb, 0);
@@ -1090,7 +1821,8 @@ check_pending:
         check_and_receive(&cb, 1);
     }
 
-    kill(cb.childpid, SIGINT);
+	if (cb.childpid > 0)
+		kill(cb.childpid, SIGINT);
     natcb_free(&cb);
 
     return 0;

@@ -8,7 +8,16 @@
 #include <assert.h>
 #include <gcrypt.h>
 
+#include <wolfssl/options.h>
+#include <wolfssl/ssl.h>
+#include <wolfssl/error-ssl.h>
+#include <wolfssl/wolfcrypt/coding.h>
+#include <wolfssl/wolfcrypt/curve25519.h>
+#include <wolfssl/wolfcrypt/hpke.h>
+
+
 #define LOG_DEBUG(fmt...) fprintf(stderr, fmt)
+#define LOG_VERBOSE(fmt...) fprintf(stderr, fmt)
 
 #define TLS13_AEAD_NONCE_LENGTH 12
 
@@ -16,6 +25,338 @@
 
 #define HANDSHAKE_TYPE_CLIENT_HELLO 1
 #define TAG_SNI 0
+
+
+static byte pub [] = {
+    0x16, 0xd4, 0x68, 0xcd, 0x30, 0xf4, 0x01, 0xaf, 0x98, 0x3e, 0xaa, 0x23,
+    0xcc, 0x8d, 0xa9, 0x2f, 0xbf, 0x51, 0x9d, 0x13, 0x32, 0xbd, 0x9f, 0xe9,
+    0xb2, 0xbd, 0xc1, 0x5c, 0xb6, 0x8b, 0xee, 0x7f
+};
+
+static byte priv[] = {
+    0x4a, 0x15, 0x0a, 0xb0, 0x16, 0x8f, 0x74, 0x88, 0xdc, 0xea, 0xfd, 0x81,
+    0x83, 0xe6, 0xe6, 0x69, 0xd6, 0x9d, 0xdf, 0x7f, 0x15, 0x84, 0xeb, 0xbf,
+    0x88, 0xd0, 0xb5, 0x53, 0x6e, 0x86, 0x1b, 0xd0
+};
+
+static byte info[1024];
+word32 infoLen = 0;
+
+static int load_encrypt_client_hello(const void *ch, size_t chlen, const void *payload, size_t payload_len, const void *enc, size_t enclen, uint8_t *output, size_t *outlen)
+{
+    word16 kemId = 0, kdfId = 0, aeadId =0;
+
+    kemId = DHKEM_X25519_HKDF_SHA256;
+    kdfId = HKDF_SHA256;
+    aeadId = HPKE_AES_128_GCM;
+
+    Hpke hpke[1];
+    void *heap = NULL;
+    curve25519_key receiverPrivkey0[1];
+    int ret = wc_HpkeInit(hpke, kemId, kdfId, aeadId, heap);
+
+    wc_curve25519_init(receiverPrivkey0);
+    wc_curve25519_import_private_raw(priv, sizeof(priv), pub, sizeof(pub), receiverPrivkey0);
+
+    byte aad[2048] = {};
+    memcpy(aad, ch, chlen);
+
+    uint8_t *d1 = (uint8_t*)ch;
+    uint8_t *d2 = (uint8_t*)payload;
+    memset(aad + (d2 - d1), 0, payload_len);
+
+    ret = wc_HpkeOpenBase(hpke, receiverPrivkey0, enc,
+	    enclen, info, infoLen, aad, chlen, payload, payload_len - 16, output);
+
+    if (ret == 0) *outlen = payload_len - 16;
+    LOG_DEBUG("load_encrypt_client_hello: ret=%d length %d aad %d\n", ret, payload_len, d2 - d1);
+    return ret;
+}
+
+#define TAG_ENCRYPT_CLIENT_HELLO 0xfe0d
+#define TAG_OUTER_EXTENSIONS 0xfd00
+
+int decode_client_hello(uint8_t *decoded, size_t ddsz, const uint8_t *plain, size_t len, const uint8_t *outer, size_t outerlen, size_t *outlen)
+{
+    uint8_t *dest = decoded;
+    const uint8_t *p = plain;
+    const uint8_t *refer = outer;
+
+    const uint8_t *ech_start = p;
+
+    dest[0] = p[0]; dest[1] = p[1];
+    dest += 2;
+    p += 2; // version;
+    refer += 2;
+
+    memcpy(dest, p, 32);
+    dest += 32;
+    p += 32; //random;
+    refer += 32;
+
+    dest[0] = refer[0]; //session id length
+    memcpy(&dest[1], &refer[1], dest[0]);
+    dest += dest[0];
+    dest++;
+
+    refer += refer[0];
+    refer++;
+
+    assert(*p ==0);
+    p += *p;
+    p++;
+
+    int cipher_suite_length = p[1]|(p[0]<<8);
+    int cipher_suite_length_out = refer[1]|(refer[0]<<8);
+    dest[0] = p[0];
+    dest[1] = p[1];
+    dest+=2;
+    p+=2;
+    refer+=2;
+
+    memcpy(dest, p, cipher_suite_length);
+    dest += cipher_suite_length;
+    p += cipher_suite_length;
+    refer += cipher_suite_length_out;
+
+    int compress_method_len = *p;
+    int compress_method_len_out = *refer;
+    *dest++ = *p++;
+    refer++;
+
+    memcpy(dest, p, compress_method_len);
+    dest += compress_method_len;
+    p += compress_method_len;
+    refer += compress_method_len_out;
+
+    int extention_length = p[1]|(p[0]<<8);
+    int extention_length_out = refer[1]|(refer[0]<<8);
+    uint8_t *extention_lengthp = dest;
+    dest += 2;
+    p += 2;
+    refer += 2;
+
+    const uint8_t *limit = p + extention_length;
+    const uint8_t *limit_out = refer + extention_length_out;
+
+    int last_tag = -1;
+    char hostname[256] = "";
+
+    int out_tag_indx = 0;
+    while (p < limit) {
+        uint16_t tag = p[1]|(p[0]<<8);
+        uint16_t len = p[3]|(p[2]<<8);
+        LOG_VERBOSE("ext tag: %d %d\n", tag, len);
+        uint16_t fqdn_name_len = 0;
+
+        if (tag == TAG_OUTER_EXTENSIONS) {
+            const uint8_t *start = (p + 4);
+            int len = *start++;
+
+            for (int i = 0; i < len; i +=2) {
+                uint16_t etag = start[i + 1]|(start[i] << 8);
+                LOG_VERBOSE("etag: 0x%04x\n", etag);
+
+                while (refer < limit_out) {
+                    uint16_t tag_out = refer[1]|(refer[0]<<8);
+                    uint16_t len_out = refer[3]|(refer[2]<<8);
+
+                    if (etag == tag_out) {
+                        LOG_VERBOSE("match tag: 0x%04x\n", tag_out);
+                        memcpy(dest, refer, len_out + 4);
+                        dest += len_out;
+                        dest += 4;
+                        break;
+                    }
+
+                    LOG_VERBOSE("mismatch tag%d: 0x%04x 0x%04x\n", out_tag_indx++, tag_out, etag);
+                    refer += len_out;
+                    refer += 4;
+                }
+            }
+        } else {
+            memcpy(dest, p, len + 4);
+            dest += len;
+            dest += 4;
+        }
+
+        last_tag = tag;
+        p += len;
+        p += 4;
+    }
+
+    int extlen = (dest - extention_lengthp - 2);
+    extention_lengthp[0] = extlen >> 8;
+    extention_lengthp[1] = extlen;
+
+    *outlen = dest - decoded;
+    return 0;
+}
+
+int unwind_encrypt_client_hello(uint8_t *snibuff, size_t length)
+{
+    int i;
+    int modify = 0;
+    int mylength = 0;
+    uint8_t hold[4096];
+    uint8_t *p = snibuff;
+    uint8_t *dest = hold;
+
+#if 0
+    p = snibuff + 5;
+    dest = hold + 5;
+
+    memcpy(hold, snibuff, 5);
+    if (*p != HANDSHAKE_TYPE_CLIENT_HELLO) {
+        LOG_DEBUG("bad: %p\n", *p);
+        return 0;
+    }
+#endif
+
+    *dest++ = *p++;
+
+    uint8_t *lengthp = dest;
+    mylength = p[2]|(p[1]<<8)|(p[0]<<16);
+    dest += 3;
+    p += 3;
+
+    uint8_t *ech_start = p;
+
+    dest[0] = p[0]; dest[1] = p[1];
+    dest += 2;
+    p += 2; // version;
+
+    memcpy(dest, p, 32);
+    dest += 32;
+    p += 32; //random;
+
+    dest[0] = p[0]; //session id length
+    memcpy(&dest[1], &p[1], *p);
+    dest += *p;
+    dest++;
+
+    p += *p;
+    p++;
+
+    int cipher_suite_length = p[1]|(p[0]<<8);
+    dest[0] = p[0];
+    dest[1] = p[1];
+    dest+=2;
+    p+=2;
+
+    memcpy(dest, p, cipher_suite_length);
+    dest += cipher_suite_length;
+    p += cipher_suite_length;
+
+    int compress_method_len = *p;
+    *dest++ = *p++;
+
+    memcpy(dest, p, compress_method_len);
+    dest += compress_method_len;
+    p += compress_method_len;
+
+    int extention_length = p[1]|(p[0]<<8);
+    uint8_t *extention_lengthp = dest;
+    dest += 2;
+    p += 2;
+
+    const uint8_t *limit = p + extention_length;
+
+    int last_tag = -1;
+    char hostname[256] = "";
+    while (p < limit) {
+        uint16_t tag = p[1]|(p[0]<<8);
+        uint16_t len = p[3]|(p[2]<<8);
+        LOG_VERBOSE("ext tag: %d %d\n", tag, len);
+        uint16_t fqdn_name_len = 0;
+
+        if (tag == TAG_SNI) {
+            const uint8_t *sni = (p + 4);
+            assert (sni[2] == 0);
+            uint16_t list_name_len = sni[1]|(sni[0] << 8);
+            fqdn_name_len = sni[4]|(sni[3] << 8);
+            assert (fqdn_name_len + 3 == list_name_len);
+            memcpy(hostname, sni + 5, fqdn_name_len);
+            hostname[fqdn_name_len] = 0;
+            LOG_DEBUG("source: %s\n", hostname);
+        } else if (tag == TAG_ENCRYPT_CLIENT_HELLO) {
+            const uint8_t *start = (p + 4);
+            LOG_DEBUG("TAG_ENCRYPT_CLIENT_HELLO:\n");
+            LOG_VERBOSE("client hello type: %d\n", start[0]);
+            LOG_VERBOSE("kdfid: %d\n", (start[1] << 8) | start[2]);
+            LOG_VERBOSE("aeadid: %d\n", (start[3] << 8) | start[4]);
+            LOG_VERBOSE("config id: %d\n", start[5]);
+            int enclen = (start[6] << 8) | start[7];
+            LOG_VERBOSE("enclen: %d\n", enclen);
+            // dumpData("enc", start + 8, enclen);
+            int payload_len = (start[8 + enclen] << 8) | start[8 + enclen +1];
+            LOG_VERBOSE("payload_len: %d\n", payload_len);
+            // dumpData("payload", start + 8 + enclen + 2, payload_len);
+            // dumpAadData("aad", ech_start, snibuff + length - ech_start, start + 8 + enclen + 2, payload_len);
+
+            uint8_t plain[1024], decoded[1024];
+            size_t outlen = 0;
+            int ret = load_encrypt_client_hello(ech_start, snibuff + length - ech_start, start + 8 + enclen + 2, payload_len, start + 8, enclen, plain, &outlen);
+            if (ret == 0) {
+                decode_client_hello(decoded, 1024, plain, outlen, snibuff + 9, length - 9, &outlen);
+#if 0
+                memcpy(snibuff + 9 - 5, decoded, outlen);
+                int newlen = outlen;
+                snibuff[6] = newlen >> 16;
+                snibuff[7] = newlen >> 8;
+                snibuff[8] = newlen;
+
+                newlen = outlen + 4;
+                snibuff[3] = newlen >> 8;
+                snibuff[4] = newlen;
+                return outlen + 9;
+#endif
+
+                int newlen = outlen;
+                snibuff[1] = newlen >> 16;
+                snibuff[2] = newlen >> 8;
+                snibuff[3] = newlen;
+                memcpy(snibuff + 4, decoded, outlen);
+                return outlen + 4;
+            }
+        } else {
+            memcpy(dest, p, len + 4);
+            dest += len;
+            dest += 4;
+        }
+
+        last_tag = tag;
+        p += len;
+        p += 4;
+    }
+
+    int extlen = (dest - extention_lengthp - 2);
+    extention_lengthp[0] = extlen >> 8;
+    extention_lengthp[1] = extlen;
+    LOG_VERBOSE("extlen: %d %d\n", extlen, extention_length);
+
+    int newlen = dest - lengthp - 3;
+    lengthp[0] = newlen >> 16;
+    lengthp[1] = newlen >> 8;
+    lengthp[2] = newlen;
+    LOG_VERBOSE("newlen: %d %d\n", newlen, mylength);
+
+#if 0
+    // memcpy(hold, snibuff, 5);
+    int fulllength = (dest - hold - 5);
+    hold[3] = fulllength >> 8;
+    hold[4] = fulllength;
+
+    int oldlen = (snibuff[3] << 8) | snibuff[4];
+    LOG_VERBOSE("fulllen: %d %d %ld\n", fulllength, oldlen, length);
+
+    // set_hook_name = 0;
+    // if (modify == 0 && strcmp(YOUR_DOMAIN, hostname)) { set_hook_name = 1; }
+    if (modify == 0) return length;
+#endif
+    memcpy(snibuff, hold, dest - hold);
+    return dest - hold;
+}
 
 char * get_sni_name(uint8_t *snibuff, size_t len, char *hostname)
 {
@@ -53,7 +394,7 @@ char * get_sni_name(uint8_t *snibuff, size_t len, char *hostname)
     while (p < limit) {
 	uint16_t tag = p[1]|(p[0]<<8);
 	uint16_t len = p[3]|(p[2]<<8);
-	LOG_DEBUG("ext tag: %d %d\n", tag, len);
+	// LOG_DEBUG("ext tag: %d %d\n", tag, len);
 	if (tag == TAG_SNI) {
 	    const uint8_t *sni = (p + 4);
 	    assert (sni[2] == 0);
@@ -67,11 +408,10 @@ char * get_sni_name(uint8_t *snibuff, size_t len, char *hostname)
 	p += 4;
     }
 
+    LOG_DEBUG("sni parse finish: %s\n", hostname);
     return hostname;
 }
 
-static char init_packet[] = "c000000001083060a6413b5060c400404700fe3656bacfc6565bb4f38d4dd9390f0aa9cec2188daf9aff4631e3a5829c26c5a7c0e21590a6fb5932f25290be64b1dbd4dae08a9d2a0de19bbdc662e9678055d8cad430204d4474b0df479ea5308a7a6bfc6f982039c38be060d4c5651fb4b379efaec86079611bc6ee3a7c8dd4a8c423db97f73bb615e0807c5b1cd0ed75889aabc7b263cb8e0bf8dffb405c97edaf6da981302e82232e5cddd39921f0e1e5a57777f7d28c55c40c9c3c84e0719eeba75cafa07762a933db8d08f63640d0bf32b7dbaf6e130be99f75323e45b3a39ceca0bf5c4a6563b1351e4d82ff390bcdc48ec3a5246388ac7b4c7c0e503a27c20b78a507ad8214170724a2f34b3f7a7348fa501a47173dbf1dcd2481a6f6e1abbafae9c839a43ba1a2bc47a7da8679368937b4a5dd4fcfffed126fc539e651cb19d28b0213f09f0406506a9b4794dd2a5dd9b91ab71a41d50c14d58fd5d0a83c2b0e9c6be44fafe5f69a28a084b85116246cce1adbfc888351c013c3e1a81fcbfebc6ef76ded5f51430821acd16e8fc294e36b5a8da0c1f77e4cf35a5d786106796a8999cc16c5fd133eafe31aa26bb923b3117460859e468e6ec0d0eb10000866a1831e523691a9de028d61cd0f79ecb73a0b826633746432ce69e915d9a47e7f21df04da8a0cb7967c2825d23552fb5a0f100a8f1a908f1538ff2318c7e83f0b58a914628f8e19bb0bc1c880b656d10e9ab0e0f7fda747d9600a51692fa2817a17b9c4a6063b9b2c2b5a856bbd04114da6455dc9b95b84baaa1e469cfd101642f4572681714d15bf94157e09d3198c873fc0946461dc4dc38a20e67d882955a0ceff4ede10a22020d4bd4eaba6601f6fd794020a1524a9a3c4a90ddc90111c454a94dfe568c1d129418f119df69e6c04a9baa15b208c1fc24cb6e60c76f8a64707811d6e6cd506f5c4c718f6bb4cc8e84b7aba18eaec9f128aed97b734ea4600b6df0f0c948e5d0004cfac54499586b133de4c8e90127e5a7e54314aa579747fb3853417b7e272a3047016eef7c4d99700097235eb80c737631a41f54e7feae2c212a3a1e733b2aee0b90a62ab8e3fd15758a53c8acc56a6529930ecee1dedeed15781114bfeff9aa8ee01bd5700d7846fbbfab7fe3a368d53e3a192ea5a1b722ff41eae7622c802da4fdffe08ce591306aa64c182a25f22bb1d1a46fa0901bde187aaafab82f8bbc1cd4a4888662c6de92282591d28e0dd7a218ba0905b95f8b0ffe0c33f35f759e6a888aff5f516a78b92ae07a8489e09caa89cbe68fa2648957f7686452fc931e3d0c4d9c8abe624091bf653883a51ae140671c5d7ebb45304bcea5a0b7f379477bccd41028b77874a102aea8b1f660de64e347783fc23f1da8af990fe2925de6115b35687a083a2c3cee99a88a58c5c5426b38362a502bd524018cf50049852b896e5a6a688fb5cacf7d491b761bd79800b88c78d36482b9783366bb54a808364a70e3521eed215fb047ccbccff131ef13dee64238f563ec67fafa6660550da0ba3c9a20aa771934b54f3fb50bf7b5df21fcd540e5c56773fc04da9d30d297625dfb9338e079300baba7c8758991e3d842b0ae732ed728c1d080854ef5e473ac70aea02c6a99f048fa3a24e60814aabb437ee028bd5eed5e09e86c9d69ec7dc981f33b967548380d3870b46342daaa9b3af1437570ba038b85fbda20b79bbc9b0a716";
- 
 typedef struct quic_cid {
     guint8      len;
     guint8      cid[QUIC_MAX_CID_LENGTH];
@@ -255,7 +595,7 @@ size_t HexToMemory(const char * hex, void * buf, size_t len)
 int get_token_length(guchar *decodec, guint32 *outlen)
 {
     guchar token_length[4] = {};
-    guchar idl_label = (*decodec & 0xc0) >> 6;
+    guchar idl_label = (*decodec >> 6) & 0x3;
 
     guchar fix = 3 - idl_label;
     memcpy(token_length + fix, decodec, idl_label + 1);
@@ -266,7 +606,19 @@ int get_token_length(guchar *decodec, guint32 *outlen)
     return idl_label + 1;
 }
 
-static void dump_hex(const char *title, void *data, size_t len)
+guint32 get_packet_number(guchar *decodec, guint32 *outlen, size_t idl_label)
+{
+    guchar token_length[4] = {};
+
+    guchar fix = 3 - idl_label;
+    memcpy(token_length + fix, decodec, idl_label + 1);
+    memcpy(outlen, token_length, 4);
+    *outlen = htonl(*outlen);
+
+    return idl_label + 1;
+}
+
+static void dump_hex(const char *title, const void *data, size_t len)
 {
     int i;
     guchar *base = (guchar *)data;
@@ -300,13 +652,14 @@ int get_sni_name_from_quic(const void *data, size_t data_len, char *hostname, si
  
     if (data_len < 20) return 0;
     guchar first_byte = buffer[0];
-    if ((first_byte & 0xf0) != 0xc0) return 0;
+    if ((first_byte & 0xf0) != 0xc0) return -1;
 
     guchar *decodec = buffer;
     first_byte = *decodec++;
     uint32_t version = 0;
     memcpy(&version, decodec, sizeof(version));
     decodec += sizeof(version);
+    LOG_DEBUG("version: %x\n", htonl(version));
 
     guint32 dcidlen;
     decodec += get_token_length(decodec, &dcidlen);
@@ -334,7 +687,7 @@ int get_sni_name_from_quic(const void *data, size_t data_len, char *hostname, si
     err = hkdf_extract(GCRY_MD_SHA256, handshake_salt_v1, sizeof(handshake_salt_v1), cid->cid, cid->len, secret);
     if (!quic_hkdf_expand_label(GCRY_MD_SHA256, secret, sizeof(secret), "client in", client_initial_secret, HASH_SHA2_256_LENGTH)) {
         LOG_DEBUG("Key expansion (client) failed");
-        return FALSE;
+        return -1;
     }
 
     guchar      hp_key[256/8];
@@ -344,19 +697,19 @@ int get_sni_name_from_quic(const void *data, size_t data_len, char *hostname, si
     char        *label = "quic hp"; 
 
     if (!quic_hkdf_expand_label(hash_algo, client_initial_secret, hash_len, label, hp_key, key_length)) {
-        return FALSE;
+        return -1;
     }
 
     label = "quic iv";
     guchar quic_iv[256/8];
     if (!quic_hkdf_expand_label(hash_algo, client_initial_secret, hash_len, label, quic_iv, TLS13_AEAD_NONCE_LENGTH)) {
-        return FALSE;
+        return -1;
     }
 
     label = "quic key";
     guchar quic_key[256/8];
     if (!quic_hkdf_expand_label(hash_algo, client_initial_secret, hash_len, label, quic_key, key_length)) {
-        return FALSE;
+        return -1;
     }
 
     guchar *simple = decodec;
@@ -374,10 +727,10 @@ int get_sni_name_from_quic(const void *data, size_t data_len, char *hostname, si
     LOG_DEBUG("err=%d\n", err);
 
     guchar idl_label = (ciphertext[0] ^ first_byte) & 0x3;
-    for (int i = 0; i < idl_label + 1; i++)
+    for (int i = 0; i <= idl_label; i++)
         decodec[i] ^= ciphertext[i + 1];
-	buffer[0] = first_byte ^ (0xF & ciphertext[0]);
     dump_hex("head protect", ciphertext, 16);
+    buffer[0] = first_byte ^ (0xF & ciphertext[0]);
 
     gcry_cipher_open(&cipher, GCRY_CIPHER_AES128, GCRY_CIPHER_MODE_GCM, 0);
     gcry_cipher_setkey(cipher, quic_key, key_length);
@@ -385,20 +738,26 @@ int get_sni_name_from_quic(const void *data, size_t data_len, char *hostname, si
     guint8 nonce[TLS13_AEAD_NONCE_LENGTH];
     memcpy(nonce, quic_iv, TLS13_AEAD_NONCE_LENGTH);
 
+    guchar atag1[16];
+    guchar * quic_end = decodec + payload_length;
+    memcpy(atag1, decodec + payload_length - 16, 16);
+    dump_hex("atag", atag1, 16);
+
     guint32 packet_number = 1;
-    decodec += get_token_length(decodec, &packet_number);
+    guint32 pnlen =  get_packet_number(decodec, &packet_number, idl_label);
+    LOG_DEBUG("pn %d %x %d\n", packet_number, buffer[0], payload_length);
+    decodec += pnlen;
 
     phton64(nonce + sizeof(nonce) - 8, pntoh64(nonce + sizeof(nonce) - 8) ^ packet_number);
     gcry_cipher_setiv(cipher, nonce, TLS13_AEAD_NONCE_LENGTH);
 
     guint32 aad_len = decodec - buffer;
     gcry_cipher_authenticate(cipher, buffer, aad_len);
-    guchar atag1[16];
-    memcpy(atag1, buffer + data_len - 16, 16);
-    dump_hex("atag", atag1, 16);
 
-    err = gcry_cipher_decrypt(cipher, decodec, data_len - aad_len - 16, NULL, 0);
-    // dump_hex("quic data", decodec, data_len - aad_len - 16);
+    // err = gcry_cipher_decrypt(cipher, decodec, data_len - aad_len - 16, NULL, 0);
+    err = gcry_cipher_decrypt(cipher, decodec, payload_length - 16 - pnlen, NULL, 0);
+
+    // dump_hex("dec data", decodec, payload_length - 16 - pnlen);
 
     err = gcry_cipher_checktag(cipher, atag1, 16);
 
@@ -406,15 +765,21 @@ int get_sni_name_from_quic(const void *data, size_t data_len, char *hostname, si
         LOG_DEBUG("Decryption (checktag) failed: %s\n", gcry_strerror(err));
 	err = gcry_cipher_gettag(cipher, atag1, 16);
         dump_hex("shoud atag", atag1, 16);
-        return 0;
+        dump_hex("decode data", decodec, payload_length - 16);
+        dump_hex("data", data, data_len);
+	gcry_cipher_close(cipher);
+        return -1;
     }
+    gcry_cipher_close(cipher);
 
     guint32 offset, length;
     enum {PADDING=0, PING=1, CRYPTO=6};
     char tlsdata[2048];
     guint32 total = 0, next = 0;
 
-    while (decodec <  buffer + data_len - 16) {
+    quic_end = decodec + payload_length - 16 - pnlen;
+    LOG_DEBUG("from %p, to %p\n", decodec, quic_end);
+    while (decodec <  quic_end) {
 	switch (*decodec) {
 	    case PADDING:
 	    case PING:
@@ -433,29 +798,83 @@ int get_sni_name_from_quic(const void *data, size_t data_len, char *hostname, si
 		break;
 
 	    default:
-		LOG_DEBUG("unknown tag: %d\b", *decodec);
+		LOG_DEBUG("unknown QUIC tag: %x\n", *decodec);
 		return 0;
 	}
     }
 
-    LOG_DEBUG("total=%d, next=%d\n", total, next);
     if (total > 0 && total == next) {
-	dump_hex("tlsdata", tlsdata, total);
-	LOG_DEBUG("hostname: %s\n", get_sni_name(tlsdata, total, hostname));
+	// dump_hex("tlsdata", tlsdata, total);
+	char oldhostname[256] =  "";
+	get_sni_name(tlsdata, total, oldhostname);
+
+	total = unwind_encrypt_client_hello(tlsdata, total);
+	if (get_sni_name(tlsdata, total, hostname) && *hostname) {
+	    LOG_DEBUG("quic: hostname0: %s\n", hostname);
+	    return 0;
+	}
+
+	if (*oldhostname) {
+		strcpy(hostname, oldhostname);
+		LOG_DEBUG("quic: hostname %s\n", hostname);
+		return 0;
+	}
     }
 
-    return 0;
+    LOG_DEBUG("quic: total %d, next %d\n", total, next);
+    return -1;
 }
 
-int main(int argc, char *argv[])
+void parse_argopt(int argc, char *argv[])
 {
-    char hostname[256];
-    guchar buffer[2048];
-    int data_len = HexToMemory(init_packet, buffer, sizeof(buffer));
- 
-    if (data_len < 20) return 0;
+  int i;
 
-    get_sni_name_from_quic(buffer, data_len, hostname, sizeof(hostname));
+  byte info_default[] = "dGxzIGVjaAD+DQA8MwAgACB/7ou2XMG9sumfvTITnVG/L6mNzCOqPpivAfQwzWjUFgAEAAEAAQANd3d3LmJhaWR1LmNvbQAA";
+  infoLen = sizeof(info);
+  Base64_Decode(info_default, sizeof(info_default) -1, info, &infoLen);
 
-    return 0;
+  LOG_DEBUG("parse_argopt>");
+  for (i = 1; i < argc; i++) {
+    const char *optname = argv[i];
+    if (strncmp(optname, "ech=", 4) == 0) {
+      optname += 4;
+
+      infoLen = sizeof(info) - 6;
+      byte info_head[] = "tls ech";
+      Base64_Decode(optname, strlen(optname), info + 6, &infoLen);
+      memcpy(info, info_head, sizeof(info_head));
+      infoLen += 6;
+    } else
+      if (strncmp(optname, "pub=", 4) == 0) {
+	optname += 4;
+	byte mypub[33];
+	word32 publen = sizeof(mypub);
+	Base64_Decode((byte*)optname, strlen(optname), mypub, &publen);
+	memcpy(pub, mypub, sizeof(pub));
+      } else
+	if (strncmp(optname, "priv=", 5) == 0) {
+	  optname += 5;
+	  byte mypriv[33];
+	  word32 privlen = sizeof(mypriv);
+	  Base64_Decode((byte*)optname, strlen(optname), mypriv, &privlen);
+	  memcpy(priv, mypriv, sizeof(priv));
+	}
+  }
+  LOG_DEBUG("<parse_argopt\n");
+
+  fprintf(stderr, "ech=");
+  for (int i = 0; i < infoLen; i++)
+    fprintf(stderr, "%02x ", info[i] & 0xff);
+  fprintf(stderr, "\n");
+
+  fprintf(stderr, "pub=");
+  for (int i = 0; i < 32; i++)
+    fprintf(stderr, "%02x ", priv[i] & 0xff);
+  fprintf(stderr, "\n");
+
+  fprintf(stderr, "priv=");
+  for (int i = 0; i < 32; i++)
+    fprintf(stderr, "%02x ", priv[i] & 0xff);
+  fprintf(stderr, "\n");
+
 }

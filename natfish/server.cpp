@@ -123,6 +123,38 @@ static int update_friend(const char *buf, const struct sockaddr_in6 *endpoint)
 static char addrbuf[128];
 #define ntop6(addr) inet_ntop(AF_INET6, &addr, addrbuf, sizeof(addrbuf))
 
+static int exchange_forward_by_name(struct natcb_t *cb, const char *ident, const char *build)
+{
+	int match;
+	struct friend_t *fptr;
+	struct friend_t *found = NULL;
+
+	for (int n = 0; n < _all_nfriend; n++) {
+		fptr = _all_friends + n;
+		if (strcmp(fptr->ident, ident) == 0) {
+			found = fptr;
+			break;
+		}
+	}
+
+	if (found == NULL) {
+		fprintf(stderr, "exchange peer not found!");
+		return 0;
+	}
+
+	match = strlen(build);
+
+	match = sendto(cb->sockfd, build, match, 0,
+			(struct sockaddr *)&found->endpoint, sizeof(found->endpoint));
+
+	if (match == -1) {
+		fprintf(stderr, "exchange failed! %s", ident);
+		return 0;
+	}
+
+	return 1;
+}
+
 /* 2. FROM aaa TO bbb SESSION sss EXCHANGE cc.cc.cc.cc:cc */
 static int exchange_forward(struct natcb_t *cb, const char *buf, const struct sockaddr_in6 *endpoint)
 {
@@ -169,8 +201,26 @@ static int exchange_forward(struct natcb_t *cb, const char *buf, const struct so
 		return 0;
 	}
 
-	fprintf(stderr, "%s\n", deliverybuf);
+	fprintf(stderr, "## TX %s\n", deliverybuf);
 	return 1;
+}
+
+static const char *COMMANDS[] = {
+	"REQUEST", "ACCEPT", "PING", "NOOP:CONTINUE", "NOOP:PONG",
+	"REJECT", "NOOP:SELECTED", "NOOP", "SELECT", NULL
+};
+static int is_new_version(const char *title)
+{
+	int i, n;
+
+	for (i = 0; COMMANDS[i]; i++) {
+		const char *command = COMMANDS[i];
+		n = strlen(command);
+		if (0 == strncmp(command, title, n)) 
+			return 1;
+	}
+
+	return 0;
 }
 
 void do_receive_update(struct natcb_t *cb)
@@ -178,14 +228,51 @@ void do_receive_update(struct natcb_t *cb)
 	int len, match;
 	char title[128], from[128], action[128], buf[2048];
 
-	printf("\r  from: [%s]:%d\n",
-			ntop6(cb->peeraddr.sin6_addr), htons(cb->peeraddr.sin6_port));
+	printf("\r RX  from: [%s]:%d %s\n",
+			ntop6(cb->peeraddr.sin6_addr), htons(cb->peeraddr.sin6_port), cb->stunbuf);
 
 	if (cb->buflen <= 0) {
 		return;
 	}
 
+#define KL(l) (4096 - l)
 	cb->stunbuf[cb->buflen] = 0;
+	if (is_new_version(cb->stunbuf)) {
+		char key[128], value[256];
+		char* token = strtok(cb->stunbuf, "\n");
+
+		if (token) {
+			int len = 0;
+			char dst[64];
+			char build[4096];
+			struct sockaddr_in6 *ep  = &cb->peeraddr;
+
+			len += snprintf(build + len, KL(len), "%s\n", token);
+
+			for (token = strtok(NULL, "\n"); token; token = strtok(NULL, "\n")) {
+				if (2 != sscanf(token, "%[a-z]: %s", key, value)) {
+					len += snprintf(build + len, KL(len), "%s\n", token);
+					continue;
+				}
+
+				if (strcmp(key, "via") == 0 && strcmp(value, "GATEWAY") == 0) {
+					len += snprintf(build + len, KL(len), "via: [%s]:%d\n", ntop6(ep->sin6_addr), htons(ep->sin6_port));
+					continue;
+				}
+
+				if (strcmp(key, "dst") == 0) {
+					strcpy(dst, value);
+				}
+
+				len += snprintf(build + len, KL(len), "%s\n", token);
+			}
+
+			fprintf(stderr, "## %d %s\n", len, dst);
+			exchange_forward_by_name(cb, dst, build);
+		}
+		return;
+	}
+
 	match = sscanf(cb->stunbuf, "%128s %128s %128s", title, from, action);
 	if (match != 3) {
 		return;
@@ -205,6 +292,7 @@ void do_receive_update(struct natcb_t *cb)
 		sendto(cb->sockfd, buf, len, 0, (const struct sockaddr *)&cb->peeraddr, sizeof(cb->peeraddr));
 	}
 
+	fprintf(stderr, "## TX %s\n", buf);
 	return;
 }
 
@@ -279,14 +367,15 @@ int do_update_config(struct natcb_t *cb, const char *buf)
 		if (strcmp(key, "server") == 0) {
 			cb->stunbear.sin6_family = AF_INET6;
 			cb->stunbear.sin6_port = htons(port? atoi(port): 3478);
-			addr_ptr = cb->stunbear.sin6_addr;
+			addr_ptr = &cb->stunbear.sin6_addr;
 		} else {
 			cb->peerlen = sizeof(cb->peeraddr);
 			cb->peeraddr.sin6_family = AF_INET6;
 			cb->peeraddr.sin6_port = htons(port? atoi(port): 3478);
-			addr_ptr = cb->peeraddr.sin6_addr;
+			addr_ptr = &cb->peeraddr.sin6_addr;
 		}
 
+		char *bufaddr = value;
 		if (phost) {
 			inet_pton(AF_INET6, NTOA(phost->h_addr), addr_ptr);
 		} else if (bufaddr[0] == '[') {
