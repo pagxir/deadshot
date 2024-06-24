@@ -352,7 +352,8 @@ static int load_encrypt_client_hello(const void *ch, size_t chlen, const void *p
     wc_curve25519_init(receiverPrivkey0);
     wc_curve25519_import_private_raw(priv, sizeof(priv), pub, sizeof(pub), receiverPrivkey0);
 
-    byte aad[1024] = {};
+    byte aad[2048] = {};
+    assert(sizeof(aad) > chlen);
     memcpy(aad, ch, chlen);
 
     uint8_t *d1 = (uint8_t*)ch;
@@ -954,6 +955,18 @@ int setup_remote(struct sockaddr_in6 *cli, char *hostname)
         sfd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
         if (sfd == -1)
             continue;
+
+        if (rp->ai_family == AF_INET) {
+           char buf[256];
+           struct sockaddr_in *info = rp->ai_addr;
+           LOGI("sfd=%d -> %s\n", sfd, inet_ntop(AF_INET, &info->sin_addr, buf, sizeof(buf)));
+        }
+
+        if (rp->ai_family == AF_INET6) {
+           char buf[256];
+           struct sockaddr_in6 *info = rp->ai_addr;
+           LOGI("sfd=%d -> %s\n", sfd, inet_ntop(AF_INET6, &info->sin6_addr, buf, sizeof(buf)));
+        }
 
         if (connect(sfd, rp->ai_addr, rp->ai_addrlen) != -1)
             break;                  /* Success */

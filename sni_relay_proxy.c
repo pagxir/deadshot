@@ -8,6 +8,7 @@
 
 #include <stdio.h>
 #include <assert.h>
+#include <errno.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <stdlib.h>
@@ -33,9 +34,9 @@ struct tls_header {
 #define TAG_SNI        0
 #define TAG_SESSION_TICKET 35
 
-#ifndef IPPROTO_MPTCP
+// #ifndef IPPROTO_MPTCP
 #define IPPROTO_MPTCP 0
-#endif
+// #endif
 
 #define HANDSHAKE_TYPE_CLIENT_HELLO         1
 #define HANDSHAKE_TYPE_SERVER_HELLO         2
@@ -79,7 +80,7 @@ int read_flush(int fd, void *buf, size_t count)
     return process == 0? rc: process;
 }
 
-int write_flush(int fd, void *buf, size_t count)
+int write_flush(int fd, void *buf, size_t count, int *statp)
 {
     int rc = 0;
     int process = 0;
@@ -89,6 +90,7 @@ int write_flush(int fd, void *buf, size_t count)
         rc = write(fd, ptr + process, count - process);
         if (rc == -1) break;
         if (rc == 0) break;
+		if (rc != count) *statp = 1;
         process += rc;
     }
 
@@ -527,7 +529,8 @@ int pull(int connfd, int remotefd)
     l = read_flush(connfd, buff + 5, header.length);
 
     // dump(buff + 5, l, &header, "PULL");
-    return write_flush(remotefd, buff, l + 5);
+	int ignore;
+    return write_flush(remotefd, buff, l + 5, &ignore);
 }
 
 
@@ -553,16 +556,18 @@ int push(int connfd, int remotefd)
     l = read_flush(connfd, buff + 5, header.length);
 
     // dump(buff + 5, l, &header, "PUSH");
-    return write_flush(remotefd, buff, l + 5);
+	int ignore;
+    return write_flush(remotefd, buff, l + 5, &ignore);
 }
 
-int pipling(int connfd, int remotefd)
+static char _buff[655360];
+int pipling(int connfd, int remotefd, int *statp)
 {
-    char buff[65536];
-    size_t len = read(connfd, buff, sizeof(buff));
+    size_t len = recv(connfd, _buff, sizeof(_buff), MSG_DONTWAIT);
+	if (len == -1 && errno == EAGAIN) return 1;
     if (len == -1) return -1;
     if (len == 0) return 0;
-    return write_flush(remotefd, buff, len);
+    return write_flush(remotefd, _buff, len, statp);
 }
 
 int mptcp_enable(int sockfd)
@@ -571,14 +576,14 @@ int mptcp_enable(int sockfd)
     int enable = 1;
     char pathmanager[] = "ndiffports";
 
-    error = setsockopt(sockfd, SOL_TCP, TCP_FASTOPEN_CONNECT, &enable, sizeof(enable)); 
+    // error = setsockopt(sockfd, SOL_TCP, TCP_FASTOPEN_CONNECT, &enable, sizeof(enable)); 
 
 #ifdef MPTCP_PATH_MANAGER
-    error = setsockopt(sockfd, SOL_TCP, MPTCP_PATH_MANAGER, pathmanager, sizeof(pathmanager));
+    // error = setsockopt(sockfd, SOL_TCP, MPTCP_PATH_MANAGER, pathmanager, sizeof(pathmanager));
 #endif
 
 #ifdef MPTCP_ENABLED
-    error = setsockopt(sockfd, SOL_TCP, MPTCP_ENABLED, &enable, sizeof(int));
+    // error = setsockopt(sockfd, SOL_TCP, MPTCP_ENABLED, &enable, sizeof(int));
 #endif
 
     return 0;
@@ -676,17 +681,16 @@ void func(int connfd)
 {
     int rc;
     int n, l, i;
-    fd_set test;
+    fd_set test, wtest;
     uint8_t snibuff[4096];
     struct tls_header header;
     int remotefd = -1;
 
-#if 0
-    struct timeval tv;
+    struct timeval tv = {};
     tv.tv_sec = 30;  /* 30 Secs Timeout */
     int ret = setsockopt(connfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+	if (ret) perror("setsockopt");
     assert(ret == 0);
-#endif
 
     l = read(connfd, snibuff, 5);
     assert (l == 5);
@@ -704,7 +708,7 @@ void func(int connfd)
     }
 
     if (header.length + 5 > sizeof(snibuff))
-	LOGI(stderr, "len: %d\n", header.length);
+	LOGI("len: %d\n", header.length);
     assert(header.length + 5 < sizeof(snibuff));
 
     int nbyte = read_flush(connfd, snibuff + 5, header.length);
@@ -712,13 +716,13 @@ void func(int connfd)
 
     char hostname[128];
     get_sni_name(snibuff + 5, header.length, hostname);
-    LOGI("hostname: %s\n", hostname);
+    LOGI("origin hostname: %s\n", hostname);
 
     int newlen = unwind_rewind_client_hello(snibuff, header.length + 5);
     header.length = newlen - 5;
 
     get_sni_name(snibuff + 5, header.length, hostname);
-    LOGI("hostname: %s\n", hostname);
+    LOGI("convert hostname: %s\n", hostname);
     if (*hostname == 0) {
         close(connfd);
         return;
@@ -737,6 +741,7 @@ void func(int connfd)
     rc = write(remotefd, snibuff, newlen);
     assert(rc == newlen);
     int stat = 0;
+    int wstat = 3;
     int maxfd = connfd > remotefd? connfd: remotefd;
 
     do {
@@ -745,19 +750,36 @@ void func(int connfd)
         if (~stat & 2) FD_SET(remotefd, &test);
         assert(stat != 3);
 
+        FD_ZERO(&wtest);
+        if (wstat & 1) FD_SET(connfd, &wtest);
+        if (wstat & 2) FD_SET(remotefd, &wtest);
+
         struct timeval timeo = {360, 360};
-        n = select(maxfd + 1, &test, NULL, NULL, &timeo);
+        n = select(maxfd + 1, &test, &wtest, NULL, &timeo);
         if (n == 0) break;
         assert(n > 0);
 
-        if (FD_ISSET(connfd, &test)) {
+        if (FD_ISSET(connfd, &wtest)) {
+			wstat &= ~1;
+		}
+
+        if (FD_ISSET(remotefd, &wtest)) {
+			wstat &= ~2;
+		}
+
+		int half = 0;
+        if (FD_ISSET(connfd, &test) && !(wstat & 2)) {
             // if (push(connfd, remotefd) <= 0) stat |= 1;
-            if (pipling(connfd, remotefd) <= 0) stat |= 1;
+			half = 0;
+            if (pipling(connfd, remotefd, &half) <= 0) stat |= 1;
+			if (half) wstat |= 2;
         }
 
-        if (FD_ISSET(remotefd, &test)) {
+        if (FD_ISSET(remotefd, &test) && !(wstat & 1)) {
             // if (pull(remotefd, connfd) <= 0) stat |= 2;
-            if (pipling(remotefd, connfd) <= 0) stat |= 2;
+			half = 0;
+            if (pipling(remotefd, connfd, &half) <= 0) stat |= 2;
+			if (half) wstat |= 1;
         }
 
 	if (stat != 0 || n  <= 0)
@@ -810,6 +832,10 @@ void parse_argopt(int argc, char *argv[])
 	    RELAY_MODE = MODE_RELAY_CLIENT;
 	    unwind_rewind_client_hello = rewind_client_hello;
 	} else
+	if (strcmp(optname, "-Z") == 0) {
+	    RELAY_MODE = MODE_RELAY_CLIENT;
+	    unwind_rewind_client_hello = rewind_client_zero;
+	} else
 	if (strcmp(optname, "-z") == 0) {
 	    RELAY_MODE = MODE_RELAY_SERVER;
 	    unwind_rewind_client_hello = rewind_client_zero;
@@ -849,6 +875,14 @@ int main(int argc, char *argv[])
 
     int enable = 1;
     setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
+
+	int sendbuff = 6553600;
+	int err = setsockopt(sockfd, SOL_SOCKET, SO_SNDBUF, &sendbuff, sizeof(sendbuff));
+        LOGI("socket senbuf %d...\n", err);
+
+	err = setsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, &sendbuff, sizeof(sendbuff));
+        LOGI("socket rcvbuf %d...\n", err);
+
     mptcp_enable(sockfd);
 
     // Binding newly created socket to given IP and verification

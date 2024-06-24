@@ -49,7 +49,7 @@ ip xfrm state add src $right dst $left \
         sel src 0.0.0.0/0 dst 0.0.0.0/0 
 
 ip xfrm policy flush
-ip xfrm policy add dst ${right_subnet} src $[left_subnet} dir ${left_to_right} ptype main tmpl src $left dst $right proto esp reqid 0 mode tunnel
+ip xfrm policy add dst ${right_subnet} src ${left_subnet} dir ${left_to_right} ptype main tmpl src $left dst $right proto esp reqid 0 mode tunnel
 ip xfrm policy add src ${right_subnet} dst ${left_subnet} dir ${right_to_left} ptype main tmpl src $right dst $left proto esp reqid 0 mode tunnel
 
 EOF

@@ -1707,6 +1707,69 @@ static void nat_session_parse(nat_session_t *session, const char *line)
 	return;
 }
 
+static char _line_hold[4096];
+static int _lineoffset = 0;
+
+static int get_code(int *status)
+{
+    int nsel;
+    fd_set readfds;
+    struct timeval timeout = {0, 0};
+
+    *status = 0;
+    if (_lineoffset < sizeof(_line_hold) && _line_hold[_lineoffset]) {
+        *status = 1;
+        return _line_hold[_lineoffset++];
+    }
+
+    FD_ZERO(&readfds);
+    FD_SET(STDIN_FILENO, &readfds);
+    nsel = select(STDIN_FILENO + 1, &readfds, NULL, NULL, &timeout);
+    if (nsel <= 0) {
+        return nsel;
+    }
+
+    nsel = read(STDIN_FILENO, _line_hold, sizeof(_line_hold));
+    if (nsel <= 0) {
+        return nsel == 0? -1: 0;
+    }
+
+    if (nsel < sizeof(_line_hold)) {
+        _line_hold[nsel] = 0;
+        _lineoffset = 0;
+    }
+
+    if (_line_hold[_lineoffset]) {
+        *status = 1;
+        return _line_hold[_lineoffset++];
+    }
+
+    *status = 0;
+    return -1;
+}
+
+static int get_line(char *buf, size_t len)
+{
+    int stat, code;
+    const char *origin = buf;
+
+    for (code = get_code(&stat);
+            stat && code != '\n'; code = get_code(&stat)) {
+        assert(len > 0);
+        *buf++ = code;
+        len--;
+    }
+
+    if (origin == buf && code == -1) {
+        assert(stat == 0);
+        return 0;
+    }
+
+    assert(len > 0);
+    *buf = 0;
+    return 1;
+}
+
 int main(int argc, char *argv[])
 {
     int change;
@@ -1720,9 +1783,8 @@ int main(int argc, char *argv[])
 	srand(time(NULL));
     do_update_config(&cb, "set stun stun.ekiga.net:3478");
 
-    setvbuf(stdin, NULL, _IONBF, 0);
     signal(SIGCHLD, signal_child_handler);
-    while (fgets(stdbuf, sizeof(stdbuf), stdin)) {
+    while (get_line(stdbuf, sizeof(stdbuf))) {
         if (sscanf(stdbuf, "%128s", action) != 1) {
             goto check_pending;
         }

@@ -91,21 +91,22 @@ function fetchAssetsEx(res, path, range) {
     var stats = fs.statSync(fsPath);
     var offset = parseInt(range[0]);
 
-    console.log('XXX length: ' + stats.size);
-    var contentRange = "bytes " + range[0] + "-" + (stats.size -1) + "/" + stats.size;
-
-    res.setHeader("Content-Length", stats.size - offset);
-    res.setHeader("Content-Range", contentRange);
-
-    fs.createReadStream(fsPath, {start: offset}).pipe(res);
-    res.statusCode = 206;
+	if (!stat.isDirectory() && offset < stat.size) {
+		console.log('XXX length: ' + stats.size);
+		var contentRange = "bytes " + range[0] + "-" + (stats.size -1) + "/" + stats.size;
+		res.setHeader("Content-Length", stats.size - offset);
+		res.setHeader("Content-Range", contentRange);
+		fs.createReadStream(fsPath, {start: offset, highWaterMark: 655360}).pipe(res);
+		res.statusCode = 206;
+	} else {
+		res.statusCode = 503;
+	}
   } catch(e) {
     console.log('XError:', e.stack);
     res.statusCode = 404;
     res.end(); 
   }
 }
-
 
 function fetchAssets(res, path) {
   const fsPath = path.substr(1);
@@ -146,7 +147,7 @@ function fetchAssets(res, path) {
   try {
     var stats = fs.statSync(fsPath);
     res.setHeader("Content-Length", stats.size);
-    fs.createReadStream(fsPath).pipe(res);
+    fs.createReadStream(fsPath, {highWaterMark: 655360}).pipe(res);
   } catch(e) {
     console.log('XError:', e.stack);
     res.statusCode = 404;
