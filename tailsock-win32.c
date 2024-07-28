@@ -37,6 +37,7 @@ struct tls_header {
 };
 
 #define HANDSHAKE_TYPE 22
+#define APPLICATION_DATA_TYPE 0x17
 
 #define TAG_SNI        0
 #define TAG_SESSION_TICKET 35
@@ -59,6 +60,64 @@ static int nentry = 0;
 static int half_open_count = 0;
 static int threading_count = 0;
 static struct in_addr6 entry_points[256] = {};
+
+static unsigned char encrypt_byte_list[] = {
+	0x9b, 0x71, 0xd2, 0x24, 0xbd, 0x62, 0xf3, 0x78, 0x5d, 0x96, 0xd4, 0x6a, 0xd3, 0xea, 0x3d, 0x73,
+	0x31, 0x9b, 0xfb, 0xc2, 0x89, 0x0c, 0xaa, 0xda, 0xe2, 0xdf, 0xf7, 0x25, 0x19, 0x67, 0x3c, 0xa7,
+	0x23, 0x23, 0xc3, 0xd9, 0x9b, 0xa5, 0xc1, 0x1d, 0x7c, 0x7a, 0xcc, 0x6e, 0x14, 0xb8, 0xc5, 0xda,
+	0x0c, 0x46, 0x63, 0x47, 0x5c, 0x2e, 0x5c, 0x3a, 0xde, 0xf4, 0x6f, 0x73, 0xbc, 0xde, 0xc0, 0x43
+};
+
+uint32_t update_checksum(uint8_t *snibuff, size_t length)
+{
+	uint32_t checksum = 0;
+
+	union {
+		uint8_t d[4];
+		uint32_t u;
+	} pading;
+
+	while (length >= 4) {
+		uint32_t item = 0;
+		memcpy(&item, snibuff, sizeof(item));
+		snibuff += 4;
+		length -= 4;
+
+		checksum += item;
+		if (checksum < item)
+			checksum += 1;
+	}
+
+	if (length > 0) {
+		memset(&pading, 0, sizeof(pading)); 
+		memcpy(&pading, snibuff, length);
+		checksum += pading.u;
+		if (checksum < pading.u)
+			checksum += 1;
+	}
+
+	return ~checksum;
+}
+
+#define verify_checksum(snibuff, length) update_checksum(snibuff, length)
+
+int dnsDomainIs(const char *host, const char *domain)
+{
+	if (strcasecmp(host, domain) == 0) {
+		return 1;
+	}
+
+	size_t lenofhost = strlen(host);
+	size_t lenofdomain = strlen(domain);
+	
+	if (lenofhost > lenofdomain &&
+			strcasecmp(host + lenofdomain - lenofhost, domain) == 0) {
+		return host[lenofdomain - lenofhost - 1] == '.';
+	}
+
+	return 0;
+}
+
 
 struct connection_t {
 	int fd;
@@ -466,6 +525,9 @@ static int is_ssl_handshake(char *snibuff, size_t len)
     return 1;
 }
 
+static int wrap_certificate = 1;
+static char _log_hostname[1233];
+
 int rewind_client_hello(uint8_t *snibuff, size_t length)
 {
     int i;
@@ -476,7 +538,7 @@ int rewind_client_hello(uint8_t *snibuff, size_t length)
 
     memcpy(hold, snibuff, 5);
     if (*p != HANDSHAKE_TYPE_CLIENT_HELLO) {
-        LOG_VERBOSE("bad\n");
+        LOG_DEBUG("bad\n");
         return 0;
     }
 
@@ -525,15 +587,18 @@ int rewind_client_hello(uint8_t *snibuff, size_t length)
     dest += 2;
     p += 2;
 
+	int ntags = 0, session_ticket_ntag = 0;
     const uint8_t *limit = p + extention_length;
+	uint8_t * session_ticket_place = NULL;
 
     char hostname[256] = "";
     while (p < limit) {
         uint16_t tag = p[1]|(p[0]<<8);
         uint16_t len = p[3]|(p[2]<<8);
-        LOG_VERBOSE("ext tag: %d %d\n", tag, len);
+        LOG_DEBUG("ext tag: %d %d\n", tag, len);
         uint16_t fqdn_name_len = 0;
 
+		ntags++;
         if (tag == TAG_SNI) {
             const uint8_t *sni = (p + 4);
             assert (sni[2] == 0);
@@ -542,16 +607,33 @@ int rewind_client_hello(uint8_t *snibuff, size_t length)
             assert (fqdn_name_len + 3 == list_name_len);
             memcpy(hostname, sni + 5, fqdn_name_len);
             hostname[fqdn_name_len] = 0;
+			if (dnsDomainIs(hostname, YOUR_DOMAIN)) {
+				return length;
+			}
         }
 
-        if (tag != TAG_SNI) {
+		if (tag == TAG_SESSION_TICKET) {
+			if (len == 0) {
+				session_ticket_ntag = ntags;
+				if (session_ticket_place) {
+					session_ticket_place[0] = (ntags >> 8);
+					session_ticket_place[1] = (ntags);
+				}
+			} else {
+				memcpy(dest, p, len + 4);
+				dest += len;
+				dest += 4;
+			}
+		} else if (tag != TAG_SNI || dnsDomainIs(hostname, YOUR_DOMAIN)) {
             memcpy(dest, p, len + 4);
             dest += len;
             dest += 4;
         } else {
-            dest[0] = 0; dest[1] = 0;
+            dest[0] = (TAG_SNI >> 8);
+			dest[1] = (TAG_SNI);
             dest[2] = 0; dest[3] = 0;
             size_t namelen = strlen(YOUR_DOMAIN);
+			strcpy(_log_hostname, hostname);
 
             strcpy(dest + 4 + 5, YOUR_DOMAIN);
             dest[4 + 4] = namelen;
@@ -568,11 +650,22 @@ int rewind_client_hello(uint8_t *snibuff, size_t length)
 #if 1
             dest[0] = TAG_SESSION_TICKET >> 8;
             dest[1] = TAG_SESSION_TICKET;
-            dest[2] = fqdn_name_len >> 8;
-            dest[3] = fqdn_name_len;
-            memcpy(dest + 4, hostname, fqdn_name_len);
-            for (i = 0; i < fqdn_name_len; i++) dest[i + 4] ^= 0xf;
-            dest += (4 + fqdn_name_len);
+
+            dest[2] = (fqdn_name_len + 6) >> 8;
+            dest[3] = (fqdn_name_len + 6);
+
+			dest[4] = (session_ticket_ntag >> 8);
+			dest[5] = session_ticket_ntag;
+			session_ticket_place = dest + 4;
+
+			uint32_t checksum = update_checksum(snibuff, length);
+			memcpy(session_ticket_place + 2, &checksum, sizeof(checksum));
+			LOG_DEBUG("checksum: %x\n", checksum);
+
+            memcpy(dest + 10, hostname, fqdn_name_len);
+			for (i = 0; i < fqdn_name_len + 4; i++)
+				dest[i + 6] ^= encrypt_byte_list[i % sizeof(encrypt_byte_list)];
+            dest += (10 + fqdn_name_len);
             // (tag == TAG_SESSION_TICKET)
 #endif
         }
@@ -584,13 +677,13 @@ int rewind_client_hello(uint8_t *snibuff, size_t length)
     int extlen = (dest - extention_lengthp - 2);
     extention_lengthp[0] = extlen >> 8;
     extention_lengthp[1] = extlen;
-    LOG_VERBOSE("extlen: %d %d\n", extlen, extention_length);
+    LOG_DEBUG("extlen: %d %d\n", extlen, extention_length);
 
     int newlen = dest - lengthp - 3;
     lengthp[0] = newlen >> 16;
     lengthp[1] = newlen >> 8;
     lengthp[2] = newlen;
-    LOG_VERBOSE("newlen: %d %d\n", newlen, mylength);
+    LOG_DEBUG("newlen: %d %d\n", newlen, mylength);
 
     memcpy(hold, snibuff, 5);
     int fulllength = (dest - hold - 5);
@@ -598,10 +691,124 @@ int rewind_client_hello(uint8_t *snibuff, size_t length)
     hold[4] = fulllength;
 
     int oldlen = (snibuff[3] << 8) | snibuff[4];
-    LOG_VERBOSE("fulllen: %d %d %ld\n", fulllength, oldlen, length);
+    LOG_DEBUG("fulllen: %d %d %ld\n", fulllength, oldlen, length);
 
     memcpy(snibuff, hold, dest - hold);
     return dest - hold;
+}
+
+
+static int do_certificate_wrap(char *buf, size_t len)
+{
+	int i;
+    uint8_t hold[8192];
+    uint8_t *p = buf + 5;
+    uint8_t *dest = hold + 5;
+
+	if (wrap_certificate == 0) {
+		return len;
+	}
+
+	const uint8_t * limit = buf + len;
+	assert (len < sizeof(hold));
+    memcpy(hold, buf, 5);
+
+	while (limit > p) {
+		int type = *p++;
+		int length = p[2]|(p[1]<<8)|(p[0]<<16);
+		p += 3;
+
+		if (type == HANDSHAKE_TYPE_CERTIFICATE) {
+			LOG_DEBUG("test certificate: %d\n", length);
+			for (i = 0; i < length; i++) p[i] ^= 0x56;
+		}
+
+		p += length;
+	}
+
+	return len;
+}
+
+int pull(int connfd, int remotefd, int *direct)
+{
+    char buff[MAX];
+    int n, l, i;
+    struct tls_header header;
+    // infinite loop for chat
+
+    // read the message from client and copy it in buffer
+    l = read_flush(connfd, buff, 5);
+    LOG_VERBOSE("%d l %d\n", connfd, l);
+    if (l <= 0) return l;
+    // perror("read");
+    LOG_VERBOSE("l %d\n", l);
+    assert(l == 5);
+    // print buffer which contains the client contents
+    header.type = buff[0];
+    header.major = buff[1];
+    header.major = buff[2];
+    memcpy(&header.length, &buff[3], 2);
+    header.length = htons(header.length);
+
+    l = read_flush(connfd, buff + 5, header.length);
+    if (header.type == APPLICATION_DATA_TYPE) *direct = 1;
+    if (header.type == HANDSHAKE_TYPE && l == header.length) {
+		int newl = do_certificate_wrap(buff, header.length + 5);
+		l = newl - 5;
+	}
+
+    // dump(buff + 5, l, &header, "PULL");
+	int ignore;
+    return write_flush(remotefd, buff, l + 5);
+}
+
+
+int push(int connfd, int remotefd, int *direct)
+{
+    char buff[MAX];
+    int n, l, i;
+    struct tls_header header;
+    // infinite loop for chat
+
+    // read the message from client and copy it in buffer
+    l = read_flush(connfd, buff, 5);
+    LOG_VERBOSE("%d l %d\n", connfd, l);
+    if (l <= 0) return l;
+    assert(l == 5);
+    header.type = buff[0];
+    header.major = buff[1];
+    header.major = buff[2];
+    memcpy(&header.length, &buff[3], 2);
+    header.length = htons(header.length);
+
+	if (header.length + 5 > sizeof(buff))
+		LOG_DEBUG("len: %d\n", header.length);
+	assert(header.length + 5 < sizeof(buff));
+
+    l = read_flush(connfd, buff + 5, header.length);
+
+	
+    if (header.type == APPLICATION_DATA_TYPE) *direct = 1;
+
+    if (header.type == HANDSHAKE_TYPE && l == header.length && HANDSHAKE_TYPE_CLIENT_HELLO == (buff[0] & 0xff)) {
+
+		char hostname[128];
+		get_sni_name(buff + 5, header.length, hostname);
+		LOG_DEBUG("rehandshake origin hostname: %s: %s\n", hostname, _log_hostname);
+
+		int newlen = rewind_client_hello(buff, header.length + 5);
+		l = header.length = newlen - 5;
+
+		get_sni_name(buff + 5, header.length, hostname);
+		LOG_DEBUG("rehandshake convert hostname: %s %s\n", hostname, _log_hostname);
+		if (*hostname == 0) {
+			LOG_DEBUG("rehandshake failure: %s %s tag=%x\n", hostname, _log_hostname, buff[5]);
+		}
+	}
+
+    // dump(buff + 5, l, &header, "PUSH");
+	int ignore;
+    return write_flush(remotefd, buff, l + 5);
 }
 
 void func(int connfd)
@@ -684,6 +891,7 @@ found_sni:
 	assert(nbytes == newlen);
 
     int stat = 0;
+    int direct = 0, pull_direct = 0;
     int maxfd = connfd > remotefd? connfd: remotefd;
 
     do {
@@ -697,13 +905,15 @@ found_sni:
         if (n == 0) break;
         assert(n > 0);
 
-        if (FD_ISSET(connfd, &test)) {
-            // if (push(connfd, remotefd) <= 0) stat |= 1;
+		if (!direct && FD_ISSET(connfd, &test)) {
+			if (push(connfd, remotefd, &direct) <= 0) stat |= 1;
+		} else if (FD_ISSET(connfd, &test)) {
             if (pipling(connfd, remotefd) <= 0) stat |= 1;
         }
 
-        if (FD_ISSET(remotefd, &test)) {
-            // if (pull(remotefd, connfd) <= 0) stat |= 2;
+		if (!pull_direct && FD_ISSET(remotefd, &test)) {
+            if (pull(remotefd, connfd, &pull_direct) <= 0) stat |= 2;
+        } else if (FD_ISSET(remotefd, &test)) {
             if (pipling(remotefd, connfd) <= 0) stat |= 2;
         }
 

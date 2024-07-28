@@ -19,7 +19,7 @@
 
 #include "tx_debug.h"
 
-#define MAX 65536
+#define MAX 655360
 #define SA struct sockaddr
 
 struct tls_header {
@@ -30,6 +30,7 @@ struct tls_header {
 };
 
 #define HANDSHAKE_TYPE 22
+#define APPLICATION_DATA_TYPE 0x17
 
 #define TAG_SNI        0
 #define TAG_SESSION_TICKET 35
@@ -98,6 +99,8 @@ int write_flush(int fd, void *buf, size_t count, int *statp)
 }
 
 static int set_hook_name = 0;
+static int wrap_certificate = 0;
+static char YOUR_DOMAIN[256] = "app.yrli.bid";
 
 char * get_sni_name(uint8_t *snibuff, size_t len, char *hostname)
 {
@@ -154,8 +157,8 @@ char * get_sni_name(uint8_t *snibuff, size_t len, char *hostname)
         p += 4;
     }
 
-    if (set_hook_name)
-	strcpy(hostname, "www.cloudflare.com");
+	if (set_hook_name)
+		strcpy(hostname, YOUR_DOMAIN);
 
     return hostname;
 }
@@ -167,15 +170,124 @@ static int RELAY_MODE = MODE_RELAY_NONE;
 
 static int YOUR_PORT = 4430;
 static char YOUR_PORT_TEXT[64] = "4430";
-static char YOUR_DOMAIN[256] = "app.yrli.bid";
-static char YOUR_ADDRESS[256] = "100.42.78.149";
+static int iYOUR_ADDRESS = 0;
+static const char * YOUR_ADDRESS[256] = {};
 static int (*unwind_rewind_client_hello)(uint8_t *, size_t) = NULL;
+
+static unsigned char encrypt_byte_list[] = {
+	0x9b, 0x71, 0xd2, 0x24, 0xbd, 0x62, 0xf3, 0x78, 0x5d, 0x96, 0xd4, 0x6a, 0xd3, 0xea, 0x3d, 0x73,
+	0x31, 0x9b, 0xfb, 0xc2, 0x89, 0x0c, 0xaa, 0xda, 0xe2, 0xdf, 0xf7, 0x25, 0x19, 0x67, 0x3c, 0xa7,
+	0x23, 0x23, 0xc3, 0xd9, 0x9b, 0xa5, 0xc1, 0x1d, 0x7c, 0x7a, 0xcc, 0x6e, 0x14, 0xb8, 0xc5, 0xda,
+	0x0c, 0x46, 0x63, 0x47, 0x5c, 0x2e, 0x5c, 0x3a, 0xde, 0xf4, 0x6f, 0x73, 0xbc, 0xde, 0xc0, 0x43
+};
+
+uint32_t update_checksum(uint8_t *snibuff, size_t length)
+{
+	uint32_t checksum = 0;
+
+	union {
+		uint8_t d[4];
+		uint32_t u;
+	} pading;
+
+	while (length >= 4) {
+		uint32_t item = 0;
+		memcpy(&item, snibuff, sizeof(item));
+		snibuff += 4;
+		length -= 4;
+
+		checksum += item;
+		if (checksum < item)
+			checksum += 1;
+	}
+
+	if (length > 0) {
+		memset(&pading, 0, sizeof(pading)); 
+		memcpy(&pading, snibuff, length);
+		checksum += pading.u;
+		if (checksum < pading.u)
+			checksum += 1;
+	}
+
+	return ~checksum;
+}
+
+#define verify_checksum(snibuff, length) update_checksum(snibuff, length)
+
+int dnsDomainIs(const char *host, const char *domain)
+{
+	if (strcasecmp(host, domain) == 0) {
+		return 1;
+	}
+
+	size_t lenofhost = strlen(host);
+	while (*domain != '.') domain++;
+	size_t lenofdomain = strlen(domain);
+	
+	if (lenofhost > lenofdomain &&
+			strcasecmp(host - lenofdomain + lenofhost, domain) == 0) {
+		return 1;
+	}
+
+	return 0;
+}
+
+int generate_pseudo_hostname(char *pseudo, size_t len, const char *hostname, const char *domain)
+{
+	int ndotofhostname = 0, ndotofdomain = 0;
+
+	if (*domain != '.') {
+		strncpy(pseudo, domain, len -1);
+		return 0;
+	}
+
+	const char *pdot = hostname;
+	while (*pdot) {
+		if (*pdot == '.') ndotofhostname++;
+		pdot++;
+	}
+
+	pdot = domain;
+	while (*pdot) {
+		if (*pdot == '.') ndotofdomain++;
+		pdot++;
+	}
+
+	if (ndotofdomain > ndotofhostname) {
+		snprintf(pseudo, len, "www%s", domain);
+		return 0;
+	}
+
+	int ndot = 0;
+	const char *limit = pseudo + len;
+	while (*hostname && ndot + ndotofdomain <= ndotofhostname) {
+		if (*hostname == '.') ndot ++;
+		if (pseudo < limit)
+			*pseudo++ = *hostname;
+		hostname++;
+	}
+
+	if (*domain == '.' && pseudo[-1] == '.') domain++;
+
+	while (*domain) {
+		if (pseudo < limit)
+			*pseudo++ = *domain;
+		domain++;
+	}
+
+	if (pseudo < limit)
+		*pseudo = 0;
+
+	return 0;
+}
+
+static char _log_hostname[1233];
 
 int rewind_client_hello(uint8_t *snibuff, size_t length)
 {
     int i;
     int mylength = 0;
-    uint8_t hold[4096];
+    uint8_t hold[MAX];
     uint8_t *p = snibuff + 5;
     uint8_t *dest = hold + 5;
 
@@ -230,7 +342,9 @@ int rewind_client_hello(uint8_t *snibuff, size_t length)
     dest += 2;
     p += 2;
 
+	int ntags = 0, session_ticket_ntag = 0;
     const uint8_t *limit = p + extention_length;
+	uint8_t * session_ticket_place = NULL;
 
     char hostname[256] = "";
     while (p < limit) {
@@ -239,6 +353,7 @@ int rewind_client_hello(uint8_t *snibuff, size_t length)
         LOG("ext tag: %d %d\n", tag, len);
         uint16_t fqdn_name_len = 0;
 
+		ntags++;
         if (tag == TAG_SNI) {
             const uint8_t *sni = (p + 4);
             assert (sni[2] == 0);
@@ -247,18 +362,38 @@ int rewind_client_hello(uint8_t *snibuff, size_t length)
             assert (fqdn_name_len + 3 == list_name_len);
             memcpy(hostname, sni + 5, fqdn_name_len);
             hostname[fqdn_name_len] = 0;
+			if (dnsDomainIs(hostname, YOUR_DOMAIN)) {
+				return length;
+			}
         }
 
-        if (tag != TAG_SNI) {
+		if (tag == TAG_SESSION_TICKET) {
+			LOGI("TAG_SESSION_TICKET: %d\n", ntags);
+			if (len == 0) {
+				session_ticket_ntag = ntags;
+				if (session_ticket_place) {
+					session_ticket_place[0] = (ntags >> 8);
+					session_ticket_place[1] = (ntags);
+				}
+			} else {
+				memcpy(dest, p, len + 4);
+				dest += len;
+				dest += 4;
+			}
+		} else if (tag != TAG_SNI || dnsDomainIs(hostname, YOUR_DOMAIN)) {
             memcpy(dest, p, len + 4);
             dest += len;
             dest += 4;
         } else {
-            dest[0] = 0; dest[1] = 0;
+            dest[0] = (TAG_SNI >> 8);
+			dest[1] = (TAG_SNI);
             dest[2] = 0; dest[3] = 0;
-            size_t namelen = strlen(YOUR_DOMAIN);
+			char pseudo_hostname[512] = "";
+			strcpy(_log_hostname, hostname);
+			generate_pseudo_hostname(pseudo_hostname, sizeof(pseudo_hostname), hostname, YOUR_DOMAIN);
+            size_t namelen = strlen(pseudo_hostname);
 
-            strcpy(dest + 4 + 5, YOUR_DOMAIN);
+            strcpy(dest + 4 + 5, pseudo_hostname);
             dest[4 + 4] = namelen;
             dest[4 + 3] = (namelen >> 8);
             dest[4 + 2] = 0;
@@ -271,13 +406,24 @@ int rewind_client_hello(uint8_t *snibuff, size_t length)
             dest += (namelen + 4 + 5);
 
 #if 1
+			wrap_certificate = 1;
             dest[0] = TAG_SESSION_TICKET >> 8;
             dest[1] = TAG_SESSION_TICKET;
-            dest[2] = fqdn_name_len >> 8;
-            dest[3] = fqdn_name_len;
-            memcpy(dest + 4, hostname, fqdn_name_len);
-            for (i = 0; i < fqdn_name_len; i++) dest[i + 4] ^= 0xf;
-            dest += (4 + fqdn_name_len);
+
+            dest[2] = (fqdn_name_len + 6) >> 8;
+            dest[3] = (fqdn_name_len + 6);
+
+			dest[4] = (session_ticket_ntag >> 8);
+			dest[5] = session_ticket_ntag;
+			session_ticket_place = dest + 4;
+
+			uint32_t checksum = update_checksum(snibuff, length);
+			memcpy(session_ticket_place + 2, &checksum, sizeof(checksum));
+
+            memcpy(dest + 10, hostname, fqdn_name_len);
+			for (i = 0; i < fqdn_name_len + 4; i++)
+				dest[i + 6] ^= encrypt_byte_list[i % sizeof(encrypt_byte_list)];
+            dest += (10 + fqdn_name_len);
             // (tag == TAG_SESSION_TICKET)
 #endif
         }
@@ -304,6 +450,7 @@ int rewind_client_hello(uint8_t *snibuff, size_t length)
 
     int oldlen = (snibuff[3] << 8) | snibuff[4];
     LOG("fulllen: %d %d %ld\n", fulllength, oldlen, length);
+    LOGI("fulllen: %d %d %ld %d\n", fulllength, oldlen, length, session_ticket_ntag);
 
     memcpy(snibuff, hold, dest - hold);
     return dest - hold;
@@ -314,13 +461,12 @@ int rewind_client_zero(uint8_t *snibuff, size_t length)
     return length;
 }
 
-
 int unwind_client_hello(uint8_t *snibuff, size_t length)
 {
     int i;
     int modify = 0;
     int mylength = 0;
-    uint8_t hold[4096];
+    uint8_t hold[MAX];
     uint8_t *p = snibuff + 5;
     uint8_t *dest = hold + 5;
 
@@ -375,6 +521,10 @@ int unwind_client_hello(uint8_t *snibuff, size_t length)
     dest += 2;
     p += 2;
 
+	int need_fixup = 0;
+	uint32_t  checksum = 0;
+	uint8_t * fixup_base = dest;
+	int ntags = 0, session_ticket_ntag = -1;
     const uint8_t *limit = p + extention_length;
 
     int last_tag = -1;
@@ -385,6 +535,7 @@ int unwind_client_hello(uint8_t *snibuff, size_t length)
         LOG("ext tag: %d %d\n", tag, len);
         uint16_t fqdn_name_len = 0;
 
+		ntags++;
         if (tag == TAG_SNI) {
             const uint8_t *sni = (p + 4);
             assert (sni[2] == 0);
@@ -395,23 +546,45 @@ int unwind_client_hello(uint8_t *snibuff, size_t length)
             hostname[fqdn_name_len] = 0;
             LOG("source: %s\n", hostname);
         } else if (tag == TAG_SESSION_TICKET && last_tag == TAG_SNI) {
-            if (strcmp(hostname, YOUR_DOMAIN) == 0) {
-                memcpy(hostname, p + 4, len);
-                hostname[len] = 0;
+            if (dnsDomainIs(hostname, YOUR_DOMAIN) && len > 6) {
+                memcpy(hostname, p + 6, len - 2);
+                hostname[len - 2] = 0;
+				for (i = 0; i < len - 2; i++)
+					hostname[i] ^= encrypt_byte_list[i % sizeof(encrypt_byte_list)];
+				memcpy(&checksum, hostname, sizeof(checksum));
+				memmove(hostname, hostname + 4, len - 6 + 1);
                 fqdn_name_len = strlen(hostname);
-                for (i = 0; i < fqdn_name_len; i++) hostname[i] ^= 0xf;
-                LOG("target: %s\n", hostname);
+				session_ticket_ntag = (p[4] << 8) | p[5];
+                LOGI("target: %s session_ticket_ntag %d\n", hostname, session_ticket_ntag);
+				wrap_certificate = 1;
+				if (session_ticket_ntag < ntags && session_ticket_ntag > 0) {
+					LOGI("missing ticket: %d %d\n", session_ticket_ntag, ntags);
+					need_fixup = 1;
+				}
             }
         }
 
-        if (strcmp(hostname, YOUR_DOMAIN) == 0 && tag == TAG_SNI) {
+		if (ntags == session_ticket_ntag + 1) {
+			LOGI("adding ticket: %d %d\n", session_ticket_ntag, ntags);
+			dest[0] = (TAG_SESSION_TICKET >> 8);
+			dest[1] = (TAG_SESSION_TICKET);
+            dest[2] = 0; dest[3] = 0;
+			dest += 4;
+		}
 
+        if (dnsDomainIs(hostname, YOUR_DOMAIN) && tag == TAG_SNI) {
+#if 0
+            memcpy(dest, p, len + 4);
+            dest += len;
+            dest += 4;
+#endif
         } else if (tag != TAG_SESSION_TICKET || last_tag != TAG_SNI) {
             memcpy(dest, p, len + 4);
             dest += len;
             dest += 4;
         } else if (tag == TAG_SESSION_TICKET) {
-            dest[0] = 0; dest[1] = 0;
+			dest[0] = (TAG_SNI >> 8);
+			dest[1] = (TAG_SNI);
             dest[2] = 0; dest[3] = 0;
             size_t namelen = strlen(hostname);
 
@@ -425,13 +598,45 @@ int unwind_client_hello(uint8_t *snibuff, size_t length)
             dest[2] = (namelen + 5) >> 8;
 
             dest += (namelen + 4 + 5);
-	    modify = 1;
+			modify = 1;
         }
 
         last_tag = tag;
         p += len;
         p += 4;
     }
+
+	if (ntags == session_ticket_ntag) {
+		LOGI("adding ticket: %d %d\n", session_ticket_ntag, ntags);
+		dest[0] = (TAG_SESSION_TICKET >> 8);
+		dest[1] = (TAG_SESSION_TICKET);
+		dest[2] = 0; dest[3] = 0;
+		dest += 4;
+	}
+
+	LOGI("TODO:XXX session_ticket_ntag %d\n", session_ticket_ntag);
+	if (need_fixup) {
+		int tag_offset = 0;
+		while (fixup_base < dest) {
+			uint8_t *p = fixup_base;
+			uint16_t tag = p[1]|(p[0]<<8);
+			uint16_t len = p[3]|(p[2]<<8);
+
+			tag_offset++;
+			if (tag_offset >= session_ticket_ntag) break;
+			LOG("ext tag: %d %d\n", tag, len);
+
+            fixup_base += len;
+            fixup_base += 4;
+		}
+
+		memmove(fixup_base + 4, fixup_base, dest - fixup_base);
+		dest += 4;
+
+		fixup_base[0] = (TAG_SESSION_TICKET >> 8);
+		fixup_base[1] = (TAG_SESSION_TICKET);
+		fixup_base[2] = 0; fixup_base[3] = 0;
+	}
 
     int extlen = (dest - extention_lengthp - 2);
     extention_lengthp[0] = extlen >> 8;
@@ -452,9 +657,17 @@ int unwind_client_hello(uint8_t *snibuff, size_t length)
     int oldlen = (snibuff[3] << 8) | snibuff[4];
     LOG("fulllen: %d %d %ld\n", fulllength, oldlen, length);
 
+	uint32_t checksum1 = update_checksum(hold, dest - hold);
+	LOGI("checksum %x, exptected %x modify %d\n", checksum, checksum1, modify);
+	if (modify && checksum != checksum1) {
+		set_hook_name = 1;
+		modify = 0;
+	}
+
     set_hook_name = 0;
-    if (modify == 0 && strcmp(YOUR_DOMAIN, hostname)) { set_hook_name = 1; }
+    if (modify == 0 && !dnsDomainIs(hostname, YOUR_DOMAIN)) { set_hook_name = 1; }
     if (modify == 0) return length;
+
     memcpy(snibuff, hold, dest - hold);
     return dest - hold;
 }
@@ -505,7 +718,38 @@ void dump(char *buff, size_t len, struct tls_header *header, const char *title)
     }
 }
 
-int pull(int connfd, int remotefd)
+static int do_certificate_wrap(char *buf, size_t len)
+{
+	int i;
+    uint8_t hold[MAX];
+    uint8_t *p = buf + 5;
+    uint8_t *dest = hold + 5;
+
+	if (wrap_certificate == 0) {
+		return len;
+	}
+
+	const uint8_t * limit = buf + len;
+	assert (len < sizeof(hold));
+    memcpy(hold, buf, 5);
+
+	while (limit > p) {
+		int type = *p++;
+		int length = p[2]|(p[1]<<8)|(p[0]<<16);
+		p += 3;
+
+		if (type == HANDSHAKE_TYPE_CERTIFICATE) {
+			LOGI("test certificate: %d\n", length);
+			for (i = 0; i < length; i++) p[i] ^= 0x56;
+		}
+
+		p += length;
+	}
+
+	return len;
+}
+
+int pull(int connfd, int remotefd, int *direct)
 {
     char buff[MAX];
     int n, l, i;
@@ -526,7 +770,13 @@ int pull(int connfd, int remotefd)
     memcpy(&header.length, &buff[3], 2);
     header.length = htons(header.length);
 
+	assert(header.length  < MAX);
     l = read_flush(connfd, buff + 5, header.length);
+    if (header.type == APPLICATION_DATA_TYPE) *direct = 1;
+    if (header.type == HANDSHAKE_TYPE && l == header.length) {
+		int newl = do_certificate_wrap(buff, header.length + 5);
+		l = newl - 5;
+	}
 
     // dump(buff + 5, l, &header, "PULL");
 	int ignore;
@@ -535,7 +785,7 @@ int pull(int connfd, int remotefd)
 
 
 // Function designed for chat between client and server.
-int push(int connfd, int remotefd)
+int push(int connfd, int remotefd, int *direct)
 {
     char buff[MAX];
     int n, l, i;
@@ -553,7 +803,29 @@ int push(int connfd, int remotefd)
     memcpy(&header.length, &buff[3], 2);
     header.length = htons(header.length);
 
+	if (header.length + 5 > sizeof(buff))
+		LOGI("len: %d\n", header.length);
+	assert(header.length + 5 < sizeof(buff));
+
     l = read_flush(connfd, buff + 5, header.length);
+
+	
+    if (header.type == APPLICATION_DATA_TYPE) *direct = 1;
+    if (header.type == HANDSHAKE_TYPE && l == header.length && HANDSHAKE_TYPE_CLIENT_HELLO == (buff[0] & 0xff)) {
+
+		char hostname[128];
+		get_sni_name(buff + 5, header.length, hostname);
+		LOGI("rehandshake origin hostname: %s: %s\n", hostname, _log_hostname);
+
+		int newlen = unwind_rewind_client_hello(buff, header.length + 5);
+		l = header.length = newlen - 5;
+
+		get_sni_name(buff + 5, header.length, hostname);
+		LOGI("rehandshake convert hostname: %s %s\n", hostname, _log_hostname);
+		if (*hostname == 0) {
+			LOGI("rehandshake failure: %s %s tag=%x\n", hostname, _log_hostname, buff[5]);
+		}
+	}
 
     // dump(buff + 5, l, &header, "PUSH");
 	int ignore;
@@ -561,6 +833,7 @@ int push(int connfd, int remotefd)
 }
 
 static char _buff[655360];
+
 int pipling(int connfd, int remotefd, int *statp)
 {
     size_t len = recv(connfd, _buff, sizeof(_buff), MSG_DONTWAIT);
@@ -589,7 +862,19 @@ int mptcp_enable(int sockfd)
     return 0;
 }
 
-int setup_remote(struct sockaddr_in6 *cli, char *hostname)
+int xor_get(const char *name)
+{
+    int sum = 0;
+
+    while (*name)
+      sum += (uint8_t)*name++;
+
+    sum ^= (sum >> 16);
+    sum ^= (sum >> 8);
+    return sum & 0xff;
+}
+
+int setup_remote(struct sockaddr_in6 *cli, char *hostname, const char *origin)
 {
     int i;
     int rc = -1;
@@ -599,7 +884,9 @@ int setup_remote(struct sockaddr_in6 *cli, char *hostname)
     if (RELAY_MODE == MODE_RELAY_CLIENT) {
         remotefd = socket(AF_INET6, SOCK_STREAM, IPPROTO_MPTCP);
 
-        inet_pton(AF_INET6, YOUR_ADDRESS, &cli->sin6_addr);
+		int pick = xor_get(origin);
+        LOGI("pick=%d name=%s\n", pick, origin);
+        inet_pton(AF_INET6, YOUR_ADDRESS[pick % iYOUR_ADDRESS], &cli->sin6_addr);
 		
         mptcp_enable(remotefd);
         rc = connect(remotefd, (struct sockaddr *)cli, sizeof(*cli));
@@ -682,7 +969,7 @@ void func(int connfd)
     int rc;
     int n, l, i;
     fd_set test, wtest;
-    uint8_t snibuff[4096];
+    uint8_t snibuff[MAX];
     struct tls_header header;
     int remotefd = -1;
 
@@ -714,9 +1001,9 @@ void func(int connfd)
     int nbyte = read_flush(connfd, snibuff + 5, header.length);
     assert (nbyte == header.length);
 
-    char hostname[128];
-    get_sni_name(snibuff + 5, header.length, hostname);
-    LOGI("origin hostname: %s\n", hostname);
+    char hostname[128], originname[128];
+    get_sni_name(snibuff + 5, header.length, originname);
+    LOGI("origin hostname: %s\n", originname);
 
     int newlen = unwind_rewind_client_hello(snibuff, header.length + 5);
     header.length = newlen - 5;
@@ -731,7 +1018,7 @@ void func(int connfd)
     struct sockaddr_in6 cli;
     cli.sin6_family = AF_INET6;
     cli.sin6_port   = htons(YOUR_PORT);
-    remotefd = setup_remote(&cli, hostname);
+    remotefd = setup_remote(&cli, hostname, originname);
 
     if (remotefd == -1) {
         close(connfd);
@@ -744,6 +1031,8 @@ void func(int connfd)
     int wstat = 3;
     int maxfd = connfd > remotefd? connfd: remotefd;
 
+	int direct = 0;
+	int pull_direct = 0;
     do {
         FD_ZERO(&test);
         if (~stat & 1) FD_SET(connfd, &test);
@@ -768,15 +1057,17 @@ void func(int connfd)
 		}
 
 		int half = 0;
-        if (FD_ISSET(connfd, &test) && !(wstat & 2)) {
-            // if (push(connfd, remotefd) <= 0) stat |= 1;
+		if (!direct && FD_ISSET(connfd, &test) && !(wstat & 2)) {
+			if (push(connfd, remotefd, &direct) <= 0) stat |= 1;
+		} else if (FD_ISSET(connfd, &test) && !(wstat & 2)) {
 			half = 0;
             if (pipling(connfd, remotefd, &half) <= 0) stat |= 1;
 			if (half) wstat |= 2;
         }
 
-        if (FD_ISSET(remotefd, &test) && !(wstat & 1)) {
-            // if (pull(remotefd, connfd) <= 0) stat |= 2;
+		if (!pull_direct && FD_ISSET(remotefd, &test) && !(wstat & 1)) {
+            if (pull(remotefd, connfd, &pull_direct) <= 0) stat |= 2;
+		} else if (FD_ISSET(remotefd, &test) && !(wstat & 1)) {
 			half = 0;
             if (pipling(remotefd, connfd, &half) <= 0) stat |= 2;
 			if (half) wstat |= 1;
@@ -841,7 +1132,7 @@ void parse_argopt(int argc, char *argv[])
 	    unwind_rewind_client_hello = rewind_client_zero;
 	} else
 	if (*optname != '-') {
-	    strcpy(YOUR_ADDRESS, argv[i]);
+	    YOUR_ADDRESS[iYOUR_ADDRESS++ & 0xff] = strdup(argv[i]);
 	}
     }
     LOG("<parse_argopt\n");
@@ -901,6 +1192,7 @@ int main(int argc, char *argv[])
     else
         LOGI("Server listening..\n");
     len = sizeof(cli);
+
 
     do {
         len = sizeof(cli);
