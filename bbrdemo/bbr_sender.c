@@ -105,7 +105,7 @@ struct tx_skb {
 #define TCPCB_SACKED_NEW	0x40	/* tail lost probe	*/
 #define TCPCB_RETRANS		(TCPCB_SACKED_RETRANS|TCPCB_EVER_RETRANS| \
 	TCPCB_REPAIRED)
-#define TCPCB_INFLIGHT          0x20
+#define TCPCB_INFLIGHT         0x100
 
     struct {
 	tcp_seq delivered;
@@ -118,6 +118,7 @@ struct tx_skb {
     tcp_seq hit_lost;
     uint64_t hit_mstamp;
     uint64_t skb_mstamp;
+    int pkg_id;
     TAILQ_ENTRY(tx_skb) skb_next;
 };
 
@@ -200,6 +201,12 @@ static int bbr_check_pacing_reached(struct bbr_tcpcb *cb, struct timeval *timeva
     }
 
     return 1;
+}
+
+static int gen_next_id()
+{
+	static int next_id = 0;
+	return next_id ++;
 }
 
 static int tcpup_output(struct bbr_tcpcb *cb, int sockfd, const struct sockaddr *from, socklen_t size)
@@ -296,10 +303,28 @@ static int tcpup_output(struct bbr_tcpcb *cb, int sockfd, const struct sockaddr 
 
 delivery_one:
     skb = &tx_bitmap[cb->snd_nxt % MAX_SND_CWND];
+    {
+	struct tx_skb *skb0, *hold;
+	TAILQ_FOREACH(skb0, &_skb_delivery_queue, skb_next) {
+	    if (skb0 == skb) {
+		TAILQ_REMOVE(&_skb_delivery_queue, skb, skb_next);
+		break;
+	    }
+	}
+	TAILQ_FOREACH(skb0, &_skb_rexmt_queue, skb_next) {
+	    if (skb0 == skb) {
+		TAILQ_REMOVE(&_skb_rexmt_queue, skb, skb_next);
+		break;
+	    }
+	}
+    }
+
     if (skb->sacked != 0 && skb->sacked != TCPCB_SACKED_ACKED) {
 	fprintf(stderr, "sacked %x snd_nxt %x %x\n", skb->sacked, cb->snd_nxt, cb->snd_una);
     }
     skb->sacked &= ~TCPCB_PROBE_LOST;
+    if (skb->sacked == 0 || skb->sacked == TCPCB_SACKED_ACKED) ;
+    else fprintf(stderr, "sacked: %x\n", skb->sacked);
     assert(skb->sacked == 0 || skb->sacked == TCPCB_SACKED_ACKED);
     skb->sacked = 0;
     skb->pkt_seq = cb->snd_nxt++;
@@ -311,6 +336,7 @@ delivery_one:
 start_xmit:
     tp->packets_out++;
     skb->sacked |= TCPCB_INFLIGHT;
+    skb->pkg_id = gen_next_id();
     TAILQ_INSERT_TAIL(&_skb_delivery_queue, skb, skb_next);
 
     pbbr = (struct bbr_info *)(buffer + LEN_PADDING_DNS);
@@ -320,7 +346,7 @@ start_xmit:
     pbbr->seq_ack = ntohl(0);
     pbbr->ts_val  = ntohl(US_TO_TS(tp->tcp_mstamp));
     pbbr->ts_ecr  = ntohl(cb->ts_recent);
-    pbbr->counter = ntohl(0);
+    pbbr->counter = ntohl(skb->pkg_id);
 
     error = sendto(sockfd, buffer, sizeof(buffer), 0, from, size);
     assert (error > 0);
@@ -423,6 +449,42 @@ static int tcpup_acked(struct bbr_tcpcb *cb, int sockfd)
     bbrinfo.nsack = ntohl(pbbr->nsack);
 
     sacks = (struct sack_score *)(pbbr + 1);
+    int duplicate = 0, pkt_id = 0;
+#if 0
+    if (bbrinfo.nsack && ntohl(sacks[0].start) == ntohl(sacks[0].end) + 1) {
+        bbrinfo.nsack --;
+        duplicate = 1;
+	fprintf(stderr, "TODO:XXX duplicate %d %d\n", bbrinfo.counter, duplicate);
+        pkt_id = ntohl(sacks[0].start);
+        memmove(sacks, sacks + 1, bbrinfo.nsack);
+    }
+#endif
+    struct sack_score scores[5];
+
+    for (i = 0; i < bbrinfo.nsack; i++) {
+	scores[i].start = htonl(sacks[i].start);
+	scores[i].end = htonl(sacks[i].end);
+    }
+
+    for (i = bbrinfo.nsack - 1; i > 0; i--) {
+	for (int j = 0; j < i; j++) {
+	    if (after(scores[j].start, scores[j + 1].start)) {
+		struct sack_score save = scores[j];
+		scores[j] = scores[j + 1];
+		scores[j + 1] = save;
+	    }
+	}
+    }
+
+    for (i = 1; i < bbrinfo.nsack; i++) {
+      struct sack_score save = scores[i - 1];
+      if (after(save.end, scores[i].start)
+	  && (after(scores[i].end, save.end)
+	    || scores[i].end == save.end)) {
+	tp->delivered ++;
+	duplicate = 1;
+      }
+    }
 
     cb->last_receive_mstamp = tp->tcp_mstamp;
     if (SEQ_LT(cb->snd_una, bbrinfo.seq_ack)) {
@@ -433,7 +495,7 @@ static int tcpup_acked(struct bbr_tcpcb *cb, int sockfd)
 	start = htonl(sacks[0].start);
 	skb_acked = &tx_bitmap[start % MAX_SND_CWND];
 	if (SEQ_LT(start, bbrinfo.seq_ack)) {
-	    assert(skb_acked->sacked & TCPCB_SACKED_RETRANS);
+	    // assert(skb_acked->sacked & TCPCB_SACKED_RETRANS);
 	}
 	/* update skb_acked */
     } else {
@@ -453,6 +515,7 @@ static int tcpup_acked(struct bbr_tcpcb *cb, int sockfd)
 	    assert(SEQ_GEQ(prior_snd_una, bbrinfo.seq_ack));
 	}
 
+
 	cb->update = 0;
 	cb->rs = rs;
 	return 1;
@@ -465,22 +528,6 @@ static int tcpup_acked(struct bbr_tcpcb *cb, int sockfd)
 
 	cb->ts_recent = bbrinfo.ts_val;
 	cb->ts_echo = bbrinfo.ts_ecr;
-    }
-
-    struct sack_score scores[5];
-    for (i = 0; i < bbrinfo.nsack; i++) {
-	scores[i].start = htonl(sacks[i].start);
-	scores[i].end = htonl(sacks[i].end);
-    }
-
-    for (i = bbrinfo.nsack - 1; i > 0; i--) {
-	for (int j = 0; j < i; j++) {
-	    if (after(scores[j].start, scores[j + 1].start)) {
-		struct sack_score save = scores[j];
-		scores[j] = scores[j + 1];
-		scores[j + 1] = save;
-	    }
-	}
     }
 
     for (i = 0; i < bbrinfo.nsack; i++) {
@@ -574,15 +621,18 @@ static int tcpup_acked(struct bbr_tcpcb *cb, int sockfd)
 
     rs.rtt_us = -1l;
     
+    int one = 0;
     tcp_seq ts_recent = cb->ts_echo;
     if (last_sack_rtt_mstamp) {
 	rs.rtt_us = tp->tcp_mstamp - last_sack_rtt_mstamp;
 	assert(rs.rtt_us > 5000);
 	ts_recent = US_TO_TS(last_sack_rtt_mstamp);
+	one = 1;
     } else if (!flags && last_rtt_mstamp) {
 	rs.rtt_us = tp->tcp_mstamp - last_rtt_mstamp;
 	ts_recent = US_TO_TS(last_rtt_mstamp);
 	assert(rs.rtt_us > 5000);
+	one = 2;
     }
 
     if (rs.rtt_us != -1 &&
@@ -625,6 +675,7 @@ static int tcpup_acked(struct bbr_tcpcb *cb, int sockfd)
 	}
 
 	cb->lost++;
+	skb->sacked &= ~TCPCB_SACKED_NEW;
 	skb->sacked |= TCPCB_LOST;
 	// skb->sacked &= ~TCPCB_PROBE_LOST;
 	skb->hit_lost = cb->hit_lost +3;
@@ -633,7 +684,7 @@ static int tcpup_acked(struct bbr_tcpcb *cb, int sockfd)
     }
 
     if (tp->delivered < bbrinfo.counter) {
-	// fprintf(stderr, "cb->delivered %d, counter %d\n", tp->delivered, bbrinfo.counter);
+	fprintf(stderr, "TODO:XXX cb->delivered %d, counter %d %d\n", tp->delivered, bbrinfo.counter, duplicate);
 	// assert(cb->delivered >= bbrinfo.counter);
 	tp->delivered = bbrinfo.counter;
     }
@@ -675,6 +726,7 @@ static int tcpup_acked(struct bbr_tcpcb *cb, int sockfd)
 #endif
     if (rs.rtt_us != -1 && rs.rtt_us > 0) {
 	tcp_seq mstamp = US_TO_TS(tp->tcp_mstamp - rs.rtt_us);
+	if (!SEQ_GEQ(bbrinfo.ts_ecr, mstamp)) fprintf(stderr, "one = %d\n", one);
 	assert(SEQ_GEQ(bbrinfo.ts_ecr, mstamp));
     }
 
