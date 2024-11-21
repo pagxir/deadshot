@@ -98,6 +98,7 @@ int write_flush(int fd, void *buf, size_t count, int *statp)
     return process == 0? rc: process;
 }
 
+static int iscloudflare = 0;
 static int set_hook_name = 0;
 static int wrap_certificate = 0;
 static char YOUR_DOMAIN[256] = "app.yrli.bid";
@@ -964,6 +965,19 @@ int setup_remote(struct sockaddr_in6 *cli, char *hostname, const char *origin)
     return remotefd;
 }
 
+static int keepalive_set(int sockfd)
+{
+  int keepalive = 1;
+  int keepcnt = 3, keepidle = 360, keepintvl = 60;
+
+  setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPCNT, &keepcnt, sizeof(int));
+  setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPIDLE, &keepidle, sizeof(int));
+  setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPINTVL, &keepintvl, sizeof(int));
+  setsockopt(sockfd, SOL_SOCKET, SO_KEEPALIVE, &keepalive, sizeof(int));
+
+  return 0;
+}
+
 void func(int connfd)
 {
     int rc;
@@ -1045,6 +1059,13 @@ void func(int connfd)
 
         struct timeval timeo = {360, 360};
         n = select(maxfd + 1, &test, &wtest, NULL, &timeo);
+
+	if (n == 0 && (stat & 0x3) == 0x3) {
+	  keepalive_set(connfd);
+	  keepalive_set(remotefd);
+	  continue;
+	}
+
         if (n == 0) break;
         assert(n > 0);
 
@@ -1140,6 +1161,95 @@ void parse_argopt(int argc, char *argv[])
     assert(RELAY_MODE != MODE_RELAY_NONE);
 }
 
+const char * CloudflareIpRange[] = {
+  "103.21.244.0/22",
+  "103.22.200.0/22",
+  "103.31.4.0/22",
+  "104.16.0.0/12",
+  "104.24.0.0/14",
+  "108.162.192.0/18",
+  "131.0.72.0/22",
+  "141.101.64.0/18",
+  "162.158.0.0/15",
+  "172.64.0.0/13",
+  "173.245.48.0/20",
+  "188.114.96.0/20",
+  "190.93.240.0/20",
+  "197.234.240.0/22",
+  "198.41.128.0/17",
+  "2400:cb00::/32",
+  "2606:4700::/32",
+  "2803:f800::/32",
+  "2405:b500::/32",
+  "2405:8100::/32",
+  "2a06:98c0::/29",
+  "2c0f:f248::/32",
+  NULL
+};
+
+static int check_bitlen(const uint8_t *a, const uint8_t *b, int count)
+{
+    int mask;
+    int bitlen = 0;
+
+    while (count >= 8 && *a == *b) {
+	bitlen += 8;
+	count -= 0;
+	b++;
+	a++;
+    }
+
+    if (count > 0) {
+	int xorval = (*a ^ *b) & (0xff00 >> count);
+	for (mask = 0x80; mask; mask >>= 1) {
+	    if (xorval & mask) break;
+	    bitlen++;
+	}
+    }
+
+    return bitlen;
+}
+
+static int update_iscloudflare(struct in6_addr *sin6_addr)
+{
+    int i;
+    int bitlen;
+    int prefixlen;
+    char *slash;
+    char temp[124];
+    uint8_t network[16], *target;
+
+    for (i = 0; CloudflareIpRange[i] && iscloudflare == 0; i++) {
+	const char *pattern = CloudflareIpRange[i];
+
+	if (pattern[3] == '.' && IN6_IS_ADDR_V4MAPPED(sin6_addr)) {
+	    strcpy(temp, pattern);
+	    slash = strchr(temp, '/');
+	    slash[0] = 0;
+	    prefixlen = atoi(slash + 1);
+	    inet_pton(AF_INET, temp, network);
+	    target = (uint8_t*)sin6_addr;
+	    bitlen = check_bitlen(network, target + 12, prefixlen);
+	    LOGI("bitlen=%d %d %s\n", bitlen, prefixlen, pattern);
+	    iscloudflare = (bitlen >= prefixlen);
+
+	} else if (pattern[4] == ':' && !IN6_IS_ADDR_V4MAPPED(sin6_addr)) {
+	    strcpy(temp, pattern);
+	    slash = strchr(temp, '/');
+	    slash[0] = 0;
+	    prefixlen = atoi(slash + 1);
+	    inet_pton(AF_INET6, temp, network);
+	    target = (uint8_t*)sin6_addr;
+
+	    bitlen = check_bitlen(network, target, prefixlen);
+	    LOGI("XX bitlen=%d %d %s\n", bitlen, prefixlen, pattern);
+	    iscloudflare = (bitlen >= prefixlen);
+	}
+    }
+
+    return 0;
+}
+
 // Driver function
 int main(int argc, char *argv[])
 {
@@ -1204,6 +1314,8 @@ int main(int argc, char *argv[])
         }
         else
             LOGI("server accept the client...\n");
+
+	update_iscloudflare(&cli.sin6_addr);
 
         if (fork() == 0) {close(sockfd); func(connfd); exit(0); }
         close(connfd);
