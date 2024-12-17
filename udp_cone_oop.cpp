@@ -23,12 +23,26 @@
 
 #include <txall.h>
 #define log_set_lastbuf(x, y)
+#define DELAY_DUMP(expr) 					\
+    do { 							\
+	static int _match_##__LINE__ = 0; 			\
+	static int _lock_guard_##__LINE__ = 0; 			\
+	if (_lock_guard_##__LINE__ == _lock_guard_stamp) { 	\
+	    _match_##__LINE__++; 				\
+	    break; 						\
+	} 							\
+	int match = _match_##__LINE__;				\
+	_match_##__LINE__ = 0;					\
+	_lock_guard_##__LINE__ = _lock_guard_stamp; 		\
+	expr; 							\
+    } while ( 0 )
 
 static uint32_t _last_rx = 0;
 static uint32_t _last_tx = 0;
 static uint32_t _total_tx = 0;
 static uint32_t _total_rx = 0;
 static time_t _last_foobar = 0;
+static int _lock_guard_stamp = 0;
 
 // tx_getticks
 static uint32_t _last_rx_tick = 0;
@@ -148,7 +162,7 @@ static int conngc_session(time_t now, nat_conntrack_t *skip)
 
 			if ((item->last_alive > now) ||
 					(item->last_alive + timeout < now)) {
-				LOG_DEBUG("free datagram connection: %p, %d\n", skip, 0);
+				DELAY_DUMP(LOG_DEBUG("free datagram connection: %p, %d\n", skip, match));
 				int hash_idx = item->hash_idx;
 
 				if (item == _session_last[hash_idx]) {
@@ -237,11 +251,12 @@ static void update_timer(void *up)
 
 	tx_timer_reset(&ttp->timer, 5000);
 	log_set_lastbuf(NULL, 0);
-	LOG_DEBUG("update_timer %d\n", tx_ticks);
+	LOG_VERBOSE("update_timer %d\n", tx_ticks);
 	showbar("showbar", 0);
 	log_set_lastbuf(_last_log, sizeof(_last_log));
 
 	conngc_session(time(NULL), NULL);
+	_lock_guard_stamp++;
 	return;
 }
 
@@ -353,7 +368,9 @@ static int udp6_sendmsg(int fd, const void *buf, size_t len, int flags, const st
 	return sendmsg(fd, &msg, flags);
 }
 
-static const uint8_t prefix64[16] = {0, 0x64, 0xff, 0x9b, 0, 0, 0, 0, 0, 0, 0, 0, 127, 9, 9, 9};
+enum {NONE, PING, PONG, LATEST};
+static int ping_pong = 0;
+static uint8_t prefix64[16] = {0, 0x64, 0xff, 0x9b, 0, 0, 0, 0, 0, 0, 0, 0, 127, 9, 9, 9};
 static const uint8_t v4mapped[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 127, 9, 9, 9};
 
 static void do_udp_exchange_back(void *upp)
@@ -372,7 +389,8 @@ static void do_udp_exchange_back(void *upp)
 		tx_aincb_update(&up->file, count);
 
 		if (count <= 0) {
-			LOG_VERBOSE("recvfrom len %d, %d, strerr %s", count, errno, strerror(errno));
+			if (errno != EAGAIN)
+				DELAY_DUMP(LOG_VERBOSE("recvfrom len %d, %d, strerr %s", count, errno, strerror(errno)));
 			break;
 		}
 
@@ -385,14 +403,14 @@ static void do_udp_exchange_back(void *upp)
 			char abuf[64];
 			LOG_INFO("v4mapped match send to %s:%d\n", inet_ntop(AF_INET6, &dest.sin6_addr, abuf, sizeof(abuf)), htons(dest.sin6_port));
 
-		} else if (getenv("PONG")) {
+		} else if (ping_pong == PONG) {
 			memcpy(buf + count, ((uint32_t *)&in6addr.sin6_addr) + 3, 4);
 			memcpy(buf + count + 4, &in6addr.sin6_port, 2);
 			memset(&dest.sin6_addr, 0, 16);
 			padding = 6;
 			test = NULL;
 
-		} else if (getenv("PING")) {
+		} else if (ping_pong == PING) {
 			uint32_t *troping = (uint32_t *)&dest.sin6_addr;
 			memcpy(troping, prefix64, 16);
 			memcpy(troping + 3, buf + count - 6, 4);
@@ -407,8 +425,8 @@ static void do_udp_exchange_back(void *upp)
 		}
 
 		count = udp6_sendmsg(up->mainfd, buf, count + padding, MSG_DONTWAIT, test, &up->source);
-		if (count == -1) {
-			LOG_DEBUG("back sendto len %d, %d, strerr %s", count, errno, strerror(errno));
+		if (count == -1 && errno != EAGAIN) {
+			DELAY_DUMP(LOG_DEBUG("back sendto len %d, %d, strerr %s match %d", count, errno, strerror(errno), match));
 		}
 
 		if (count > 0) {
@@ -500,12 +518,12 @@ static int session_wrap_data(nat_conntrack_t *session, char *buf, size_t len, st
 	uint8_t * addr = (uint8_t *)&dest->sin6_addr;
 
 	buf[0] ^= _XOR_MASK_;
-	if (getenv("PING")) {
+	if (ping_pong == PING) {
 		memcpy(buf + len, addr + 12, 4);
 		memcpy(buf + len + 4, &dest->sin6_port, 2);
 		return len + 6;
-	} else if (getenv("PONG")) {
-		memcpy(&dest->sin6_port, buf + len -2, 2);
+	} else if (ping_pong == PONG) {
+		memcpy(&dest->sin6_port, buf + len - 2, 2);
 		convert_from_ipv4(&dest->sin6_addr, buf + len - 6);
 		return len - 6;
 	}
@@ -531,7 +549,8 @@ static void do_udp_exchange_recv(void *upp)
 		tx_aincb_update(&up->file, count);
 
 		if (count <= 0) {
-			LOG_VERBOSE("back recvfrom len %d, %d, strerr %s", count, errno, strerror(errno));
+			if (errno != EAGAIN)
+				LOG_VERBOSE("back recvfrom len %d, %d, strerr %s", count, errno, strerror(errno));
 			break;
 		}
 
@@ -564,7 +583,7 @@ static void do_udp_exchange_recv(void *upp)
 
 		count = sendto(session->sockfd, buf, datalen, MSG_DONTWAIT, (struct sockaddr *)&dest, sizeof(dest));
 		if (count == -1) {
-			LOG_DEBUG("sendto len %d, %d, strerr %s", count, errno, strerror(errno));
+			DELAY_DUMP(LOG_DEBUG("sendto len %d, %d, strerr %s match %d", count, errno, strerror(errno), match));
 		}
 	}
 
@@ -604,7 +623,8 @@ static void * udp_exchange_create(int port, int dport, int group)
 	setsockopt(sockfd, IPPROTO_IP, IP_PKTINFO, &yes, sizeof(yes));
 	setsockopt(sockfd, IPPROTO_IPV6, IPV6_RECVPKTINFO, &yes, sizeof(yes));
 	setsockopt(sockfd, SOL_IP, IP_TRANSPARENT, &yes, sizeof(yes));
-	setsockopt(sockfd, IPPROTO_IPV6, IPV6_V6ONLY, &yes, sizeof(yes));
+	if (ping_pong == PING)
+	    setsockopt(sockfd, IPPROTO_IPV6, IPV6_V6ONLY, &yes, sizeof(yes));
 
 	error = bind(sockfd, (struct sockaddr *)&in6addr, sizeof(in6addr));
 	TX_CHECK(error == 0, "bind udp socket failure");
@@ -644,16 +664,35 @@ int main(int argc, char *argv[])
 	tx_task_init(&tmtask.task, loop, update_timer, &tmtask);
 	tx_timer_reset(&tmtask.timer, 500);
 
+	if (getenv("PING"))
+	    ping_pong = PING;
+	else if (getenv("PONG"))
+	    ping_pong = PONG;
+
 	int group = 0;
 	for (int i = 1; i < argc; i++) {
 		int port, dport, match;
 		if (strcmp(argv[i], "-x") == 0 && i + 1 < argc) {
 			_XOR_MASK_ = atoi(argv[++i]);
 			continue;
+		} else
+		if (strcmp(argv[i], "--ping") == 0) {
+			ping_pong = PING;
+			continue;
+		} else
+		if (strcmp(argv[i], "--pong") == 0) {
+			ping_pong = PONG;
+			continue;
 		}
 
 		if (strcmp(argv[i], "-g") == 0 && i + 1 < argc) {
 			group++;
+			continue;
+		}
+
+		if (strcmp(argv[i], "--pfx64") == 0 && i + 1 < argc) {
+			if (inet_pton(AF_INET6, argv[++i], prefix64)) {
+			}
 			continue;
 		}
 
