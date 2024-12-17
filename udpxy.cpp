@@ -11,10 +11,12 @@
 #define S_CLOSE close
 #define S_READ read
 #define S_WRITE write
+#define WSAStartup(x, y)
+typedef int WSADATA;
 #else
 #include <winsock2.h>
 #include <ws2tcpip.h>
-#define socklen_t int
+typedef int socklen_t;
 #define S_CLOSE(s) closesocket(s)
 #define S_READ(fd, buf, len) recv(fd, buf, len, 0)
 #define S_WRITE(fd, buf, len) send(fd, buf, len, 0)
@@ -170,6 +172,7 @@ int udpio_realloc(int source, const struct sockaddr_in6 & addr)
 
 	iocb.flags = 0;
 	iocb.target = addr;
+	iocb.source = source;
 	std::set<udp4to6cb>::iterator iter;
 
 	iter = udp4to6_list.find(iocb);
@@ -195,7 +198,7 @@ int udpio_realloc(int source, const struct sockaddr_in6 & addr)
 int udpio_event(fd_set * readfds, fd_set * writefds, fd_set * errorfds)
 {
 	int fd, len;
-	int addr_len1;
+	socklen_t addr_len1;
 	char buf[4096];
 	struct sockaddr_in addr_in4;
 	struct sockaddr_in6 addr_in6;
@@ -235,6 +238,7 @@ int udpio_event(fd_set * readfds, fd_set * writefds, fd_set * errorfds)
 			if (len == -1) continue;
 			fprintf(stderr, "recvfrom4to6: len = %d\n", len);
 
+			fd = iter64->source;
 			if (iter46->flags & UDPF_KEEP) {
 				fprintf(stderr, "failure send\n");
 				continue;
@@ -320,7 +324,7 @@ int udpio_fd_set(fd_set * readfds, fd_set * writefds, fd_set * errorfds)
 int udp_switch(void)
 {
 	int count;
-	struct fd_set readfds, writefds, errorfds;
+	fd_set readfds, writefds, errorfds;
 
 	time_t t_last, t_current;
 	size_t c_active = udp6to4_list.size();
