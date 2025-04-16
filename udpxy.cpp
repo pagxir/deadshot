@@ -238,7 +238,7 @@ int udpio_event(fd_set * readfds, fd_set * writefds, fd_set * errorfds)
 			if (len == -1) continue;
 			fprintf(stderr, "recvfrom4to6: len = %d\n", len);
 
-			fd = iter64->source;
+			fd = iter46->source;
 			if (iter46->flags & UDPF_KEEP) {
 				fprintf(stderr, "failure send\n");
 				continue;
