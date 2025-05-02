@@ -33,7 +33,9 @@ enum {
     MAPPED_ADDRESS = 0x0001,
     CHANGE_REQUEST = 0x0003,
     SOURCE_ADDRESS = 0x0004,
-    CHANGED_ADDRESS = 0x0005
+    CHANGED_ADDRESS = 0x0005,
+    XOR_MAPPED_ADDRESS = 0x0020,
+    XOR_MAPPED_ADDRESS_LEGACY = 0x8020
 };
 
 #define STUN_MAX_REQUEST 64
@@ -47,7 +49,7 @@ struct request_context {
     int flags;
     size_t last_ticks;
     size_t retries_times;
-    u_char request_ident[16];
+    uint32_t magic, tid1, tid2, tid3;
     u_char request_source[128];
     struct sockaddr_in request_target;
 };
@@ -80,7 +82,7 @@ static size_t utils_getticks(void)
 
 struct stun_request_args_base {
     u_short binding_request, payload_length;
-    u_char  request_session_key[16];
+    uint32_t magic, tid1, tid2, tid3;
 };
 
 static void clear_carrier(void)
@@ -114,7 +116,8 @@ static u_char *stun_pack(u_char *dst, u_short type, const void *src, size_t len)
     return dst;
 }
 
-static void output_debug_attrib(u_short attrib, u_char *but, u_short len)
+
+static void output_debug_attrib(struct stun_request_args_base *args0, u_short attrib, u_char *but, u_short len)
 {
 	struct {
 		u_short family;
@@ -144,12 +147,31 @@ static void output_debug_attrib(u_short attrib, u_char *but, u_short len)
 			fprintf(stderr, "mapped address: %s:%d\n",
 					inet_ntoa(stun_addr.in1addr), htons(stun_addr.port));
 			break;
+
+		case XOR_MAPPED_ADDRESS:
+			stun_addr.port ^= ntohs(ntohl(args0->magic) >> 16);
+			stun_addr.in1addr.s_addr = stun_addr.in1addr.s_addr ^ args0->magic;
+			fprintf(stderr, "xor mapped address: %s:%d\n",
+					inet_ntoa(stun_addr.in1addr), htons(stun_addr.port));
+			break;
+
+		case XOR_MAPPED_ADDRESS_LEGACY:
+			stun_addr.port ^= ntohs(ntohl(args0->magic) >> 16);
+			stun_addr.in1addr.s_addr = stun_addr.in1addr.s_addr ^ args0->magic;
+			fprintf(stderr, "xor legacy mapped address: %s:%d\n",
+					inet_ntoa(stun_addr.in1addr), htons(stun_addr.port));
+			break;
+
+		default:
+			fprintf(stderr, "default: type=%d %s:%d\n", attrib,
+					inet_ntoa(stun_addr.in1addr), htons(stun_addr.port));
+			break;
 	}
 
 	return;
 }
 
-static void extract_stun_packet(u_char *but, size_t len)
+static void extract_stun_packet(struct stun_request_args_base *args0, u_char *but, size_t len)
 {
 	u_short attrib, length;
 	u_char *limit = but + len;
@@ -168,7 +190,7 @@ static void extract_stun_packet(u_char *but, size_t len)
 			break;
 		}
 
-		output_debug_attrib(attrib, but, length);
+		output_debug_attrib(args0, attrib, but, length);
 		but += length;
 		continue;
 	}
@@ -201,20 +223,22 @@ static u_int stun_do_packet(int fildes, u_char *but, size_t len, struct sockaddr
 		return 0;
 	}
 
+	d_off = sizeof(args0);
+	memcpy(&args0, but, sizeof(args0));
+
 	{
 		struct sockaddr_in so;
 		clear_carrier();
 		memcpy(&so, from, fromlen);
-		fprintf(stderr, "incoming: %s:%d\n",
-				inet_ntoa(so.sin_addr), ntohs(so.sin_port));
+		fprintf(stderr, "incoming: %s:%d %d type=%d\n",
+				inet_ntoa(so.sin_addr), ntohs(so.sin_port), len, args0.binding_request);
 	}
-
-	d_off = sizeof(args0);
-	memcpy(&args0, but, sizeof(args0));
 
 	if (args0.binding_request == htons(BindingErrorResponse)
 			|| args0.binding_request == htons(BindingResponse)) {
-		extract_stun_packet(but + d_off, len - d_off);
+		clear_carrier();
+		extract_stun_packet(&args0, but + d_off, len - d_off);
+		fprintf(stderr, "\n");
 		flags = STUN_FLAG_READED;
 		return flags;
 	}
@@ -294,14 +318,17 @@ static void outgoing_stun_request(struct request_context *ctx, int fildes)
 #endif
 
 	ctx->last_ticks = utils_getticks();
-	memcpy(arg0.request_session_key, ctx->request_ident, sizeof(ctx->request_ident));
-	memcpy(arg0.request_session_key + 12, &ctx->last_ticks, 4);
-	arg0.request_session_key[11] = ctx->retries_times++;
+	arg0.magic = ctx->magic;
+	arg0.tid1 = ctx->tid1;
+	arg0.tid2 = ctx->tid2;
+	arg0.tid3 = ctx->tid3;
+	arg0.tid3 = htonl((ctx->last_ticks & ~0xff) | (ctx->retries_times++ & 0xff));
 	arg0.payload_length = htons(adj - d_buf - d_off);
 
 	memcpy(d_buf, &arg0, d_off);
 	(void)sendto(fildes, (char *)d_buf, adj - d_buf, 0,
 			(const struct sockaddr *)&ctx->request_target, sizeof(ctx->request_target));
+	clear_carrier();
 	fprintf(stderr, "output request: %s\n", ctx->request_source);
 	pending_incoming++;
 	return;
@@ -334,7 +361,8 @@ static void stun_do_output(u_int flags, int fildes, size_t ticks, u_char *but, s
 		}
 
 		if (receive != 0 &&
-				0 == memcmp(ctx->request_ident, arg0.request_session_key, 11)) {
+				ctx->magic == arg0.magic &&
+				ctx->tid1 == arg0.tid1 && ctx->tid2 == arg0.tid2) {
 			ctx->flags |= STUN_FLAG_FINISH;
 			pending_incoming--;
 			receive = 0;
@@ -342,6 +370,7 @@ static void stun_do_output(u_int flags, int fildes, size_t ticks, u_char *but, s
 		}
 
 		if (pending_incoming < 3
+				&& !(ctx->flags & STUN_FLAG_FINISH)
 				&& ctx->last_ticks + 1000 < ticks && ctx->retries_times < 3) {
 			outgoing_stun_request(ctx, fildes);
 		}
@@ -410,13 +439,11 @@ static void load_stun_config(int argc, char *argv[])
 
 		fprintf(stderr, "%s ", argv[i]);
 
-		for (j = 0; j < 8; j++) {
-			u_short *ident = (u_short *)ctx->request_ident;
-			ident[j] = rand();
-			fprintf(stderr, "%04x", htons(ident[j]));
-		}
-
-		fprintf(stderr, "\n");
+		ctx->magic = rand();
+		ctx->tid1 = rand();
+		ctx->tid2 = rand();
+		ctx->tid3 = rand();
+		fprintf(stderr, "magic list %08x %08x %08x %08x\n", ctx->magic, ctx->tid1, ctx->tid2, ctx->tid3);
 	}
 
 	return;
@@ -472,7 +499,7 @@ int main(int argc, char *argv[])
 	load_stun_config(argc, argv);
 
 	stun_do_output(STUN_FLAG_TIMERD, fildes, last_ticks, NULL, 0);
-	while (pending_incoming > 0 || last_idle + 48000 > last_ticks) {
+	while (pending_incoming > 0 && last_idle + 12000 > last_ticks) {
 		u_char but[1024];
 		u_int  stun_flags;
 		size_t stun_ticks;
