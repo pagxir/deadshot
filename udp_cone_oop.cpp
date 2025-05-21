@@ -618,6 +618,7 @@ static void * udp_exchange_create(int port, int dport, int group)
 	in6addr.sin6_addr = in6addr_loopback;
 	in6addr.sin6_addr = in6addr_any;
 
+#ifdef IP_TRANSPARENT
 	int yes = 1;
 	setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
 	setsockopt(sockfd, IPPROTO_IP, IP_PKTINFO, &yes, sizeof(yes));
@@ -625,6 +626,7 @@ static void * udp_exchange_create(int port, int dport, int group)
 	setsockopt(sockfd, SOL_IP, IP_TRANSPARENT, &yes, sizeof(yes));
 	if (ping_pong == PING)
 	    setsockopt(sockfd, IPPROTO_IPV6, IPV6_V6ONLY, &yes, sizeof(yes));
+#endif
 
 	error = bind(sockfd, (struct sockaddr *)&in6addr, sizeof(in6addr));
 	TX_CHECK(error == 0, "bind udp socket failure");

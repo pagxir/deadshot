@@ -522,10 +522,10 @@ int unwind_client_hello(uint8_t *snibuff, size_t length)
     dest += 2;
     p += 2;
 
-	int need_fixup = 0;
-	uint32_t  checksum = 0;
-	uint8_t * fixup_base = dest;
-	int ntags = 0, session_ticket_ntag = -1;
+    int need_fixup = 0;
+    uint32_t  checksum = 0;
+    uint8_t * fixup_base = dest;
+    int ntags = 0, session_ticket_ntag = -1;
     const uint8_t *limit = p + extention_length;
 
     int last_tag = -1;
@@ -536,7 +536,7 @@ int unwind_client_hello(uint8_t *snibuff, size_t length)
         LOG("ext tag: %d %d\n", tag, len);
         uint16_t fqdn_name_len = 0;
 
-		ntags++;
+        ntags++;
         if (tag == TAG_SNI) {
             const uint8_t *sni = (p + 4);
             assert (sni[2] == 0);
@@ -550,28 +550,28 @@ int unwind_client_hello(uint8_t *snibuff, size_t length)
             if (dnsDomainIs(hostname, YOUR_DOMAIN) && len > 6) {
                 memcpy(hostname, p + 6, len - 2);
                 hostname[len - 2] = 0;
-				for (i = 0; i < len - 2; i++)
-					hostname[i] ^= encrypt_byte_list[i % sizeof(encrypt_byte_list)];
-				memcpy(&checksum, hostname, sizeof(checksum));
-				memmove(hostname, hostname + 4, len - 6 + 1);
+                for (i = 0; i < len - 2; i++)
+                    hostname[i] ^= encrypt_byte_list[i % sizeof(encrypt_byte_list)];
+                memcpy(&checksum, hostname, sizeof(checksum));
+                memmove(hostname, hostname + 4, len - 6 + 1);
                 fqdn_name_len = strlen(hostname);
-				session_ticket_ntag = (p[4] << 8) | p[5];
+                session_ticket_ntag = (p[4] << 8) | p[5];
                 LOGI("target: %s session_ticket_ntag %d\n", hostname, session_ticket_ntag);
-				wrap_certificate = 1;
-				if (session_ticket_ntag < ntags && session_ticket_ntag > 0) {
-					LOGI("missing ticket: %d %d\n", session_ticket_ntag, ntags);
-					need_fixup = 1;
-				}
+                wrap_certificate = 1;
+                if (session_ticket_ntag < ntags && session_ticket_ntag > 0) {
+                    LOGI("missing ticket: %d %d\n", session_ticket_ntag, ntags);
+                    need_fixup = 1;
+                }
             }
         }
 
-		if (ntags == session_ticket_ntag + 1) {
-			LOGI("adding ticket: %d %d\n", session_ticket_ntag, ntags);
-			dest[0] = (TAG_SESSION_TICKET >> 8);
-			dest[1] = (TAG_SESSION_TICKET);
+        if (ntags == session_ticket_ntag + 1) {
+            LOGI("adding ticket: %d %d\n", session_ticket_ntag, ntags);
+            dest[0] = (TAG_SESSION_TICKET >> 8);
+            dest[1] = (TAG_SESSION_TICKET);
             dest[2] = 0; dest[3] = 0;
-			dest += 4;
-		}
+            dest += 4;
+        }
 
         if (dnsDomainIs(hostname, YOUR_DOMAIN) && tag == TAG_SNI) {
 #if 0
@@ -584,8 +584,8 @@ int unwind_client_hello(uint8_t *snibuff, size_t length)
             dest += len;
             dest += 4;
         } else if (tag == TAG_SESSION_TICKET) {
-			dest[0] = (TAG_SNI >> 8);
-			dest[1] = (TAG_SNI);
+            dest[0] = (TAG_SNI >> 8);
+            dest[1] = (TAG_SNI);
             dest[2] = 0; dest[3] = 0;
             size_t namelen = strlen(hostname);
 
@@ -599,7 +599,7 @@ int unwind_client_hello(uint8_t *snibuff, size_t length)
             dest[2] = (namelen + 5) >> 8;
 
             dest += (namelen + 4 + 5);
-			modify = 1;
+            modify = 1;
         }
 
         last_tag = tag;
@@ -607,37 +607,37 @@ int unwind_client_hello(uint8_t *snibuff, size_t length)
         p += 4;
     }
 
-	if (ntags == session_ticket_ntag) {
-		LOGI("adding ticket: %d %d\n", session_ticket_ntag, ntags);
-		dest[0] = (TAG_SESSION_TICKET >> 8);
-		dest[1] = (TAG_SESSION_TICKET);
-		dest[2] = 0; dest[3] = 0;
-		dest += 4;
-	}
+    if (ntags == session_ticket_ntag) {
+        LOGI("adding ticket: %d %d\n", session_ticket_ntag, ntags);
+        dest[0] = (TAG_SESSION_TICKET >> 8);
+        dest[1] = (TAG_SESSION_TICKET);
+        dest[2] = 0; dest[3] = 0;
+        dest += 4;
+    }
 
-	LOGI("TODO:XXX session_ticket_ntag %d\n", session_ticket_ntag);
-	if (need_fixup) {
-		int tag_offset = 0;
-		while (fixup_base < dest) {
-			uint8_t *p = fixup_base;
-			uint16_t tag = p[1]|(p[0]<<8);
-			uint16_t len = p[3]|(p[2]<<8);
+    LOGI("TODO:XXX session_ticket_ntag %d\n", session_ticket_ntag);
+    if (need_fixup) {
+        int tag_offset = 0;
+        while (fixup_base < dest) {
+            uint8_t *p = fixup_base;
+            uint16_t tag = p[1]|(p[0]<<8);
+            uint16_t len = p[3]|(p[2]<<8);
 
-			tag_offset++;
-			if (tag_offset >= session_ticket_ntag) break;
-			LOG("ext tag: %d %d\n", tag, len);
+            tag_offset++;
+            if (tag_offset >= session_ticket_ntag) break;
+            LOG("ext tag: %d %d\n", tag, len);
 
             fixup_base += len;
             fixup_base += 4;
-		}
+        }
 
-		memmove(fixup_base + 4, fixup_base, dest - fixup_base);
-		dest += 4;
+        memmove(fixup_base + 4, fixup_base, dest - fixup_base);
+        dest += 4;
 
-		fixup_base[0] = (TAG_SESSION_TICKET >> 8);
-		fixup_base[1] = (TAG_SESSION_TICKET);
-		fixup_base[2] = 0; fixup_base[3] = 0;
-	}
+        fixup_base[0] = (TAG_SESSION_TICKET >> 8);
+        fixup_base[1] = (TAG_SESSION_TICKET);
+        fixup_base[2] = 0; fixup_base[3] = 0;
+    }
 
     int extlen = (dest - extention_lengthp - 2);
     extention_lengthp[0] = extlen >> 8;
@@ -658,15 +658,15 @@ int unwind_client_hello(uint8_t *snibuff, size_t length)
     int oldlen = (snibuff[3] << 8) | snibuff[4];
     LOG("fulllen: %d %d %ld\n", fulllength, oldlen, length);
 
-	uint32_t checksum1 = update_checksum(hold, dest - hold);
-	LOGI("checksum %x, exptected %x modify %d\n", checksum, checksum1, modify);
-	if (modify && checksum != checksum1) {
-		set_hook_name = 1;
-		modify = 0;
-	}
+    uint32_t checksum1 = update_checksum(hold, dest - hold);
+    LOGI("checksum %x, exptected %x modify %d iscloudflare %d\n", checksum, checksum1, modify, iscloudflare);
+    if (modify && checksum != checksum1 && 0 == iscloudflare) {
+        set_hook_name = 1;
+        modify = 0;
+    }
 
     set_hook_name = 0;
-    if (modify == 0 && !dnsDomainIs(hostname, YOUR_DOMAIN)) { set_hook_name = 1; }
+    if (modify == 0 && !dnsDomainIs(hostname, YOUR_DOMAIN)) { set_hook_name = !iscloudflare; }
     if (modify == 0) return length;
 
     memcpy(snibuff, hold, dest - hold);
@@ -721,33 +721,33 @@ void dump(char *buff, size_t len, struct tls_header *header, const char *title)
 
 static int do_certificate_wrap(char *buf, size_t len)
 {
-	int i;
+    int i;
     uint8_t hold[MAX];
     uint8_t *p = buf + 5;
     uint8_t *dest = hold + 5;
 
-	if (wrap_certificate == 0) {
-		return len;
-	}
+    if (wrap_certificate == 0) {
+        return len;
+    }
 
-	const uint8_t * limit = buf + len;
-	assert (len < sizeof(hold));
+    const uint8_t * limit = buf + len;
+    assert (len < sizeof(hold));
     memcpy(hold, buf, 5);
 
-	while (limit > p) {
-		int type = *p++;
-		int length = p[2]|(p[1]<<8)|(p[0]<<16);
-		p += 3;
+    while (limit > p) {
+        int type = *p++;
+        int length = p[2]|(p[1]<<8)|(p[0]<<16);
+        p += 3;
 
-		if (type == HANDSHAKE_TYPE_CERTIFICATE) {
-			LOGI("test certificate: %d\n", length);
-			for (i = 0; i < length; i++) p[i] ^= 0x56;
-		}
+        if (type == HANDSHAKE_TYPE_CERTIFICATE) {
+            LOGI("test certificate: %d\n", length);
+            for (i = 0; i < length; i++) p[i] ^= 0x56;
+        }
 
-		p += length;
-	}
+        p += length;
+    }
 
-	return len;
+    return len;
 }
 
 int pull(int connfd, int remotefd, int *direct)
@@ -1104,11 +1104,11 @@ void func(int connfd)
     return;
 }
 
+int sigchild = 0;
 void clean_pcb(int signo)
 {
-    int st;
     LOG("clean_pcb\n");
-    while(waitpid(-1, &st, WNOHANG) > 0);
+    sigchild = 1;
     // signal(SIGCHLD, clean_pcb);
 }
 
@@ -1303,6 +1303,15 @@ int main(int argc, char *argv[])
         LOGI("Server listening..\n");
     len = sizeof(cli);
 
+    struct in6_addr test;
+    inet_pton(AF_INET6, "::ffff:104.28.157.200", &test);
+    LOGI("iscloudflare=%d\n", iscloudflare);
+    update_iscloudflare(&test);
+    LOGI("AAA iscloudflare=%d\n", iscloudflare);
+    iscloudflare =0;
+
+    int st;
+    int nsession = 0;
 
     do {
         len = sizeof(cli);
@@ -1315,9 +1324,31 @@ int main(int argc, char *argv[])
         else
             LOGI("server accept the client...\n");
 
-	update_iscloudflare(&cli.sin6_addr);
+        if (sigchild) {
+            while (waitpid(-1, &st, WNOHANG) > 0)
+                nsession --;
+            sigchild = 0;
+        }
 
-        if (fork() == 0) {close(sockfd); func(connfd); exit(0); }
+        update_iscloudflare(&cli.sin6_addr);
+
+        if (nsession < 1024) {
+            nsession++;
+            pid_t child = fork();
+            switch (child) {
+                case 0:
+                    close(sockfd);
+                    func(connfd);
+                    exit(0);
+                    break;
+
+                case -1:
+                    nsession--;
+                default:
+                    break;
+            }
+        }
+
         close(connfd);
         // Function for chatting between client and server
     } while (1);
