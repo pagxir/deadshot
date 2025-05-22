@@ -24,7 +24,7 @@
 #include <wolfssl/wolfcrypt/curve25519.h>
 #include <wolfssl/wolfcrypt/hpke.h>
 
-#define MAX 65536
+#define MAXSIZE 65536
 #define SA struct sockaddr
 
 struct tls_header {
@@ -265,7 +265,7 @@ int rewind_client_hello(uint8_t *snibuff, size_t length)
             dest[2] = 0; dest[3] = 0;
             size_t namelen = strlen(YOUR_DOMAIN);
 
-            strcpy(dest + 4 + 5, YOUR_DOMAIN);
+            strcpy((char *)dest + 4 + 5, YOUR_DOMAIN);
             dest[4 + 4] = namelen;
             dest[4 + 3] = (namelen >> 8);
             dest[4 + 2] = 0;
@@ -360,8 +360,8 @@ static int load_encrypt_client_hello(const void *ch, size_t chlen, const void *p
     uint8_t *d2 = (uint8_t*)payload;
     memset(aad + (d2 - d1), 0, payload_len);
 
-    ret = wc_HpkeOpenBase(hpke, receiverPrivkey0, enc,
-		    enclen, info, infoLen, aad, chlen, payload, payload_len - 16, output);
+    ret = wc_HpkeOpenBase(hpke, receiverPrivkey0, (const byte *)enc,
+		    enclen, info, infoLen, aad, chlen, (byte *)payload, payload_len - 16, output);
 
     if (ret == 0) *outlen = payload_len - 16;
     LOGI("load_encrypt_client_hello: ret=%d\n", ret);
@@ -374,7 +374,7 @@ int decode_client_hello(uint8_t *decoded, size_t ddsz, const uint8_t *plain, siz
     const uint8_t *p = plain;
     const uint8_t *refer = outer;
 
-    uint8_t *ech_start = p;
+    uint8_t *ech_start = (uint8_t *)p;
 
     dest[0] = p[0]; dest[1] = p[1];
     dest += 2;
@@ -736,7 +736,7 @@ int unwind_client_hello(uint8_t *snibuff, size_t length)
             dest[2] = 0; dest[3] = 0;
             size_t namelen = strlen(hostname);
 
-            strcpy(dest + 4 + 5, hostname);
+            strcpy((char *)dest + 4 + 5, hostname);
             dest[4 + 4] = namelen;
             dest[4 + 3] = (namelen >> 8);
             dest[4 + 2] = 0;
@@ -785,7 +785,7 @@ void dump(char *buff, size_t len, struct tls_header *header, const char *title)
     LOGV("%s: %d %x.%x %d\n", title, header->type, header->major, header->minor, header->length);
     if (22 == header->type) {
         int length = 0;
-        uint8_t *p = buff;
+        uint8_t *p = (uint8_t*)buff;
         if (*p == 11) {
             LOGV("certificate\n");
             return ;
@@ -828,7 +828,7 @@ void dump(char *buff, size_t len, struct tls_header *header, const char *title)
 
 int pull(int connfd, int remotefd)
 {
-    char buff[MAX];
+    char buff[MAXSIZE];
     int n, l, i;
     struct tls_header header;
     // infinite loop for chat
@@ -857,7 +857,7 @@ int pull(int connfd, int remotefd)
 // Function designed for chat between client and server.
 int push(int connfd, int remotefd)
 {
-    char buff[MAX];
+    char buff[MAXSIZE];
     int n, l, i;
     struct tls_header header;
     // infinite loop for chat
@@ -958,13 +958,13 @@ int setup_remote(struct sockaddr_in6 *cli, char *hostname)
 
         if (rp->ai_family == AF_INET) {
            char buf[256];
-           struct sockaddr_in *info = rp->ai_addr;
+           struct sockaddr_in *info = (struct sockaddr_in *)rp->ai_addr;
            LOGI("sfd=%d -> %s\n", sfd, inet_ntop(AF_INET, &info->sin_addr, buf, sizeof(buf)));
         }
 
         if (rp->ai_family == AF_INET6) {
            char buf[256];
-           struct sockaddr_in6 *info = rp->ai_addr;
+           struct sockaddr_in6 *info = (struct sockaddr_in6 *)rp->ai_addr;
            LOGI("sfd=%d -> %s\n", sfd, inet_ntop(AF_INET6, &info->sin6_addr, buf, sizeof(buf)));
         }
 
@@ -1053,7 +1053,7 @@ void func(int connfd)
     }
 
     if (header.length + 5 > sizeof(snibuff))
-	LOGI(stderr, "len: %d\n", header.length);
+	LOGI("len: %d\n", header.length);
     assert(header.length + 5 < sizeof(snibuff));
 
     int nbyte = read_flush(connfd, snibuff + 5, header.length);
@@ -1189,7 +1189,7 @@ void parse_argopt(int argc, char *argv[])
 
 	    infoLen = sizeof(info) - 6;
             byte info_head[] = "tls ech";
-	    Base64_Decode(optname, strlen(optname), info + 6, &infoLen);
+	    Base64_Decode((const byte*)optname, strlen(optname), info + 6, &infoLen);
             memcpy(info, info_head, sizeof(info_head));
 	    infoLen += 6;
 	} else
@@ -1239,7 +1239,8 @@ void parse_argopt(int argc, char *argv[])
 // Driver function
 int main(int argc, char *argv[])
 {
-    int sockfd, connfd, len;
+    int sockfd, connfd;
+    socklen_t len;
     struct sockaddr_in6 servaddr, cli;
     signal(SIGCHLD, clean_pcb);
     signal(SIGINT, SIG_DFL);
