@@ -1105,11 +1105,11 @@ void func(int connfd)
     return;
 }
 
+static int sigchild = 0;
 void clean_pcb(int signo)
 {
-    int st;
     LOGD("clean_pcb\n");
-    while(waitpid(-1, &st, WNOHANG) > 0);
+    sigchild = 1;
     // signal(SIGCHLD, clean_pcb);
 }
 
@@ -1211,6 +1211,7 @@ int main(int argc, char *argv[])
     int sockfd, connfd, len;
     struct sockaddr_in6 servaddr, cli;
     signal(SIGCHLD, clean_pcb);
+    signal(SIGINT, SIG_DFL);
 
     parse_argopt(argc, argv);
 
@@ -1253,6 +1254,13 @@ int main(int argc, char *argv[])
         LOGI("Server listening..\n");
     len = sizeof(cli);
 
+    int st;
+    int nsession = 0;
+
+    sigset_t save, set;
+    sigemptyset(&set);
+    sigaddset(&set, SIGCHLD);
+
     do {
         len = sizeof(cli);
         // Accept the data packet from client and verification
@@ -1264,15 +1272,31 @@ int main(int argc, char *argv[])
         else
             LOGI("server accept the client...\n");
 
+        if (sigchild) {
+	    sigprocmask(SIG_BLOCK, &set, &save);
+            sigchild = 0;
+	    while (waitpid(-1, &st, WNOHANG) > 0)
+		nsession--;
+	    sigprocmask(SIG_UNBLOCK, &set, &save);
+        }
+
+        pid_t child = 0;
 	struct sockaddr_in6 mime;
 	socklen_t mimelen = sizeof(mime);
-	if (getsockname(sockfd, (SA*)&mime, &mimelen) != 0 && (IN6_ARE_ADDR_EQUAL(&cli.sin6_addr, &mime.sin6_addr))) {
+
+        if (nsession > 1024) {
+            LOGI("two many fork");
+        } else if (getsockname(sockfd, (SA*)&mime, &mimelen) != 0 && (IN6_ARE_ADDR_EQUAL(&cli.sin6_addr, &mime.sin6_addr))) {
             LOGI("disable connect self from local host to avoid loop");
-	} else if (fork() == 0) {
+	} else if ((child = fork()) == 0) {
 	    close(sockfd);
 	    func(connfd);
 	    exit(0); 
-	}
+	} else if (child > 0) {
+	    sigprocmask(SIG_BLOCK, &set, &save);
+            nsession++;
+	    sigprocmask(SIG_UNBLOCK, &set, &save);
+        }
         close(connfd);
         // Function for chatting between client and server
     } while (1);
