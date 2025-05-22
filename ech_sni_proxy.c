@@ -1007,6 +1007,20 @@ int setup_remote(struct sockaddr_in6 *cli, char *hostname)
     return remotefd;
 }
 
+static int setkeepalive(int sockfd)
+{
+    int keepalive = 1;
+    int keepcnt = 3, keepidle = 360, keepintvl = 60;
+
+    setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPCNT, &keepcnt, sizeof(int));
+    setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPIDLE, &keepidle, sizeof(int));
+    setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPINTVL, &keepintvl, sizeof(int));
+    setsockopt(sockfd, SOL_SOCKET, SO_KEEPALIVE, &keepalive, sizeof(int));
+
+    return 0;
+}
+
+
 void func(int connfd)
 {
     int rc;
@@ -1072,6 +1086,7 @@ void func(int connfd)
     rc = write(remotefd, snibuff, newlen);
     assert(rc == newlen);
     int stat = 0;
+    int keepaliveset = 0;
     int maxfd = connfd > remotefd? connfd: remotefd;
 
     do {
@@ -1082,6 +1097,22 @@ void func(int connfd)
 
         struct timeval timeo = {360, 360};
         n = select(maxfd + 1, &test, NULL, NULL, &timeo);
+	if (n == 0 && !(stat & 0x3)) {
+	    switch (keepaliveset? MODE_RELAY_NONE: RELAY_MODE) {
+		case MODE_RELAY_CLIENT:
+		    setkeepalive(remotefd);
+		    keepaliveset = 1;
+		    break;
+
+		case MODE_RELAY_SERVER:
+		    setkeepalive(connfd);
+		    keepaliveset = 1;
+		    break;
+	    }
+
+	    continue;
+	}
+
         if (n == 0) break;
         assert(n > 0);
 
