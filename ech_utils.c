@@ -186,12 +186,13 @@ int GenerateEchConfig(void *heap, const char* publicName,
 }
 
 /* convert 16 bit integer to opaque */
-WC_INLINE void c16toa(word16 wc_u16, byte* c)
+void c16toa(word16 wc_u16, byte* c)
 {
     c[0] = (byte)((wc_u16 >> 8) & 0xff);
     c[1] =  (byte)(wc_u16       & 0xff);
 }
 
+#if 0
 /* get the raw ech config from our struct */
 int GetEchConfig(WOLFSSL_EchConfig* config, byte* output, word32* outputLen)
 {
@@ -392,6 +393,7 @@ int GetEchConfigsEx(WOLFSSL_EchConfig* configs, byte* output, word32* outputLen)
 
     return WOLFSSL_SUCCESS;
 }
+#endif
 
 byte enc64[]="PzoBjq45KqqJZS3Bfcux4exMbd5G5l6n/oLZdzuSFXI=";
 // enclen=32
