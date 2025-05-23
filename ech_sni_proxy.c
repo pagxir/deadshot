@@ -1110,6 +1110,7 @@ void func(int connfd)
 		    break;
 	    }
 
+	    n = 1;
 	    continue;
 	}
 
