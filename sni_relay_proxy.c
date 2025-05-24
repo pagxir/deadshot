@@ -990,7 +990,7 @@ void func(int connfd)
     struct timeval tv = {};
     tv.tv_sec = 30;  /* 30 Secs Timeout */
     int ret = setsockopt(connfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-	if (ret) perror("setsockopt");
+    if (ret) perror("setsockopt");
     assert(ret == 0);
 
     l = read(connfd, snibuff, 5);
@@ -1009,7 +1009,7 @@ void func(int connfd)
     }
 
     if (header.length + 5 > sizeof(snibuff))
-	LOGI("len: %d\n", header.length);
+        LOGI("len: %d\n", header.length);
     assert(header.length + 5 < sizeof(snibuff));
 
     int nbyte = read_flush(connfd, snibuff + 5, header.length);
@@ -1045,8 +1045,8 @@ void func(int connfd)
     int wstat = 3;
     int maxfd = connfd > remotefd? connfd: remotefd;
 
-	int direct = 0;
-	int pull_direct = 0;
+    int direct = 0;
+    int pull_direct = 0;
     do {
         FD_ZERO(&test);
         if (~stat & 1) FD_SET(connfd, &test);
@@ -1060,7 +1060,7 @@ void func(int connfd)
         struct timeval timeo = {360, 360};
         n = select(maxfd + 1, &test, &wtest, NULL, &timeo);
 
-	if (n == 0 && (stat & 0x3) == 0x3) {
+	if (n == 0 && (stat & 0x3) != 0x3) {
 	  keepalive_set(connfd);
 	  keepalive_set(remotefd);
 	  continue;
@@ -1070,32 +1070,32 @@ void func(int connfd)
         assert(n > 0);
 
         if (FD_ISSET(connfd, &wtest)) {
-			wstat &= ~1;
-		}
+            wstat &= ~1;
+        }
 
         if (FD_ISSET(remotefd, &wtest)) {
-			wstat &= ~2;
-		}
+            wstat &= ~2;
+        }
 
-		int half = 0;
-		if (!direct && FD_ISSET(connfd, &test) && !(wstat & 2)) {
-			if (push(connfd, remotefd, &direct) <= 0) stat |= 1;
-		} else if (FD_ISSET(connfd, &test) && !(wstat & 2)) {
-			half = 0;
+        int half = 0;
+        if (!direct && FD_ISSET(connfd, &test) && !(wstat & 2)) {
+            if (push(connfd, remotefd, &direct) <= 0) stat |= 1;
+        } else if (FD_ISSET(connfd, &test) && !(wstat & 2)) {
+            half = 0;
             if (pipling(connfd, remotefd, &half) <= 0) stat |= 1;
-			if (half) wstat |= 2;
+            if (half) wstat |= 2;
         }
 
-		if (!pull_direct && FD_ISSET(remotefd, &test) && !(wstat & 1)) {
+        if (!pull_direct && FD_ISSET(remotefd, &test) && !(wstat & 1)) {
             if (pull(remotefd, connfd, &pull_direct) <= 0) stat |= 2;
-		} else if (FD_ISSET(remotefd, &test) && !(wstat & 1)) {
-			half = 0;
+        } else if (FD_ISSET(remotefd, &test) && !(wstat & 1)) {
+            half = 0;
             if (pipling(remotefd, connfd, &half) <= 0) stat |= 2;
-			if (half) wstat |= 1;
+            if (half) wstat |= 1;
         }
 
-	if (stat != 0 || n  <= 0)
-		LOG("stat=%x n=%d\n", stat, n);
+        if (stat != 0 || n  <= 0)
+            LOG("stat=%x n=%d\n", stat, n);
     } while (n > 0 && stat != 3);
 
     LOG("release connection\n");
@@ -1255,7 +1255,11 @@ int main(int argc, char *argv[])
 {
     int sockfd, connfd, len;
     struct sockaddr_in6 servaddr, cli;
-    signal(SIGCHLD, clean_pcb);
+
+    struct sigaction act = {};
+    act.sa_flags = SA_NOCLDSTOP;
+    act.sa_handler = &clean_pcb;
+    sigaction(SIGCHLD, &act, NULL);
 
     parse_argopt(argc, argv);
 
@@ -1317,18 +1321,20 @@ int main(int argc, char *argv[])
         len = sizeof(cli);
         // Accept the data packet from client and verification
         connfd = accept(sockfd, (SA*)&cli, &len);
+        if (sigchild) {
+            while (waitpid(-1, &st, WNOHANG) > 0)
+                nsession --;
+            sigchild = 0;
+	    if (connfd < 0)
+		continue;
+        }
+
         if (connfd < 0) {
             LOGI("server accept failed...\n");
             exit(0);
         }
         else
             LOGI("server accept the client...\n");
-
-        if (sigchild) {
-            while (waitpid(-1, &st, WNOHANG) > 0)
-                nsession --;
-            sigchild = 0;
-        }
 
         update_iscloudflare(&cli.sin6_addr);
 

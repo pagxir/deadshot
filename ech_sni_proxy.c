@@ -619,7 +619,7 @@ static void xxdump(const char *title, const void *data, size_t len)
 	printf("%s: %s\n", title, line); 
     }
 
-    return 0;
+    return ;
 }
 
 static int load_encrypt_client_hello(const void *ch, size_t chlen, const void *payload, size_t payload_len, const void *enc, size_t enclen, uint8_t *output, size_t *outlen)
@@ -1395,7 +1395,7 @@ void dump(char *buff, size_t len, struct tls_header *header, const char *title)
 static int do_certificate_wrap(char *buf, size_t len)
 {
     int i;
-    uint8_t hold[MAX];
+    uint8_t hold[MAXSIZE];
     uint8_t *p = buf + 5;
     uint8_t *dest = hold + 5;
 
@@ -1444,7 +1444,7 @@ int pull(int connfd, int remotefd, int *direct)
     memcpy(&header.length, &buff[3], 2);
     header.length = htons(header.length);
 
-    assert(header.length  < MAX);
+    assert(header.length  < MAXSIZE);
     l = read_flush(connfd, buff + 5, header.length);
     if (header.type == APPLICATION_DATA_TYPE) *direct = 1;
     if (header.type == HANDSHAKE_TYPE && l == header.length) {
