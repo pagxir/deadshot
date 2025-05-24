@@ -1909,8 +1909,10 @@ int main(int argc, char *argv[])
     int sockfd, connfd;
     socklen_t len;
     struct sockaddr_in6 servaddr, cli;
-    signal(SIGCHLD, clean_pcb);
     signal(SIGINT, SIG_DFL);
+    signal(SIGPIPE, SIG_DFL);
+
+    struct sigaction act = {};                                                                                                                                                                          act.sa_flags = SA_NOCLDSTOP;                                                                                                                                                                        act.sa_handler = &clean_pcb;                                                                                                                                                                        sigaction(SIGCHLD, &act, NULL);
 
     parse_argopt(argc, argv);
 
@@ -1964,20 +1966,21 @@ int main(int argc, char *argv[])
         len = sizeof(cli);
         // Accept the data packet from client and verification
         connfd = accept(sockfd, (SA*)&cli, &len);
-        if (connfd < 0) {
-            LOGI("server accept failed...\n");
-            exit(0);
-        }
-        else
-            LOGI("server accept the client...\n");
-
         if (sigchild) {
 	    sigprocmask(SIG_BLOCK, &set, &save);
             sigchild = 0;
 	    while (waitpid(-1, &st, WNOHANG) > 0)
 		nsession--;
 	    sigprocmask(SIG_UNBLOCK, &set, &save);
+	    if (connfd < 0 ) continue;
         }
+
+        if (connfd < 0) {
+            LOGI("server accept failed...\n");
+            exit(0);
+        }
+        else
+            LOGI("server accept the client...\n");
 
         pid_t child = 0;
 	struct sockaddr_in6 mime;
