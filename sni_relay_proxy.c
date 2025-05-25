@@ -394,7 +394,7 @@ int rewind_client_hello(uint8_t *snibuff, size_t length)
 			generate_pseudo_hostname(pseudo_hostname, sizeof(pseudo_hostname), hostname, YOUR_DOMAIN);
             size_t namelen = strlen(pseudo_hostname);
 
-            strcpy(dest + 4 + 5, pseudo_hostname);
+            strcpy((char *)dest + 4 + 5, pseudo_hostname);
             dest[4 + 4] = namelen;
             dest[4 + 3] = (namelen >> 8);
             dest[4 + 2] = 0;
@@ -589,7 +589,7 @@ int unwind_client_hello(uint8_t *snibuff, size_t length)
             dest[2] = 0; dest[3] = 0;
             size_t namelen = strlen(hostname);
 
-            strcpy(dest + 4 + 5, hostname);
+            strcpy((char *)dest + 4 + 5, hostname);
             dest[4 + 4] = namelen;
             dest[4 + 3] = (namelen >> 8);
             dest[4 + 2] = 0;
@@ -678,7 +678,7 @@ void dump(char *buff, size_t len, struct tls_header *header, const char *title)
     LOG("%s: %d %x.%x %d\n", title, header->type, header->major, header->minor, header->length);
     if (22 == header->type) {
         int length = 0;
-        uint8_t *p = buff;
+        uint8_t *p = (uint8_t *)buff;
         if (*p == 11) {
             LOG("certificate\n");
             return ;
@@ -723,14 +723,14 @@ static int do_certificate_wrap(char *buf, size_t len)
 {
     int i;
     uint8_t hold[MAX];
-    uint8_t *p = buf + 5;
+    uint8_t *p = (uint8_t *)buf + 5;
     uint8_t *dest = hold + 5;
 
     if (wrap_certificate == 0) {
         return len;
     }
 
-    const uint8_t * limit = buf + len;
+    const uint8_t * limit = (uint8_t *)buf + len;
     assert (len < sizeof(hold));
     memcpy(hold, buf, 5);
 
@@ -815,13 +815,13 @@ int push(int connfd, int remotefd, int *direct)
     if (header.type == HANDSHAKE_TYPE && l == header.length && HANDSHAKE_TYPE_CLIENT_HELLO == (buff[0] & 0xff)) {
 
 		char hostname[128];
-		get_sni_name(buff + 5, header.length, hostname);
+		get_sni_name((uint8_t *)buff + 5, header.length, hostname);
 		LOGI("rehandshake origin hostname: %s: %s\n", hostname, _log_hostname);
 
-		int newlen = unwind_rewind_client_hello(buff, header.length + 5);
+		int newlen = unwind_rewind_client_hello((uint8_t*)buff, header.length + 5);
 		l = header.length = newlen - 5;
 
-		get_sni_name(buff + 5, header.length, hostname);
+		get_sni_name((uint8_t *)buff + 5, header.length, hostname);
 		LOGI("rehandshake convert hostname: %s %s\n", hostname, _log_hostname);
 		if (*hostname == 0) {
 			LOGI("rehandshake failure: %s %s tag=%x\n", hostname, _log_hostname, buff[5]);
@@ -1063,6 +1063,7 @@ void func(int connfd)
 	if (n == 0 && (stat & 0x3) != 0x3) {
 	  keepalive_set(connfd);
 	  keepalive_set(remotefd);
+	  n = 1;
 	  continue;
 	}
 
@@ -1253,7 +1254,8 @@ static int update_iscloudflare(struct in6_addr *sin6_addr)
 // Driver function
 int main(int argc, char *argv[])
 {
-    int sockfd, connfd, len;
+    int sockfd, connfd;
+    socklen_t len;
     struct sockaddr_in6 servaddr, cli;
 
     struct sigaction act = {};
@@ -1271,7 +1273,7 @@ int main(int argc, char *argv[])
     }
     else
         LOGI("Socket successfully created..\n");
-    bzero(&servaddr, sizeof(servaddr));
+    memset(&servaddr, 0, sizeof(servaddr));
 
     // assign IP, PORT
     servaddr.sin6_family = AF_INET6;

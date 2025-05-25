@@ -42,6 +42,10 @@ struct tls_header {
 #define TAG_ENCRYPT_CLIENT_HELLO 0xfe0d
 #define TAG_OUTER_EXTENSIONS 0xfd00
 
+#undef IPPROTO_MPTCP
+#undef MPTCP_ENABLED
+#undef MPTCP_PATH_MANAGER
+
 #ifndef IPPROTO_MPTCP
 #define IPPROTO_MPTCP 0
 #endif
@@ -1729,8 +1733,8 @@ void func(int connfd)
         if (wstat & 1) FD_SET(connfd, &wtest);
         if (wstat & 2) FD_SET(remotefd, &wtest);
 
-        struct timeval timeo = {360, 360};
-        n = select(maxfd + 1, &test, NULL, NULL, &timeo);
+        struct timeval timeo = {120, 120};
+        n = select(maxfd + 1, &test, &wtest, NULL, &timeo);
 	if (n == 0 && !(stat & 0x3)) {
 	    switch (keepaliveset? MODE_RELAY_NONE: RELAY_MODE) {
 		case MODE_RELAY_CLIENT:
