@@ -368,8 +368,8 @@ static int udp6_sendmsg(int fd, const void *buf, size_t len, int flags, const st
 	return sendmsg(fd, &msg, flags);
 }
 
-enum {NONE, PING, PONG, LATEST};
-static int ping_pong = 0;
+enum {NONE, PING, PONG, NAT64, LATEST};
+static int ping_pong = NAT64;
 static uint8_t prefix64[16] = {0, 0x64, 0xff, 0x9b, 0, 0, 0, 0, 0, 0, 0, 0, 127, 9, 9, 9};
 static const uint8_t v4mapped[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 127, 9, 9, 9};
 
@@ -422,6 +422,10 @@ static void do_udp_exchange_back(void *upp)
 			}
 
 			up->mainfd = pick_from_port(dest.sin6_port, up->group);
+               } else if (ping_pong == NAT64) {
+                       memcpy(&dest, inaddr, in_len);
+                       up->mainfd = pick_from_port(dest.sin6_port, up->group);
+                       memcpy(&dest.sin6_addr, prefix64, 12);
 		}
 
 		count = udp6_sendmsg(up->mainfd, buf, count + padding, MSG_DONTWAIT, test, &up->source);
@@ -526,7 +530,10 @@ static int session_wrap_data(nat_conntrack_t *session, char *buf, size_t len, st
 		memcpy(&dest->sin6_port, buf + len - 2, 2);
 		convert_from_ipv4(&dest->sin6_addr, buf + len - 6);
 		return len - 6;
-	}
+       } else if (ping_pong == NAT64) {
+               convert_from_ipv4(&dest->sin6_addr, addr + 12);
+               return len;
+	} 
 
 	return 0;
 }
