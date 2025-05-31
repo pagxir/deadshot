@@ -111,7 +111,7 @@ int write_flush(int fd, void *buf, size_t count, int *statp)
 }
 
 static int set_hook_name = 0;
-static int wrap_certificate = 0;
+static int wrap_certificate = 1;
 static char YOUR_DOMAIN[256] = "app.yrli.bid";
 
 char * get_sni_name(uint8_t *snibuff, size_t len, char *hostname)
@@ -480,7 +480,7 @@ static int outer_extensions_init(struct outer_extensions_t *ctx)
     return 0;
 }
 
-static uint8_t *tag_alloc(struct outer_extensions_t *ctx, uint8_t *buf, size_t len)
+static uint8_t *tag_alloc(struct outer_extensions_t *ctx, const uint8_t *buf, size_t len)
 {
     uint8_t *tagbuf = ctx->buf + ctx->len;
 
@@ -491,7 +491,7 @@ static uint8_t *tag_alloc(struct outer_extensions_t *ctx, uint8_t *buf, size_t l
     return tagbuf;
 }
 
-static int outer_extensions_add(struct outer_extensions_t *ctx, int tag, uint8_t buf[], size_t len)
+static int outer_extensions_add(struct outer_extensions_t *ctx, int tag, const uint8_t buf[], size_t len)
 {
     int i, j;
     int okay = 0;
@@ -532,7 +532,7 @@ static int outer_extensions_flush(struct outer_extensions_t *ctx, uint8_t *buf, 
 
     ctx->holdlen = 0;
     buf[0] = (TAG_OUTER_EXTENSIONS >> 8);
-    buf[1] = (TAG_OUTER_EXTENSIONS);
+    buf[1] = (TAG_OUTER_EXTENSIONS & 0xff);
 
     int val = count * 2 + 1;
     buf[2] = (val >> 8);
@@ -801,7 +801,7 @@ int encode_client_hello(uint8_t *encoded, size_t ddsz, const uint8_t *plain, siz
     // prepare outer variant value
     uint8_t session_id[132];
 
-    uint8_t *ech_start = p;
+    const uint8_t *ech_start = p;
 
     inner[0] = p[0]; inner[1] = p[1];
     inner += 2;
@@ -951,7 +951,7 @@ int encode_client_hello(uint8_t *encoded, size_t ddsz, const uint8_t *plain, siz
 	    start += (2 + payload_len);
 
 	    dest[0] = (TAG_ENCRYPT_CLIENT_HELLO >> 8);
-	    dest[1] = (TAG_ENCRYPT_CLIENT_HELLO);
+	    dest[1] = (TAG_ENCRYPT_CLIENT_HELLO & 0xff);
 	    dest[2] = (start - dest - 4) >> 8;
 	    dest[3] = (start - dest - 4);
 
@@ -1437,6 +1437,7 @@ int pull(int connfd, int remotefd, int *direct)
     // read the message from client and copy it in buffer
     l = read_flush(connfd, buff, 5);
     LOGV("%d l %d\n", connfd, l);
+    if (l == 0) shutdown(remotefd, SHUT_WR);
     if (l <= 0) return l;
     // perror("read");
     LOGV("l %d\n", l);
@@ -1515,6 +1516,7 @@ int pipling(int connfd, int remotefd, int *statp)
     size_t len = recv(connfd, buff, sizeof(buff), MSG_DONTWAIT);
     if (len == -1 && errno == EAGAIN) return 1;
     if (len == -1) return -1;
+    if (len == 0) shutdown(remotefd, SHUT_WR);
     if (len == 0) return 0;
     return write_flush(remotefd, buff, len, statp);
 }
@@ -1641,7 +1643,7 @@ int setup_remote(struct sockaddr_in6 *cli, char *hostname)
 static int setkeepalive(int sockfd)
 {
     int keepalive = 1;
-    int keepcnt = 3, keepidle = 360, keepintvl = 60;
+    int keepcnt = 3, keepidle = 128, keepintvl = 16;
 
     setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPCNT, &keepcnt, sizeof(int));
     setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPIDLE, &keepidle, sizeof(int));
@@ -1723,6 +1725,7 @@ void func(int connfd)
 
     int direct = 0;
     int pull_direct = 0;
+    time_t uptime = time(NULL);
     do {
         FD_ZERO(&test);
         if (~stat & 1) FD_SET(connfd, &test);
@@ -1735,7 +1738,7 @@ void func(int connfd)
 
         struct timeval timeo = {120, 120};
         n = select(maxfd + 1, &test, &wtest, NULL, &timeo);
-	if (n == 0 && !(stat & 0x3)) {
+	if (n == 0 && !(stat & 0x3) && uptime + 1888 > time(NULL)) {
 	    switch (keepaliveset? MODE_RELAY_NONE: RELAY_MODE) {
 		case MODE_RELAY_CLIENT:
 		    setkeepalive(remotefd);
@@ -1781,6 +1784,7 @@ void func(int connfd)
             if (half) wstat |= 1;
         }
 
+	uptime = time(NULL);
         if (stat != 0 || n  <= 0)
             LOG("stat=%x n=%d\n", stat, n);
     } while (n > 0 && stat != 3);
@@ -1916,7 +1920,10 @@ int main(int argc, char *argv[])
     signal(SIGINT, SIG_DFL);
     signal(SIGPIPE, SIG_DFL);
 
-    struct sigaction act = {};                                                                                                                                                                          act.sa_flags = SA_NOCLDSTOP;                                                                                                                                                                        act.sa_handler = &clean_pcb;                                                                                                                                                                        sigaction(SIGCHLD, &act, NULL);
+    struct sigaction act = {};
+    act.sa_flags = SA_NOCLDSTOP;
+    act.sa_handler = &clean_pcb;
+    sigaction(SIGCHLD, &act, NULL);
 
     parse_argopt(argc, argv);
 
@@ -1983,8 +1990,13 @@ int main(int argc, char *argv[])
             LOGI("server accept failed...\n");
             exit(0);
         }
-        else
-            LOGI("server accept the client...\n");
+        else {
+            char tobuf[64], cmdline[2048];
+	    inet_ntop(AF_INET6, &cli.sin6_addr, tobuf, sizeof(tobuf));
+            LOGI("server accept the client %s...\n", tobuf);
+	    snprintf(cmdline, sizeof(cmdline), "ip -6 n s |grep %s", tobuf);
+	    system(cmdline);
+	}
 
         pid_t child = 0;
 	struct sockaddr_in6 mime;

@@ -968,7 +968,7 @@ int setup_remote(struct sockaddr_in6 *cli, char *hostname, const char *origin)
 static int keepalive_set(int sockfd)
 {
   int keepalive = 1;
-  int keepcnt = 3, keepidle = 360, keepintvl = 60;
+  int keepcnt = 5, keepidle = 148, keepintvl = 26;
 
   setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPCNT, &keepcnt, sizeof(int));
   setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPIDLE, &keepidle, sizeof(int));
@@ -1047,6 +1047,8 @@ void func(int connfd)
 
     int direct = 0;
     int pull_direct = 0;
+    time_t uptime = time(NULL);
+
     do {
         FD_ZERO(&test);
         if (~stat & 1) FD_SET(connfd, &test);
@@ -1057,15 +1059,16 @@ void func(int connfd)
         if (wstat & 1) FD_SET(connfd, &wtest);
         if (wstat & 2) FD_SET(remotefd, &wtest);
 
-        struct timeval timeo = {360, 360};
+        struct timeval timeo = {136, 360};
         n = select(maxfd + 1, &test, &wtest, NULL, &timeo);
 
-	if (n == 0 && (stat & 0x3) != 0x3) {
-	  keepalive_set(connfd);
-	  keepalive_set(remotefd);
-	  n = 1;
-	  continue;
-	}
+        if (n == 0 && !(stat & 0x3)
+                && uptime + 1750 > time(NULL)) {
+            keepalive_set(connfd);
+            keepalive_set(remotefd);
+            n = 1;
+            continue;
+        }
 
         if (n == 0) break;
         assert(n > 0);
@@ -1094,6 +1097,7 @@ void func(int connfd)
             if (pipling(remotefd, connfd, &half) <= 0) stat |= 2;
             if (half) wstat |= 1;
         }
+	uptime = time(NULL);
 
         if (stat != 0 || n  <= 0)
             LOG("stat=%x n=%d\n", stat, n);
@@ -1335,8 +1339,11 @@ int main(int argc, char *argv[])
             LOGI("server accept failed...\n");
             exit(0);
         }
-        else
-            LOGI("server accept the client...\n");
+        else {
+            char tobuf[64];
+	    inet_ntop(AF_INET6, &cli.sin6_addr, tobuf, sizeof(tobuf));
+            LOGI("server accept the client %s...\n", tobuf);
+        }
 
         update_iscloudflare(&cli.sin6_addr);
 
