@@ -6,6 +6,7 @@
 #include <stdlib.h>
 
 #include <netinet/in.h>
+#include <netinet/udp.h>
 #include <arpa/nameser.h>
 #include <resolv.h>
 
@@ -49,6 +50,10 @@ static uint32_t _last_rx_tick = 0;
 static uint32_t _last_tx_tick = 0;
 static uint32_t _first_rx_tick = 0;
 static uint32_t _first_tx_tick = 0;
+static int enabled = 1;
+static int _XOR_MASK_ = 0x5a;
+
+#define MAX_NIOV 128
 
 struct timer_task {
 	tx_task_t task; 
@@ -59,6 +64,7 @@ struct udp_exchange_context {
 	int sockfd;
 	int port;
 	int dport;
+	int gso_size;
 	int group;
 	tx_aiocb file;
 	tx_task_t task;
@@ -70,10 +76,12 @@ typedef struct _nat_conntrack_t {
 	int sockfd;
 	int mainfd;
 	int group;
+	int gso_size;
 	int hash_idx;
 	time_t last_alive;
 	struct sockaddr_in6 source;
 	struct sockaddr_in6 target;
+	struct udp_exchange_context *mainctx;
 
 	int port;
 	in6_addr address;
@@ -90,12 +98,13 @@ typedef struct _exchange_context_t {
 	int port_mapping;
 	int sockfd;
 	int group;
+	void *context;
 	LIST_ENTRY(_exchange_context_t) entry;
-};
+} _exchange_context_t;
 static LIST_HEAD(_exchange_context_q, _exchange_context_t) _exchange_header = LIST_HEAD_INITIALIZER(_exchange_header);
 #define ALLOC_NEW(type)  (type *)calloc(1, sizeof(type))
 
-static int install_maping(int port, int dport, int sockfd, int group)
+static int install_maping(int port, int dport, int sockfd, int group, void *context)
 {
 	_exchange_context_t *item, *next;
 
@@ -111,19 +120,23 @@ static int install_maping(int port, int dport, int sockfd, int group)
 		ctx->port_mapping = htons(dport);
 		ctx->sockfd = sockfd;
 		ctx->group = group;
+		ctx->context = context;
 		LIST_INSERT_HEAD(&_exchange_header, ctx, entry);
 	}
 
 	return 0;
 }
 
-static int pick_from_port(int port, int group)
+static int pick_from_port(int port, int group, struct udp_exchange_context **upp)
 {
 	_exchange_context_t *item, *next;
 
 	LIST_FOREACH_SAFE(item, &_exchange_header, entry, next) {
 		if (group == item->group &&
-				item->port_mapping == port) return item->sockfd;
+				item->port_mapping == port) {
+			*upp = (struct udp_exchange_context *)item->context;
+			return item->sockfd;
+		}
 	}
 
 	return -1;
@@ -233,8 +246,8 @@ static void showbar(const char *title, size_t count)
 	_rx_bytes += (_total_rx - _last_rx);
 	_tx_bytes += (_total_tx - _last_tx);
 
-	LOG_INFO("%s len %d, rx/tx total: %ld/%ld rate: %d/%d ", title, count, _tx_bytes, _rx_bytes, tx_rate, rx_rate);
-	LOG_INFO("%s", _last_log);
+	LOG_INFO("%s len %d, rx/tx total: %ld/%ld rate: %d/%d\n", title, count, _tx_bytes, _rx_bytes, tx_rate, rx_rate);
+	LOG_INFO("%s\n", _last_log);
 	_last_log[0] = 0;
 	_first_tx_tick = _first_rx_tick = 0;
 	// _first_rx_tick = _first_tx_tick = tx_getticks();
@@ -273,7 +286,7 @@ static int convert_from_ipv4(void *ipv6, const void *ipv4)
 	return 0;
 }
 
-static int udp6_recvmsg(int fd, void *buf, size_t len, int flags, struct sockaddr_in6 *from, struct sockaddr_in6 *dst)
+static int udp6_recvmsg(int fd, void *buf, size_t len, int flags, struct sockaddr_in6 *from, struct sockaddr_in6 *dst, int *gso_size)
 {
 	int count;
 	struct iovec iovec[1];
@@ -305,6 +318,12 @@ static int udp6_recvmsg(int fd, void *buf, size_t len, int flags, struct sockadd
 				convert_from_ipv4(&dst->sin6_addr, &info->ipi_addr);
 			}
 
+			if (cmsg->cmsg_level == SOL_UDP && cmsg->cmsg_type == UDP_GRO) {
+				uint16_t *gsosizeptr = (uint16_t *) CMSG_DATA(cmsg);
+				*gso_size = *gsosizeptr;
+				break;
+			}
+
 			if (cmsg->cmsg_level == IPPROTO_IPV6 && cmsg->cmsg_type == IPV6_PKTINFO) {
 				char b[63];
 				struct in6_pktinfo *info = (struct in6_pktinfo*)CMSG_DATA(cmsg);
@@ -317,21 +336,83 @@ static int udp6_recvmsg(int fd, void *buf, size_t len, int flags, struct sockadd
 	return count;
 }
 
-static int udp6_sendmsg(int fd, const void *buf, size_t len, int flags, const struct sockaddr_in6 *from, const struct sockaddr_in6 *dest)
+static int mkiovec(struct iovec iov[MAX_NIOV], const void *buf, ssize_t len, void *hdr, ssize_t hdrlen, ssize_t gso_size)
+{
+	int count = 0;
+	size_t len0 = len;
+	uint8_t *ptr = (uint8_t *)buf;
+
+	if (gso_size > 0 && len > gso_size && hdrlen != 0) {
+		while (len >= gso_size) {
+			iov[count].iov_base = ptr;
+			iov[count].iov_len = gso_size;
+			*ptr ^= _XOR_MASK_;
+
+			if (hdrlen > 0) {
+				count++;
+				iov[count].iov_base = hdr;
+				iov[count].iov_len = hdrlen;
+			} else {
+				assert(gso_size + hdrlen > 0);
+				iov[count].iov_len += hdrlen;
+			}
+			count++;
+
+			len -= gso_size;
+			ptr += gso_size;
+		}
+
+		if (len > 0) {
+			iov[count].iov_base = ptr;
+			iov[count].iov_len = len;
+			*ptr ^= _XOR_MASK_;
+
+			if (hdrlen > 0) {
+				count++;
+				iov[count].iov_base = hdr;
+				iov[count].iov_len = hdrlen;
+			} else {
+				assert(len + hdrlen > 0);
+				iov[count].iov_len += hdrlen;
+			}
+
+			count++;
+		}
+
+	} else if (hdrlen > 0) {
+		iov[count].iov_base = ptr;
+		iov[count].iov_len = len;
+		count++;
+		if (len > 0) *ptr ^= _XOR_MASK_;
+
+		iov[count].iov_base = hdr;
+		iov[count].iov_len = hdrlen;
+		count++;
+
+	} else if (hdrlen <= 0) {
+		iov[count].iov_base = ptr;
+		iov[count].iov_len = len + hdrlen;
+		assert(len + hdrlen > 0);
+		count++;
+		if (len + hdrlen > 0) *ptr ^= _XOR_MASK_;
+	}
+
+	if (count >= MAX_NIOV) fprintf(stderr, "iovec count=%d len0=%d\n", count, len0);
+	assert(count < MAX_NIOV);
+	return count;
+}
+
+static int udp6_sendmsg(int fd, struct iovec *iovec, size_t count, int flags, const struct sockaddr_in6 *from, const struct sockaddr_in6 *dest)
 {
 	struct msghdr msg;
-	struct iovec iovec[1];
 	char msg_control[1024];
-
-	iovec[0].iov_len  = len;
-	iovec[0].iov_base = (void *)buf;
 
 	msg.msg_flags = 0;
 	msg.msg_name = (void *)dest;
 	msg.msg_namelen = sizeof(*dest);
 
 	msg.msg_iov = iovec;
-	msg.msg_iovlen = sizeof(iovec) / sizeof(*iovec);
+	msg.msg_iovlen = count;
 
 	msg.msg_control = msg_control;
 	msg.msg_controllen = sizeof(msg_control);
@@ -376,17 +457,23 @@ static const uint8_t v4mapped[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 1
 static void do_udp_exchange_back(void *upp)
 {
 	int count;
+	int gso_size;
 	socklen_t in_len;
-	char buf[2048];
+	char buf[65536];
+    int flags = 0;
 
 	struct sockaddr_in6 in6addr;
+	struct sockaddr_in6 dest; // ignore
 	struct sockaddr * inaddr = (struct sockaddr *)&in6addr;
 	nat_conntrack_t *up = (nat_conntrack_t *)upp;
 
 	while (tx_readable(&up->file)) {
+		gso_size = 0;
 		in_len = sizeof(in6addr);
-		count = recvfrom(up->sockfd, buf, sizeof(buf), MSG_DONTWAIT, inaddr, &in_len);
+		// count = recvfrom(up->sockfd, buf, sizeof(buf), MSG_DONTWAIT, inaddr, &in_len);
+		count = udp6_recvmsg(up->sockfd, buf, sizeof(buf), flags, &in6addr, &dest, &gso_size);
 		tx_aincb_update(&up->file, count);
+		flags = MSG_DONTWAIT;
 
 		if (count <= 0) {
 			if (errno != EAGAIN)
@@ -394,20 +481,26 @@ static void do_udp_exchange_back(void *upp)
 			break;
 		}
 
-		int padding = 0;
-		struct sockaddr_in6 dest = {.sin6_addr = up->address};
-		struct sockaddr_in6 *test = &dest;
+		char header[64];
+		int hdrlen = 0;
 
+		// if (gso_size > 0) LOG_INFO("back gso_size = %d %d\n", gso_size, count);
+
+		struct sockaddr_in6 dest = {};
+		struct sockaddr_in6 *test = &dest;
+		struct udp_exchange_context *mainctx = up->mainctx;
+
+		memcpy(&dest.sin6_addr, &up->address, sizeof(dest.sin6_addr));
 		if (memcmp(v4mapped, &in6addr.sin6_addr, 13) == 0) {
 			memcpy(&dest.sin6_addr, prefix64, 16);
 			char abuf[64];
 			LOG_INFO("v4mapped match send to %s:%d\n", inet_ntop(AF_INET6, &dest.sin6_addr, abuf, sizeof(abuf)), htons(dest.sin6_port));
 
 		} else if (ping_pong == PONG) {
-			memcpy(buf + count, ((uint32_t *)&in6addr.sin6_addr) + 3, 4);
-			memcpy(buf + count + 4, &in6addr.sin6_port, 2);
+			memcpy(header, ((uint32_t *)&in6addr.sin6_addr) + 3, 4);
+			memcpy(header + 4, &in6addr.sin6_port, 2);
 			memset(&dest.sin6_addr, 0, 16);
-			padding = 6;
+			hdrlen = 6;
 			test = NULL;
 
 		} else if (ping_pong == PING) {
@@ -415,22 +508,52 @@ static void do_udp_exchange_back(void *upp)
 			memcpy(troping, prefix64, 16);
 			memcpy(troping + 3, buf + count - 6, 4);
 			memcpy(&dest.sin6_port, buf + count - 2, 2);
-			padding = -6;
+			hdrlen = -6;
 
 			if (IN6_IS_ADDR_V4MAPPED(&up->source.sin6_addr)) {
 				convert_from_ipv4(&dest.sin6_addr, buf + count - 6);
 			}
 
-			up->mainfd = pick_from_port(dest.sin6_port, up->group);
-               } else if (ping_pong == NAT64) {
-                       memcpy(&dest, inaddr, in_len);
-                       up->mainfd = pick_from_port(dest.sin6_port, up->group);
-                       memcpy(&dest.sin6_addr, prefix64, 12);
+			mainctx = NULL;
+			up->mainfd = pick_from_port(dest.sin6_port, up->group, &mainctx);
+		} else if (ping_pong == NAT64) {
+			memcpy(&dest, inaddr, in_len);
+			mainctx = NULL;
+			up->mainfd = pick_from_port(dest.sin6_port, up->group, &mainctx);
+			memcpy(&dest.sin6_addr, prefix64, 12);
 		}
 
-		count = udp6_sendmsg(up->mainfd, buf, count + padding, MSG_DONTWAIT, test, &up->source);
+		if ((gso_size > 0 && gso_size + hdrlen != mainctx->gso_size) ||
+				(hdrlen + count > mainctx->gso_size && mainctx->gso_size > 0)) {
+			mainctx->gso_size = gso_size? gso_size + hdrlen: 0;
+			assert(mainctx->gso_size >= 0);
+			assert(mainctx->sockfd == up->mainfd);
+			LOG_INFO("update gso_size mainfd: %d\n", mainctx->gso_size);
+			setsockopt(up->mainfd, IPPROTO_UDP, UDP_SEGMENT, &mainctx->gso_size, sizeof(gso_size));
+		}
+
+		struct iovec iov[MAX_NIOV];
+		int niov = mkiovec(iov, buf, count, header, hdrlen, gso_size);
+#if 0
+		if (gso_size > 0) {
+			int i = 0;
+			for (i = 0; i < niov; i++)
+				LOG_INFO("hdrlen %d, gso_size %d iov[%d] = %d\n",  hdrlen, gso_size, i, iov[i].iov_len);
+			LOG_INFO("session->gso_size: %d\n", up->gso_size);
+		}
+#endif
+
+		count = udp6_sendmsg(up->mainfd, iov, niov, 0 & MSG_DONTWAIT, test, &up->source);
 		if (count == -1 && errno != EAGAIN) {
-			DELAY_DUMP(LOG_DEBUG("back sendto len %d, %d, strerr %s match %d", count, errno, strerror(errno), match));
+			DELAY_DUMP(LOG_DEBUG("back sendto len %d, %d, strerr %s match %d\n", count, errno, strerror(errno), match));
+		}
+
+		{
+			char abuf1[64], abuf2[64] = "";
+			inet_ntop(AF_INET6, &up->source.sin6_addr, abuf1, sizeof(abuf1)); 
+			if (test != NULL)
+			inet_ntop(AF_INET6, &test->sin6_addr, abuf2, sizeof(abuf2)); 
+			LOG_DEBUG("from %s to %s, len %d\n", abuf1, abuf2, count);
 		}
 
 		if (count > 0) {
@@ -460,6 +583,8 @@ static nat_conntrack_t * newconn_session(struct sockaddr_in6 *from, int group)
 		conn->source = *from;
 		conn->target = *from;
 		conn->group = group;
+		conn->gso_size = 0;
+		conn->mainctx = 0;
 		memset(&conn->target.sin6_addr, 0xff, 12);
 		memset(&conn->target.sin6_addr, 0, 10);
 
@@ -467,6 +592,10 @@ static nat_conntrack_t * newconn_session(struct sockaddr_in6 *from, int group)
 		TX_CHECK(sockfd != -1, "create udp socket failure");
 
 		tx_setblockopt(sockfd, 0);
+
+		setsockopt(sockfd, IPPROTO_UDP, UDP_GRO, &enabled, sizeof(enabled));
+		// setsockopt(sockfd, IPPROTO_UDP, UDP_SEGMENT, &enabled, sizeof(enabled));
+		
 		// setsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, &rcvbufsiz, sizeof(rcvbufsiz));
 
 		int sndbufsiz = 1638400;
@@ -489,50 +618,22 @@ static nat_conntrack_t * newconn_session(struct sockaddr_in6 *from, int group)
 	return conn;
 }
 
-static int _XOR_MASK_ = 0x5a;
 static struct sockaddr_in6 router = {};
 
-static int session_ping_data(nat_conntrack_t *session, char *buf, size_t len, struct sockaddr_in6 *dest)
-{
-	buf[0] ^= _XOR_MASK_;
-	memcpy(buf + len, ((uint32_t *)&dest->sin6_addr) + 3, 4);
-	memcpy(buf + len + 4, &dest->sin6_port, 2);
-
-	dest->sin6_family = session->target.sin6_family;
-	dest->sin6_port = session->target.sin6_port;
-	dest->sin6_addr = session->target.sin6_addr;
-
-	return len + 6;
-}
-
-static int session_pong_data(nat_conntrack_t *session, char *buf, size_t len, struct sockaddr_in6 *dest)
-{
-	dest->sin6_family = AF_INET6;
-
-	uint32_t *troping = (uint32_t *)&dest->sin6_addr;
-	troping[0] = troping[1] = 0; troping[2] = htonl(0xffff);
-	memcpy(troping + 3, buf + len - 6, 4);
-	memcpy(&dest->sin6_port, buf + len -2, 2);
-
-	return len - 6;
-}
-
-static int session_wrap_data(nat_conntrack_t *session, char *buf, size_t len, struct sockaddr_in6 *dest)
+static int session_wrap_data(nat_conntrack_t *session, char *buf, size_t len, struct sockaddr_in6 *dest, char *header, size_t hdrsz)
 {
 	uint8_t * addr = (uint8_t *)&dest->sin6_addr;
 
-	buf[0] ^= _XOR_MASK_;
 	if (ping_pong == PING) {
-		memcpy(buf + len, addr + 12, 4);
-		memcpy(buf + len + 4, &dest->sin6_port, 2);
-		return len + 6;
+		memcpy(header, addr + 12, 4);
+		memcpy(header + 4, &dest->sin6_port, 2);
+		return 6;
 	} else if (ping_pong == PONG) {
 		memcpy(&dest->sin6_port, buf + len - 2, 2);
 		convert_from_ipv4(&dest->sin6_addr, buf + len - 6);
-		return len - 6;
+		return -6;
        } else if (ping_pong == NAT64) {
-               convert_from_ipv4(&dest->sin6_addr, addr + 12);
-               return len;
+	       return 0;
 	} 
 
 	return 0;
@@ -541,25 +642,30 @@ static int session_wrap_data(nat_conntrack_t *session, char *buf, size_t len, st
 static void do_udp_exchange_recv(void *upp)
 {
 	int count;
+	int gso_size = 0;
 	socklen_t in_len;
-	char buf[2048];
+	char buf[65536];
+	int flags = 0;
 	nat_conntrack_t *session = NULL;
 
 	struct sockaddr_in6 in6addr;
 	struct sockaddr_in6 dest;
 	struct sockaddr * inaddr = (struct sockaddr *)&in6addr;
-	udp_exchange_context *up = (udp_exchange_context *)upp;
+	struct udp_exchange_context *up = (udp_exchange_context *)upp;
 
 	while (tx_readable(&up->file)) {
+		gso_size = 0;
 		in_len = sizeof(in6addr);
-		count = udp6_recvmsg(up->sockfd, buf, sizeof(buf), MSG_DONTWAIT, &in6addr, &dest);
+		count = udp6_recvmsg(up->sockfd, buf, sizeof(buf), flags, &in6addr, &dest, &gso_size);
 		tx_aincb_update(&up->file, count);
+		flags = MSG_DONTWAIT;
 
 		if (count <= 0) {
 			if (errno != EAGAIN)
 				LOG_VERBOSE("back recvfrom len %d, %d, strerr %s", count, errno, strerror(errno));
 			break;
 		}
+		if (gso_size > 0) LOG_INFO("gso_size = %d conunt=%d\n", gso_size, count);
 
 		_total_rx += count;
 		if (!_first_rx_tick) _first_rx_tick = tx_getticks();
@@ -573,6 +679,7 @@ static void do_udp_exchange_recv(void *upp)
 		}
 
 		session->mainfd = up->sockfd;
+		session->mainctx = up;
 		dest.sin6_port = htons(up->dport);
 		dest.sin6_family = AF_INET6;
 
@@ -584,13 +691,34 @@ static void do_udp_exchange_recv(void *upp)
 			continue;
 		}
 
-		int datalen = session_wrap_data(session, buf, count, &dest);
+		struct iovec iovec[MAX_NIOV];
+		char header[64];
+
+		int hdrlen = session_wrap_data(session, buf, count, &dest, header, sizeof(header));
 		if (router.sin6_family == AF_INET6)
 			memcpy(&dest, &router, sizeof(dest));
 
-		count = sendto(session->sockfd, buf, datalen, MSG_DONTWAIT, (struct sockaddr *)&dest, sizeof(dest));
-		if (count == -1) {
-			DELAY_DUMP(LOG_DEBUG("sendto len %d, %d, strerr %s match %d", count, errno, strerror(errno), match));
+		int niov = mkiovec(iovec, buf, count, header, hdrlen, gso_size);
+#if 0
+		if (gso_size > 0) {
+			int i = 0;
+			for (i = 0; i < niov; i++)
+				LOG_INFO("hdrlen %d, gso_size %d iov[%d] = %d\n",  hdrlen, gso_size, i, iovec[i].iov_len);
+			LOG_INFO("session->gso_size: %d\n", session->gso_size);
+		}
+#endif
+
+		if ((gso_size > 0 && gso_size + hdrlen != session->gso_size) ||
+				(hdrlen + count > session->gso_size && session->gso_size > 0)) {
+			session->gso_size = gso_size? gso_size + hdrlen: 0;
+			assert(session->gso_size >= 0);
+			LOG_INFO("update gso_size: %d\n", session->gso_size);
+			setsockopt(session->sockfd, IPPROTO_UDP, UDP_SEGMENT, &session->gso_size, sizeof(gso_size));
+		}
+
+		int count1 = udp6_sendmsg(session->sockfd, iovec, niov, 0 & MSG_DONTWAIT, NULL, &dest);
+		if (count1 == -1) {
+			DELAY_DUMP(LOG_DEBUG("sendto len %d, %d, strerr %s match %d", count1, errno, strerror(errno), match));
 		}
 	}
 
@@ -598,17 +726,22 @@ static void do_udp_exchange_recv(void *upp)
 	return;
 }
 
+extern "C" int socket_netns(int family, int type, int protocol, const char *netns);
+
 static void * udp_exchange_create(int port, int dport, int group)
 {
 	int sockfd;
 	int error = -1;
 	struct sockaddr_in6 in6addr;
+	struct udp_exchange_context *up = NULL;
+
+	up = new udp_exchange_context();
 
 	fprintf(stderr, "udp_exchange_create %d -> %d group %d\n", port, dport, group);
-	sockfd = socket(AF_INET6, SOCK_DGRAM, 0);
+	sockfd = socket_netns(AF_INET6, SOCK_DGRAM, 0, getenv("NETNS"));
 	TX_CHECK(sockfd != -1, "create udp socket failure");
 
-	if (-1 == install_maping(port, dport, sockfd, group)) {
+	if (-1 == install_maping(port, dport, sockfd, group, up)) {
 		fprintf(stderr, "install_maping %d -> %d failure\n", port, dport);
 		closesocket(sockfd);
 		return NULL;
@@ -619,6 +752,7 @@ static void * udp_exchange_create(int port, int dport, int group)
 	// setsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, &rcvbufsiz, sizeof(rcvbufsiz));
 	int sndbufsiz = 1638400;
 	setsockopt(sockfd, SOL_SOCKET, SO_SNDBUF, &sndbufsiz, sizeof(sndbufsiz));
+	setsockopt(sockfd, IPPROTO_UDP, UDP_GRO, &enabled, sizeof(enabled));
 
 	in6addr.sin6_family = AF_INET6;
 	in6addr.sin6_port = htons(port);
@@ -638,15 +772,13 @@ static void * udp_exchange_create(int port, int dport, int group)
 	error = bind(sockfd, (struct sockaddr *)&in6addr, sizeof(in6addr));
 	TX_CHECK(error == 0, "bind udp socket failure");
 
-	struct udp_exchange_context *up = NULL;
-
-	up = new udp_exchange_context();
 	tx_loop_t *loop = tx_loop_default();
 
 	up->port  = port;
 	up->group = group;
 	up->dport  = dport;
 	up->sockfd = sockfd;
+	up->gso_size = 0;
 	tx_aiocb_init(&up->file, loop, sockfd);
 	tx_task_init(&up->task, loop, do_udp_exchange_recv, up);
 

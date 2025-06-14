@@ -13,8 +13,9 @@
 
 static int sendfd(int unixfd, int netfd)
 {
+    char dummy[] = "ABC";
 	struct iovec io = {
-		.iov_base = "ABC",
+		.iov_base = dummy,
 		.iov_len = 3
 	};
 	struct msghdr msg = { 0 };

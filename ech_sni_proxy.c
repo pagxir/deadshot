@@ -1643,7 +1643,7 @@ int setup_remote(struct sockaddr_in6 *cli, char *hostname)
 static int setkeepalive(int sockfd)
 {
     int keepalive = 1;
-    int keepcnt = 3, keepidle = 128, keepintvl = 16;
+    int keepcnt = 3, keepidle = 180, keepintvl = 30;
 
     setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPCNT, &keepcnt, sizeof(int));
     setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPIDLE, &keepidle, sizeof(int));
@@ -1736,7 +1736,7 @@ void func(int connfd)
         if (wstat & 1) FD_SET(connfd, &wtest);
         if (wstat & 2) FD_SET(remotefd, &wtest);
 
-        struct timeval timeo = {120, 120};
+        struct timeval timeo = {50, 26};
         n = select(maxfd + 1, &test, &wtest, NULL, &timeo);
 	if (n == 0 && !(stat & 0x3) && uptime + 1888 > time(NULL)) {
 	    switch (keepaliveset? MODE_RELAY_NONE: RELAY_MODE) {
