@@ -147,7 +147,7 @@ static int run_netns_helper(int argc, char *argv[])
 	return 0;
 }
 
-#if 0
+#if NETNS_HELPER 
 int main(int argc, char *argv[])
 {
 	struct sockaddr_in6 one;
