@@ -549,6 +549,7 @@ struct session_t {
     int ttl;
     int readable;
     char cache[2028];
+	char hostname[250];
 
     time_t interval;
     time_t lastcheck;
@@ -613,6 +614,7 @@ void update_session(struct session_t *s)
     }
 
     dump_peer("update_session", &s->target);
+	set_config_host(&s->target, s->hostname);
     nbyte = sendto(s->sockfd, s->cache, strlen(s->cache), 0,
             (const struct sockaddr *)&s->target, sizeof(s->target));
 
@@ -655,6 +657,7 @@ struct natcb_t {
     char command[1280];
 
     socklen_t size;
+	char stun_host[250];
     struct sockaddr_in6 stun;
     struct sockaddr_in6 from;
 
@@ -788,6 +791,7 @@ void set_session_action(struct natcb_t *cb, int patch)
 
     dump_peer("set_session_action", &s->target);
     if (patch) {
+		set_config_host(&s->target, s->hostname);
         nbyte = sendto(s->sockfd, s->cache, strlen(s->cache), 0, (const struct sockaddr *)&s->target, sizeof(s->target));
     }
 
@@ -1176,6 +1180,7 @@ int do_peer_exchange(struct natcb_t *cb, const char *buf)
 {
     int sent;
 
+	set_config_host(&cb->peer.target, cb->peer.hostname);
     dump_peer("do_peer_exchange", &cb->peer.target);
     sent = sendto(cb->peer.sockfd, buf, strlen(buf), 0, 
             (const struct sockaddr *)&cb->peer.target, sizeof(cb->peer.target));
@@ -1191,6 +1196,7 @@ int do_peer_bearing(struct natcb_t *cb, const char *buf)
 {
     int sent;
 
+	set_config_host(&cb->bear.target, cb->bear.hostname);
     dump_peer("do_peer_bearing", &cb->bear.target);
     sent = sendto(cb->peer.sockfd, buf, strlen(buf), 0, 
             (const struct sockaddr *)&cb->bear.target, sizeof(cb->bear.target));
@@ -1206,6 +1212,7 @@ int do_bear_exchange(struct natcb_t *cb, const char *buf)
 {
     int sent;
 
+	set_config_host(&cb->bear.target, cb->bear.hostname);
     dump_peer("do_peer_exchange", &cb->bear.target);
     sent = sendto(cb->bear.sockfd, buf, strlen(buf), 0, 
             (const struct sockaddr *)&cb->bear.target, sizeof(cb->bear.target));
@@ -1226,7 +1233,9 @@ int set_config_host(struct sockaddr_in6 *target, char *value0)
     strncpy(value, value0, sizeof(value) -1);
     target->sin6_family = AF_INET6;
 
-    if (*value != '[') {
+	if (*value == 0) {
+		return 0;
+    } else if (*value != '[') {
         port = strrchr(value, ':');
         if (port) *port++ = 0;
 
@@ -1258,6 +1267,8 @@ void config_ident_lock(struct natcb_t *cb)
     if (*cb->ident && *cb->lock_key) {
         snprintf(cb->bear.cache, sizeof(cb->bear.cache),
                 "FROM %s LOCK %s", cb->ident, cb->lock_key);
+
+		set_config_host(&s->target, s->hostname);
 
         dump_peer("config_ident_lock", &s->target);
         nbyte = sendto(s->sockfd, s->cache, strlen(s->cache), 0,
@@ -1416,6 +1427,7 @@ int do_update_config(struct natcb_t *cb, const char *buf)
 
     if (strcmp(key, "bear") == 0) {
         set_config_host(&cb->bear.target, value);
+		strncpy(cb->bear.hostname, value, sizeof(cb->bear.hostname) -1);
     } else if (strcmp(key, "mode") == 0) {
         cb->mode = nametomode(value, cb->mode);
         mode_reconfig(cb);
@@ -1425,8 +1437,10 @@ int do_update_config(struct natcb_t *cb, const char *buf)
         cb->exit_child = atoi(value);
     } else if (strcmp(key, "peer") == 0) {
         set_config_host(&cb->peer.target, value);
+		strncpy(cb->peer.hostname, value, sizeof(cb->peer.hostname) -1);
     } else if (strcmp(key, "stun") == 0) {
         set_config_host(&cb->stun, value);
+		strncpy(cb->stun_host, value, sizeof(cb->stun_host) -1);
     } else if (strcmp(key, "lock.key") == 0) {
         strncpy(cb->lock_key, value, sizeof(cb->lock_key) -1);
         config_ident_lock(cb);
