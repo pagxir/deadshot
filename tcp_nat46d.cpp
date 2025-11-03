@@ -68,24 +68,6 @@ typedef struct _nat_conntrack_t {
 static nat_conntrack_t *_session_last[HASH_MASK + 1] = {};
 static LIST_HEAD(nat_conntrack_q, _nat_conntrack_t) _session_header = LIST_HEAD_INITIALIZER(_session_header);
 
-static inline unsigned int get_connection_match_hash(const void *src, const void *dst, uint16_t sport, uint16_t dport)
-{
-    uint32_t hash = 0, hashs[4];
-    uint32_t *srcp = (uint32_t *)src;
-    uint32_t *dstp = (uint32_t *)dst;
-
-    hashs[0] = srcp[0] ^ dstp[0];
-    hashs[1] = srcp[1] ^ dstp[1];
-    hashs[2] = srcp[2] ^ dstp[2];
-    hashs[3] = srcp[3] ^ dstp[3];
-
-    hashs[0] = (hashs[0] ^ hashs[1]);
-    hashs[2] = (hashs[2] ^ hashs[3]);
-
-    hash = (hashs[0] ^ hashs[2]) ^ sport ^ dport;
-    return ((hash >> 16)^ hash) & HASH_MASK;
-}
-
 static time_t _session_gc_time = 0;
 static int conngc_session(time_t now, nat_conntrack_t *skip)
 {
@@ -123,35 +105,6 @@ static int conngc_session(time_t now, nat_conntrack_t *skip)
     }
 
     return 0;
-}
-
-static nat_conntrack_t * lookup_session(struct sockaddr_in6 *from, uint16_t port)
-{
-    nat_conntrack_t *item;
-    static uint32_t ZEROS[4] = {};
-
-    int hash_idx0 = get_connection_match_hash(&from->sin6_addr, ZEROS, port, from->sin6_port);
-
-    item = _session_last[hash_idx0];
-    if (item != NULL) {
-        if ((item->source.sin6_port == from->sin6_port) && port == item->port &&
-                IN6_ARE_ADDR_EQUAL(&item->source.sin6_addr, &from->sin6_addr)) {
-            item->last_alive = time(NULL);
-            return item;
-        }
-    }
-
-    LIST_FOREACH(item, &_session_header, entry) {
-        if ((item->source.sin6_port == from->sin6_port) && port == item->port &&
-                IN6_ARE_ADDR_EQUAL(&item->source.sin6_addr, &from->sin6_addr)) {
-            item->last_alive = time(NULL);
-            assert(hash_idx0 == item->hash_idx);
-            _session_last[hash_idx0] = item;
-            return item;
-        }
-    }
-
-    return NULL;
 }
 
 static void update_timer(void *up)
@@ -208,44 +161,55 @@ static int flush_cache(tx_aiocb *file, cache_t *cache)
 	return d->len == d->off;
 }
 
+static int pipling(tx_aiocb *filpin, tx_aiocb *filpout, tx_task_t *task, cache_t *cache)
+{
+	int count = 0;
+	cache_t *d = cache;
+
+	do {
+
+		if (!tx_writable(filpout)) {
+			tx_outcb_prepare(filpout, task, 0);
+			return 0;
+		}
+
+		if (!flush_cache(filpout, cache)) {
+			tx_outcb_prepare(filpout, task, 0);
+			LOG_INFO("main stream is slow down");
+			return 0;
+		}
+
+		if (!tx_readable(filpin)) {
+			tx_aincb_active(filpin, task);
+			return 0;
+		}
+
+		count = recv(filpin->tx_fd, d->buf, sizeof(d->buf), MSG_DONTWAIT);
+		tx_aincb_update(filpin, count);
+
+		if (count > 0) {
+			d->len = count;
+			d->off = 0;
+		} else if (!tx_readable(filpin)) {
+			tx_aincb_active(filpin, task);
+			return 0;
+		}
+
+	} while (0);
+
+	return count;
+}
+
 static void do_tcp_exchange_backward(void *upp)
 {
 	int count;
 	nat_conntrack_t *up = (nat_conntrack_t *)upp;
 	cache_t *d = &up->cache;
 
-	do {
-		if (!tx_writable(&up->mainfile)) {
-			tx_outcb_prepare(&up->mainfile, &up->task, 0);
-			return;
-		}
-
-		if (!flush_cache(&up->mainfile, &up->cache)) {
-			tx_outcb_prepare(&up->mainfile, &up->task, 0);
-			LOG_INFO("main stream is slow down");
-			return;
-		}
-
-		if (!tx_readable(&up->file)) {
-			tx_aincb_active(&up->file, &up->task);
-			return;
-		}
-
-		count = recv(up->sockfd, d->buf, sizeof(d->buf), MSG_DONTWAIT);
-		tx_aincb_update(&up->file, count);
-
-		if (count <= 0 && !tx_readable(&up->file)) {
-			tx_aincb_active(&up->file, &up->task);
-			return;
-		}
-
-		if (count > 0) {
-			up->last_alive = time(NULL);
-			d->len = count;
-			d->off = 0;
-		}
-
-	} while (count > 0);
+	if (pipling(&up->file, &up->mainfile, &up->task, d) > 0) {
+		up->last_alive = time(NULL);
+		return;
+	}
 
 	LOG_INFO("read peerfd stream: %d errno=%d msg=%s", count, errno, strerror(errno));
 	LOG_INFO("reach end of peerfd stream");
@@ -262,38 +226,10 @@ static void do_tcp_exchange_forward(void *upp)
 	nat_conntrack_t *up = (nat_conntrack_t *)upp;
 	cache_t *d = &up->maincache;
 
-	do {
-		if (!tx_writable(&up->file)) {
-			tx_outcb_prepare(&up->file, &up->maintask, 0);
-			return;
-		}
-
-		if (!flush_cache(&up->file, &up->maincache)) {
-			tx_outcb_prepare(&up->file, &up->maintask, 0);
-			LOG_INFO("peer stream is slow down");
-			return;
-		}
-
-		if (!tx_readable(&up->mainfile)) {
-			tx_aincb_active(&up->mainfile, &up->maintask);
-			return;
-		}
-
-		count = recv(up->mainfd, d->buf, sizeof(d->buf), MSG_DONTWAIT);
-		tx_aincb_update(&up->mainfile, count);
-
-		if (count <= 0 && !tx_readable(&up->mainfile)) {
-			tx_aincb_active(&up->mainfile, &up->maintask);
-			return;
-		}
-
-		if (count > 0) {
-			up->last_alive = time(NULL);
-			d->len = count;
-			d->off = 0;
-		}
-
-	} while (count > 0);
+	if (pipling(&up->mainfile, &up->file, &up->maintask, d) > 0) {
+		up->last_alive = time(NULL);
+		return;
+	}
 
 	LOG_INFO("reach end of mainfd stream");
 	tx_outcb_cancel(&up->file, &up->maintask);
@@ -322,12 +258,14 @@ static int new_tcp_channel(int newfd, struct sockaddr_in6 *target)
         tx_task_init(&conn->maintask, loop, do_tcp_exchange_forward, conn);
         tx_aincb_active(&conn->mainfile, &conn->maintask);
 
+#if 0
         conn->sockfd = sockfd;
         tx_aiocb_init(&conn->file, loop, sockfd);
         tx_task_init(&conn->task, loop, do_tcp_exchange_backward, conn);
 
 		error = tx_aiocb_connect(&conn->file, (struct sockaddr *)target, sizeof(*target), &conn->task);
 		assert (error == 0 || error == -EINPROGRESS);
+#endif
 
 		LIST_INSERT_HEAD(&_session_header, conn, entry);
 		return 0;
