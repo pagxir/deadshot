@@ -9,6 +9,9 @@
 #include <arpa/nameser.h>
 #include <resolv.h>
 
+#include <sched.h>
+#include <sys/syscall.h>
+
 #ifdef WIN32
 #include <windows.h>
 #else
@@ -20,6 +23,8 @@
 #endif
 
 #include <txall.h>
+
+extern "C" int pidfd_open (__pid_t __pid, unsigned int __flags) __THROW;
 
 struct timer_task {
     tx_task_t task; 
@@ -41,10 +46,102 @@ typedef struct cache_s {
 	char buf[655360];
 } cache_t;
 
-int socket_netns(int family, int type, int protocol, const char *netns);
+static int sendfd(int unixfd, int netfd)
+{
+    char dummy[] = "ABC";
+    struct iovec io = {
+        .iov_base = dummy,
+        .iov_len = 3
+    };
+    struct msghdr msg = { 0 };
+    char buf[CMSG_SPACE(sizeof(netfd))] = {};
+
+    msg.msg_iov = &io;
+    msg.msg_iovlen = 1;
+    msg.msg_control = buf;
+    msg.msg_controllen = sizeof(buf);
+
+    struct cmsghdr * cmsg = CMSG_FIRSTHDR(&msg);
+    cmsg->cmsg_level = SOL_SOCKET;
+    cmsg->cmsg_type = SCM_RIGHTS;
+    cmsg->cmsg_len = CMSG_LEN(sizeof(netfd));
+
+    memmove(CMSG_DATA(cmsg), &netfd, sizeof(netfd));
+    msg.msg_controllen = CMSG_SPACE(sizeof(netfd));
+
+    return sendmsg(unixfd, &msg, 0);
+}
+
+static int receivefd(int unixfd)
+{
+    int netfd;
+    char buffer[256];
+    struct iovec io = {
+        .iov_base = buffer,
+        .iov_len = sizeof(buffer)
+    };
+
+    struct msghdr msg = {0};
+    msg.msg_iov = &io;
+    msg.msg_iovlen = 1;
+
+    char control[256];
+    msg.msg_control = control;
+    msg.msg_controllen = sizeof(control);
+
+    if (recvmsg(unixfd, &msg, 0) < 0) {
+        return -1;
+    }
+
+    struct cmsghdr * cmsg = CMSG_FIRSTHDR(&msg);
+    unsigned char * data = CMSG_DATA(cmsg);
+
+    memcpy(&netfd, data, sizeof(netfd));
+    return netfd;
+}
+
+int socket_netns(int family, int type, int protocol, const char *netns)
+{
+    int sv[2];
+    int netfd;
+    pid_t pid, child;
+    int fd, err, newfd;
+
+    netns = netns? netns: getenv("NETNS");
+
+    if (netns == NULL)
+        return socket(family, type, protocol);
+
+    if (sscanf(netns, "%d", &pid) != 1)
+        return socket(family, type, protocol);
+
+    err = socketpair(AF_UNIX, SOCK_DGRAM, 0, sv);
+    assert (err == 0);
+
+    child = fork();
+    assert(child != -1);
+
+    if (child > 0) {
+        close(sv[0]);
+        netfd = receivefd(sv[1]);
+        close(sv[1]);
+        return netfd;
+    }
+
+    assert (child == 0);
+    fd = pidfd_open(pid, 0);
+    close(sv[1]);
+    err = setns(fd, CLONE_NEWNET);
+    // fprintf(stderr, "socket_netns pid=%d fd=%d err=%d\n", pid, fd, err);
+    newfd = socket(family, type, protocol);
+    sendfd(sv[0], newfd);
+    close(sv[0]);
+    exit(0);
+}
 
 typedef struct _nat_conntrack_t {
 	int refcnt;
+	int st_flag;
 	char dbgflags[4];
 
     int sockfd;
@@ -53,6 +150,7 @@ typedef struct _nat_conntrack_t {
     time_t last_alive;
     struct sockaddr_in6 source;
     struct sockaddr_in6 target;
+    tx_task_t neg;
 
     int port;
     tx_aiocb file;
@@ -98,6 +196,7 @@ static int conngc_session(time_t now, nat_conntrack_t *skip)
                 tx_task_drop(&item->maintask);
                 close(item->mainfd);
 
+                tx_task_drop(&item->neg);
                 LIST_REMOVE(item, entry);
                 free(item);
             }
@@ -136,6 +235,7 @@ static int session_release(nat_conntrack_t *up, int dbg)
 		close(up->sockfd);
 
 		tx_task_drop(&up->task);
+		tx_task_drop(&up->neg);
 
 		tx_aiocb_fini(&up->mainfile);
 		close(up->mainfd);
@@ -163,42 +263,105 @@ static int flush_cache(tx_aiocb *file, cache_t *cache)
 
 static int pipling(tx_aiocb *filpin, tx_aiocb *filpout, tx_task_t *task, cache_t *cache)
 {
-	int count = 0;
-	cache_t *d = cache;
+    int count = 0;
+    cache_t *d = cache;
 
-	do {
+    do {
 
-		if (!tx_writable(filpout)) {
-			tx_outcb_prepare(filpout, task, 0);
-			return 0;
-		}
+        if (!tx_writable(filpout)) {
+            tx_outcb_prepare(filpout, task, 0);
+			break;
+        }
 
-		if (!flush_cache(filpout, cache)) {
-			tx_outcb_prepare(filpout, task, 0);
-			LOG_INFO("main stream is slow down");
-			return 0;
-		}
+        if (!flush_cache(filpout, d)) {
+            tx_outcb_prepare(filpout, task, 0);
+			break;
+        }
 
-		if (!tx_readable(filpin)) {
-			tx_aincb_active(filpin, task);
-			return 0;
-		}
+        if (!tx_readable(filpin)) {
+            tx_aincb_active(filpin, task);
+			break;
+        }
 
-		count = recv(filpin->tx_fd, d->buf, sizeof(d->buf), MSG_DONTWAIT);
-		tx_aincb_update(filpin, count);
+        count = recv(filpin->tx_fd, d->buf, sizeof(d->buf), MSG_DONTWAIT);
+        tx_aincb_update(filpin, count);
 
-		if (count > 0) {
-			d->len = count;
-			d->off = 0;
-		} else if (!tx_readable(filpin)) {
-			tx_aincb_active(filpin, task);
-			return 0;
-		}
+        if (count > 0) {
+            d->len = count;
+            d->off = 0;
+        } else if (!tx_readable(filpin)) {
+            tx_aincb_active(filpin, task);
+			break;
+        } else {
+			/* TODO:XXX */
+            return 0;
+        }
 
-	} while (0);
+    } while (count > 0);
 
-	return count;
+    return 1;
 }
+
+static void do_sni_ssl_neg(void *upp)
+{
+    nat_conntrack_t *up = (nat_conntrack_t *)upp;
+    tx_aiocb *filp = &up->mainfile;
+    cache_t *d = &up->maincache;
+    uint16_t len = 0;
+    int count, error;
+
+    assert(up->st_flag == 0);
+    count = recv(filp->tx_fd, d->buf, sizeof(d->buf), MSG_DONTWAIT);
+    tx_aincb_update(filp, count);
+
+    if (count > 0) {
+        d->len += count;
+    } else {
+        tx_aincb_active(&up->mainfile, &up->neg);
+        return;
+    }
+
+    if (d->len < 5) {
+        tx_aincb_active(&up->mainfile, &up->neg);
+        return;
+    }
+
+    if (d->buf[0] == 22 && d->buf[1] == 0x3 && d->buf[2] <= 3) {
+        memcpy(&len, &d->buf[3], 2);
+        len = htons(len);
+        if (len + 5 >= sizeof(d->buf)) {
+            session_release(up, 0);
+            return;
+        }
+
+        if (d->len < len + 5) {
+            tx_aincb_active(&up->mainfile, &up->neg);
+            return;
+        }
+    }
+
+    error = tx_aiocb_connect(&up->file, (struct sockaddr *)&up->target, sizeof(up->target), &up->maintask);
+	if (error == 0 || errno == EINPROGRESS) {
+	} else {
+		fprintf(stderr, "tx_aiocb_connect errno=%d\n", errno);
+		session_release(up, 0);
+		return;
+	}
+
+	tx_aincb_stop(&up->mainfile, &up->neg);
+    tx_task_drop(&up->neg);
+
+	tx_task_active(&up->task, "pipling");
+
+    up->st_flag = 1;
+    up->refcnt++;
+
+    char host[128];
+    inet_ntop(AF_INET6, &up->target.sin6_addr, host, sizeof(host));
+    fprintf(stderr, "ssl segment length: %d dlen %ld doff %ld %s:%d\n", len, d->len, d->off, host, htons(up->target.sin6_port));
+    return;
+}
+
 
 static void do_tcp_exchange_backward(void *upp)
 {
@@ -241,37 +404,40 @@ static void do_tcp_exchange_forward(void *upp)
 
 static int new_tcp_channel(int newfd, struct sockaddr_in6 *target)
 {
-	int error;
+    int error;
 
-	assert(newfd >= 0);
-	if (newfd < 1000) {
+    assert(newfd >= 0);
+    if (newfd < 1000) {
         tx_loop_t *loop = tx_loop_default();
         int sockfd = socket(AF_INET6, SOCK_STREAM, 0);
-		if (sockfd == -1) return -1;
+        if (sockfd == -1) return -1;
+		tx_setblockopt(sockfd, 0);
 
-		nat_conntrack_t *conn = ALLOC_NEW(nat_conntrack_t);
-		conn->refcnt = 2;
-		memcpy(conn->dbgflags, "...", 4);
+        nat_conntrack_t *conn = ALLOC_NEW(nat_conntrack_t);
+        conn->refcnt = 1;
+        memcpy(conn->dbgflags, "...", 4);
 
         conn->mainfd = newfd;
         tx_aiocb_init(&conn->mainfile, loop, newfd);
         tx_task_init(&conn->maintask, loop, do_tcp_exchange_forward, conn);
-        tx_aincb_active(&conn->mainfile, &conn->maintask);
 
-#if 0
         conn->sockfd = sockfd;
         tx_aiocb_init(&conn->file, loop, sockfd);
         tx_task_init(&conn->task, loop, do_tcp_exchange_backward, conn);
 
-		error = tx_aiocb_connect(&conn->file, (struct sockaddr *)target, sizeof(*target), &conn->task);
-		assert (error == 0 || error == -EINPROGRESS);
-#endif
+        tx_task_init(&conn->neg, loop, do_sni_ssl_neg, conn);
+        tx_aincb_active(&conn->mainfile, &conn->neg);
 
-		LIST_INSERT_HEAD(&_session_header, conn, entry);
-		return 0;
-	}
+        memset(&conn->maincache, 0, sizeof(conn->maincache));
+        memset(&conn->cache, 0, sizeof(conn->cache));
 
-	return -1;
+        conn->target  = *target;
+        conn->st_flag = 0;
+        LIST_INSERT_HEAD(&_session_header, conn, entry);
+        return 0;
+    }
+
+    return -1;
 }
 
 static void do_tcp_accept(void *upp)
