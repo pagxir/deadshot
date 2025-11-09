@@ -1,0 +1,841 @@
+#include <sys/socket.h>
+#include <sys/wait.h>
+#include <signal.h>
+#include <unistd.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <arpa/inet.h>
+
+#include <stdio.h>
+#include <assert.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <unistd.h> // read(), write(), close()
+
+/* wolfSSL */
+#include <wolfssl/options.h>
+#include <wolfssl/ssl.h>
+#include <wolfssl/error-ssl.h>
+#include <wolfssl/wolfcrypt/coding.h>
+#include <wolfssl/wolfcrypt/curve25519.h>
+#include <wolfssl/wolfcrypt/hpke.h>
+
+#define MAXSIZE 65536
+#define SA struct sockaddr
+
+#define HANDSHAKE_TYPE 22
+#define APPLICATION_DATA_TYPE 0x17
+
+#define TAG_SNI        0
+#define TAG_SESSION_TICKET 35
+#define TAG_ENCRYPT_CLIENT_HELLO 0xfe0d
+#define TAG_OUTER_EXTENSIONS 0xfd00
+
+#define HANDSHAKE_TYPE_CLIENT_HELLO         1
+#define HANDSHAKE_TYPE_SERVER_HELLO         2
+#define HANDSHAKE_TYPE_CERTIFICATE         11
+#define HANDSHAKE_TYPE_KEY_EXCHAGE         12
+#define HANDSHAKE_TYPE_SERVER_HELLO_DONE   14
+
+#define LOG(fmt, args...) fprintf(stderr, fmt, ##args)
+#define LOGD(fmt, args...) fprintf(stderr, fmt, ##args)
+#define LOGV(fmt, args...)
+#define LOGI(fmt, args...) fprintf(stderr, fmt, ##args)
+
+struct ssl_parse_ctx {
+    size_t size;
+    uint8_t *base;
+    size_t off_ext;                                                                                                                                                                                                      size_t len_ext;
+};
+
+static byte pub [] = {
+    0x16, 0xd4, 0x68, 0xcd, 0x30, 0xf4, 0x01, 0xaf, 0x98, 0x3e, 0xaa, 0x23,
+    0xcc, 0x8d, 0xa9, 0x2f, 0xbf, 0x51, 0x9d, 0x13, 0x32, 0xbd, 0x9f, 0xe9,
+    0xb2, 0xbd, 0xc1, 0x5c, 0xb6, 0x8b, 0xee, 0x7f
+};
+
+static byte priv[] = {
+    0x4a, 0x15, 0x0a, 0xb0, 0x16, 0x8f, 0x74, 0x88, 0xdc, 0xea, 0xfd, 0x81,
+    0x83, 0xe6, 0xe6, 0x69, 0xd6, 0x9d, 0xdf, 0x7f, 0x15, 0x84, 0xeb, 0xbf,
+    0x88, 0xd0, 0xb5, 0x53, 0x6e, 0x86, 0x1b, 0xd0
+};
+
+static byte info[1024];
+word32 infoLen = 0;
+
+struct taginfo {
+    int ord;
+    size_t size;
+    const void *buf;
+};
+
+#define NTAG 18
+struct outer_extensions_t {
+    int holdlen;
+    int hold[2 * NTAG];
+
+    int lastsize;
+    int thissize;
+    int lastcnt;
+
+    int tagoff;
+    const void *tagbord;
+    struct taginfo tags[NTAG];
+};
+
+#define countof(x) (sizeof(x) / sizeof(x[0]))
+
+static uint8_t TAGS_01[] = {0xaa, 0xaa, 0x00, 0x00};
+static uint8_t TAGS_02[] = {0x00, 0x2d, 0x00, 0x02, 0x01, 0x01};
+static uint8_t TAGS_03[] = {0xfe, 0x0d, 0x00, 0x00};
+#if 0
+static uint8_t TAGS_04[] = {0x00, 0x33, 0x00, 0x00};
+#else
+static uint8_t TAGS_04[] = {
+    0x00,  0x33,  0x04,  0xef,  0x04,  0xed,  0x0a,  0x0a,  0x00,  0x01,  0x00,  0x63,  0x99,  0x04,  0xc0,  0xff,
+    0x0d,  0x55,  0x7e,  0xa7,  0xdb,  0x5f,  0x12,  0xe7,  0x8c,  0x9e,  0xbf,  0x96,  0xe0,  0x03,  0xcd,  0x89,
+    0x6e,  0x27,  0xe2,  0x0d,  0x88,  0x26,  0x86,  0x7f,  0x0d,  0xcc,  0xc0,  0x52,  0x20,  0x77,  0x18,  0x3f,
+    0x13,  0xbd,  0xfb,  0xd0,  0x3f,  0x01,  0x35,  0x4b,  0xa4,  0x50,  0x83,  0x57,  0x61,  0x3e,  0x1b,  0x80,
+    0x5d,  0x04,  0x36,  0xa9,  0xca,  0xa4,  0xbb,  0x97,  0x1c,  0x59,  0x2c,  0xc0,  0xa9,  0x78,  0x05,  0x27,
+    0x40,  0x00,  0x86,  0x27,  0x06,  0x03,  0x56,  0xf7,  0xa6,  0x91,  0x27,  0xb1,  0xba,  0x59,  0x2f,  0xc0,
+    0x71,  0x93,  0xe0,  0x71,  0xaf,  0xd2,  0x83,  0xc3,  0xa8,  0x06,  0xc8,  0xa7,  0x48,  0x80,  0xe3,  0x00,
+    0x8c,  0x48,  0xa2,  0x77,  0x17,  0x1a,  0x4e,  0xfd,  0x83,  0x6d,  0x1c,  0xd3,  0x46,  0x79,  0x26,  0x32,
+    0x82,  0x81,  0x96,  0x91,  0x0c,  0x26,  0x81,  0xb6,  0x79,  0xc3,  0x23,  0x5a,  0x54,  0xd7,  0xbb,  0xa7,
+    0x62,  0xbd,  0x34,  0xa9,  0x25,  0x2f,  0x6c,  0x9e,  0xf4,  0x7b,  0xb3,  0xad,  0x3b,  0x1b,  0x39,  0x3c,
+    0x28,  0xcf,  0xe6,  0x37,  0x8c,  0xcb,  0xab,  0xad,  0xf1,  0xbe,  0x35,  0x28,  0x6a,  0xbb,  0xe0,  0x70,
+    0x0e,  0xd1,  0xa6,  0xee,  0xf9,  0x11,  0x62,  0x78,  0xa8,  0x7e,  0xcc,  0xa2,  0x51,  0x66,  0x09,  0xc3,
+    0xc8,  0x3a,  0x5d,  0xba,  0xae,  0x20,  0x43,  0xb8,  0x08,  0x66,  0x84,  0xda,  0x36,  0x58,  0xdd,  0x93,
+    0x9e,  0x6a,  0xea,  0x3d,  0xea,  0x5a,  0x25,  0xe7,  0x88,  0xc8,  0x23,  0x91,  0x4c,  0xae,  0x53,  0x42,
+    0x42,  0x06,  0xba,  0x6b,  0x14,  0x7a,  0xc7,  0xf6,  0xb0,  0x01,  0xc5,  0xa3,  0x48,  0x58,  0x4c,  0x37,
+    0xd7,  0x08,  0xa5,  0xc7,  0x28,  0xc8,  0xd8,  0x84,  0xab,  0x37,  0xaa,  0xeb,  0xd1,  0xc1,  0x4c,  0xac,
+    0x90,  0x6a,  0xeb,  0xb7,  0xff,  0x73,  0x3b,  0x47,  0x70,  0x15,  0x2e,  0x74,  0x48,  0x1e,  0x21,  0x0a,
+    0x39,  0x71,  0xa4,  0x86,  0xc6,  0x19,  0x94,  0xb6,  0x27,  0x48,  0x69,  0x47,  0x04,  0x79,  0xcf,  0x74,
+    0x29,  0xa0,  0xb5,  0x88,  0xa0,  0xe5,  0x25,  0x2b,  0xab,  0x29,  0xc6,  0xf0,  0xc0,  0x74,  0x23,  0x64,
+    0x02,  0x5d,  0xfc,  0x2f,  0x4a,  0x59,  0x1c,  0x4e,  0x36,  0x33,  0x71,  0x62,  0x3b,  0xed,  0xa6,  0x9e,
+    0x24,  0x93,  0x48,  0xaa,  0x04,  0x00,  0x1e,  0x38,  0x45,  0x24,  0x78,  0xb4,  0x4b,  0x41,  0xc4,  0x7d,
+    0x5c,  0x2a,  0xb1,  0x35,  0xb9,  0x6e,  0x5b,  0xb4,  0xe6,  0xd0,  0x65,  0xa9,  0x51,  0x57,  0x29,  0x68,
+    0x03,  0x8c,  0xb8,  0xb8,  0xa8,  0x54,  0x9a,  0x42,  0x7a,  0x66,  0x51,  0x5c,  0x57,  0x60,  0x10,  0x22,
+    0xc3,  0xba,  0x34,  0x66,  0x43,  0x3d,  0x3d,  0x66,  0x9d,  0x65,  0x94,  0x3c,  0x91,  0x38,  0x4a,  0x24,
+    0x90,  0x2e,  0xb4,  0x39,  0x3c,  0x95,  0x22,  0x13,  0x96,  0x74,  0xcc,  0xc2,  0xcc,  0x4d,  0x13,  0xa4,
+    0x88,  0xe3,  0x34,  0x85,  0xa4,  0x7c,  0x21,  0x9b,  0x45,  0xa8,  0x0f,  0xf0,  0x17,  0xd7,  0x78,  0x34,
+    0x86,  0x74,  0x9c,  0x2c,  0xc8,  0x61,  0x79,  0x2b,  0x0d,  0xa9,  0x08,  0x96,  0x39,  0xcc,  0x84,  0x30,
+    0xa8,  0xa9,  0x9f,  0x50,  0x95,  0x30,  0x96,  0x57,  0xe4,  0xcc,  0x92,  0x9a,  0x61,  0x9d,  0x0c,  0xd4,
+    0xb3,  0xb0,  0x88,  0x8a,  0x48,  0x52,  0x92,  0xea,  0xe7,  0x7b,  0x1f,  0x2a,  0x43,  0x9c,  0x54,  0x7b,
+    0x32,  0x26,  0xb8,  0xeb,  0x54,  0x95,  0x94,  0x22,  0xc5,  0x0b,  0x85,  0x93,  0x1c,  0xbb,  0x5c,  0x2d,
+    0x51,  0x81,  0x03,  0x72,  0x86,  0x27,  0x81,  0xbf,  0x07,  0x22,  0x0b,  0xd0,  0x26,  0x69,  0x45,  0xca,
+    0xa5,  0x12,  0x53,  0x73,  0x07,  0x9b,  0xc2,  0xdd,  0xb3,  0xa3,  0x15,  0x04,  0xb7,  0x13,  0x24,  0x23,
+    0x4a,  0xaa,  0x6a,  0xa4,  0x43,  0x61,  0xf1,  0x50,  0xad,  0x7a,  0x05,  0x36,  0xb8,  0xb9,  0x3f,  0xb5,
+    0x1a,  0xb9,  0xbc,  0x99,  0x93,  0x54,  0x2a,  0x48,  0x3d,  0x8c,  0x60,  0x34,  0x72,  0x94,  0xfd,  0x79,
+    0x8b,  0x7d,  0x33,  0x03,  0x19,  0xe2,  0x59,  0x48,  0x50,  0x71,  0x69,  0x24,  0xc8,  0x5b,  0x22,  0xa1,
+    0xb3,  0x89,  0xa4,  0xb8,  0xe6,  0xab,  0x11,  0x48,  0x3d,  0xe8,  0xdb,  0x5d,  0x85,  0x08,  0xbe,  0xbd,
+    0x49,  0x38,  0x60,  0xf0,  0x07,  0x33,  0x29,  0xaa,  0xee,  0x2c,  0x18,  0x08,  0xb4,  0x31,  0xd1,  0xbb,
+    0xc2,  0xc2,  0xcb,  0x2e,  0x3f,  0x20,  0x2a,  0xc9,  0xe3,  0x5a,  0x59,  0x90,  0xb2,  0x7e,  0xa3,  0xc3,
+    0x0c,  0x41,  0x37,  0x67,  0xc5,  0x3a,  0xc3,  0x57,  0x60,  0xad,  0x08,  0x1c,  0x71,  0x70,  0xaf,  0x55,
+    0xc4,  0x31,  0x39,  0x7c,  0x91,  0x7c,  0xeb,  0x70,  0xe0,  0xb7,  0xc2,  0x46,  0x93,  0x8a,  0xa0,  0x5c,
+    0x6c,  0xc3,  0x82,  0x38,  0x1b,  0xc6,  0xcf,  0x76,  0x47,  0x72,  0xbe,  0x76,  0x42,  0x74,  0x21,  0x0d,
+    0x71,  0x31,  0x11,  0x76,  0xf3,  0xaf,  0x3d,  0xc8,  0x4a,  0xb5,  0xa0,  0xcf,  0x3d,  0xd3,  0x25,  0x3e,
+    0xf4,  0x14,  0x9e,  0x32,  0xa9,  0x8a,  0x17,  0x9a,  0x99,  0x38,  0x59,  0x6e,  0x91,  0xb4,  0x93,  0xb1,
+    0x47,  0x3a,  0x3a,  0xa7,  0xa6,  0xa7,  0x85,  0x24,  0x4a,  0x5c,  0xa5,  0xd4,  0xca,  0x6c,  0xf8,  0x52,
+    0xf5,  0x1c,  0x5e,  0x4a,  0x24,  0x95,  0x23,  0x05,  0xc8,  0xbc,  0x64,  0x59,  0x0a,  0x1b,  0x67,  0xff,
+    0x1c,  0xae,  0x57,  0x07,  0x5c,  0xfa,  0x05,  0x23,  0x66,  0x61,  0x82,  0x5c,  0x0a,  0xc1,  0x55,  0xb6,
+    0x50,  0x8f,  0xaa,  0x95,  0xd1,  0xf2,  0x21,  0xd6,  0x82,  0x7a,  0xd3,  0xc3,  0xbe,  0xc9,  0x35,  0x42,
+    0x4d,  0x3a,  0xa2,  0xbb,  0xc0,  0x2f,  0xbc,  0x27,  0x6d,  0x72,  0xe0,  0x9f,  0x24,  0x56,  0x34,  0xeb,
+    0xf1,  0xa2,  0x05,  0x24,  0x81,  0xcb,  0x46,  0x0c,  0xd5,  0x9b,  0x7c,  0x20,  0x10,  0x8d,  0x7d,  0x28,
+    0xb1,  0x0f,  0xa8,  0x3f,  0x36,  0x06,  0xae,  0xc4,  0x58,  0x05,  0xd0,  0x1a,  0x4b,  0xe2,  0xc3,  0xbc,
+    0x35,  0xa9,  0x4d,  0x95,  0x9a,  0xb1,  0x3b,  0x97,  0x3c,  0x7e,  0x04,  0xaf,  0x69,  0x01,  0x79,  0x0a,
+    0x67,  0x86,  0x94,  0xb4,  0x02,  0xf4,  0xd1,  0x50,  0x0a,  0x5b,  0x5a,  0xaf,  0x27,  0xbc,  0xbf,  0xf3,
+    0x5b,  0x3d,  0x94,  0x4b,  0x8f,  0xa1,  0xca,  0x65,  0x8c,  0x1e,  0xe0,  0xc4,  0x95,  0xfe,  0x59,  0xa7,
+    0x15,  0x3c,  0x0f,  0x7a,  0x8a,  0x34,  0xbd,  0xa6,  0x5f,  0xd0,  0xa4,  0xa2,  0x40,  0x87,  0x36,  0x0a,
+    0x93,  0xb3,  0x4d,  0xd2,  0x6a,  0xc9,  0x62,  0x4c,  0x05,  0x27,  0x61,  0x72,  0x41,  0x71,  0xe1,  0x97,
+    0x4c,  0x47,  0xc8,  0xb3,  0xa9,  0xf4,  0x82,  0xc0,  0x15,  0xcd,  0x4a,  0xf0,  0x27,  0x45,  0x92,  0xaa,
+    0x7a,  0x12,  0x0f,  0x6b,  0x5a,  0xbb,  0xef,  0x18,  0x6c,  0xaa,  0xd4,  0x89,  0x91,  0x06,  0x34,  0x5a,
+    0xf3,  0x17,  0xef,  0x01,  0x43,  0xc0,  0x64,  0xa2,  0xff,  0x42,  0x89,  0x91,  0xac,  0x14,  0x12,  0x04,
+    0x8f,  0xc1,  0x56,  0xbf,  0x54,  0xa9,  0x87,  0x37,  0xf6,  0xaf,  0xe1,  0x00,  0x5c,  0xc8,  0x50,  0xb7,
+    0xf0,  0xd1,  0x36,  0xe7,  0x00,  0xb3,  0x27,  0x08,  0x62,  0x96,  0x6c,  0x92,  0xce,  0x57,  0xbf,  0x53,
+    0xf2,  0x43,  0x62,  0x28,  0x55,  0x74,  0xb8,  0xb2,  0xdd,  0xd7,  0x94,  0x41,  0x9a,  0x5f,  0x46,  0x50,
+    0x95,  0x8d,  0x63,  0x84,  0xa1,  0x21,  0xae,  0x09,  0x45,  0x45,  0x4c,  0xd7,  0x89,  0x4d,  0xb4,  0xc2,
+    0x87,  0xf4,  0x44,  0x03,  0xec,  0xb1,  0x5b,  0x59,  0x39,  0x36,  0x2c,  0xb7,  0x45,  0x7b,  0x70,  0x6f,
+    0x8a,  0x54,  0x11,  0x62,  0xae,  0x01,  0x05,  0x75,  0xaa,  0x5b,  0x6a,  0xac,  0xa2,  0xc5,  0x5b,  0x61,
+    0x26,  0xa4,  0x39,  0x8a,  0x9a,  0x05,  0x00,  0xf7,  0xb9,  0x09,  0x6a,  0x49,  0xb2,  0xde,  0x55,  0x75,
+    0xda,  0xd3,  0x09,  0x42,  0xe7,  0x61,  0x0e,  0xe0,  0xbb,  0x46,  0x10,  0x92,  0x04,  0x66,  0xa6,  0x0b,
+    0x47,  0x41,  0xce,  0x0a,  0xaa,  0x8a,  0x55,  0x8e,  0xd6,  0x8a,  0x8b,  0xdb,  0xe5,  0x3a,  0x31,  0xf6,
+    0xac,  0xfd,  0x6c,  0x0a,  0xfa,  0x13,  0x59,  0xf2,  0xa8,  0xc8,  0xfa,  0xfc,  0x31,  0x62,  0xf8,  0xb3,
+    0x20,  0x53,  0x6c,  0x65,  0xf2,  0xc5,  0x34,  0x50,  0xad,  0xfb,  0xc4,  0x9c,  0xbd,  0x64,  0x65,  0x76,
+    0x27,  0x0b,  0x5e,  0xc1,  0x37,  0xfb,  0x99,  0xa3,  0xe1,  0x61,  0x2e,  0x9e,  0x2a,  0x7e,  0x24,  0x82,
+    0x24,  0x3c,  0x42,  0x8c,  0x49,  0x9a,  0x22,  0x91,  0xbc,  0x70,  0xe8,  0x4a,  0x3a,  0x9e,  0xa8,  0x7a,
+    0xef,  0xa7,  0x0e,  0x30,  0x38,  0x84,  0xa1,  0x5a,  0xba,  0xc1,  0x20,  0x7e,  0x48,  0x07,  0x19,  0x76,
+    0x7a,  0x71,  0x8e,  0x27,  0x7d,  0xcc,  0x16,  0x88,  0xad,  0x77,  0xba,  0x34,  0xf4,  0xa2,  0x77,  0x93,
+    0xc9,  0xd1,  0xaa,  0xbe,  0x80,  0x94,  0x4b,  0x21,  0x71,  0xc0,  0x0f,  0x98,  0xae,  0x97,  0x0c,  0x58,
+    0x07,  0x88,  0xae,  0xfc,  0x39,  0x70,  0xeb,  0xb7,  0x98,  0x62,  0xe6,  0xa7,  0x30,  0xda,  0xc2,  0x0e,
+    0x6e,  0x28,  0x1a,  0x20,  0x18,  0x7a,  0xeb,  0x26,  0xf4,  0xaa,  0xe9,  0xa5,  0x9d,  0xbf,  0x7a,  0x0e,
+    0xb2,  0x2a,  0x1c,  0x8f,  0x59,  0x2c,  0x94,  0x06,  0x40,  0x01,  0x09,  0x03,  0xa3,  0x4c,  0xd8,  0x00,
+    0x1d,  0x00,  0x20,  0x3e,  0x0e,  0x7d,  0x26,  0x38,  0x76,  0x37,  0xe0,  0xb9,  0xe2,  0x89,  0xab,  0x4d,
+    0xc2,  0x6e,  0xca,  0x53,  0x45,  0xf1,  0x38,  0xe0,  0x01,  0x6c,  0x61,  0x66,  0xb3,  0x3a,  0xbc,  0x7c,
+    0xfc,  0xc1,  0x0b
+};
+#endif
+static uint8_t TAGS_05[] = {0x44, 0x69, 0x00, 0x05, 0x00, 0x03, 0x02, 0x68, 0x32};
+static uint8_t TAGS_06[] = {0x00, 0x2b, 0x00, 0x07, 0x06, 0x9a, 0x9a, 0x03, 0x04, 0x03, 0x03};
+static uint8_t TAGS_07[] = {0x00, 0x00, 0x00, 0x16, 0x00, 0x14, 0x00, 0x00, 0x11, 0x64, 0x6e, 0x73, 0x70, 0x6f, 0x64, 0x2e, 0x71, 0x63, 0x6c, 0x6f, 0x75, 0x64, 0x2e, 0x63, 0x6f, 0x6d};
+static uint8_t TAGS_08[] = {0x00, 0x10, 0x00, 0x0e, 0x00, 0x0c, 0x02, 0x68, 0x32, 0x08, 0x68, 0x74, 0x74, 0x70, 0x2f, 0x31, 0x2e, 0x31};
+static uint8_t TAGS_09[] = {0x00, 0x17, 0x00, 0x00};
+static uint8_t TAGS_10[] = {0x00, 0x0b, 0x00, 0x02, 0x01, 0x00};
+static uint8_t TAGS_11[] = {0x00, 0x0a, 0x00, 0x0c, 0x00, 0x0a, 0xea, 0xea, 0x63, 0x99, 0x00, 0x1d, 0x00, 0x17, 0x00, 0x18};
+static uint8_t TAGS_12[] = {0x00, 0x23, 0x00, 0x00};
+static uint8_t TAGS_13[] = {0xff, 0x01, 0x00, 0x01, 0x00};
+static uint8_t TAGS_14[] = {0x00, 0x0d, 0x00, 0x12, 0x00, 0x10, 0x04, 0x03, 0x08, 0x04, 0x04, 0x01, 0x05, 0x03, 0x08, 0x05, 0x05, 0x01, 0x08, 0x06, 0x06, 0x01};
+static uint8_t TAGS_15[] = {0x00, 0x1b, 0x00, 0x03, 0x02, 0x00, 0x02};
+static uint8_t TAGS_16[] = {0x00, 0x05, 0x00, 0x05, 0x01, 0x00, 0x00, 0x00, 0x00};
+static uint8_t TAGS_17[] = {0x00, 0x12, 0x00, 0x00};
+static uint8_t TAGS_18[] = {0xea, 0xea, 0x00, 0x01, 0x00};
+
+static int TAGS[NTAG] = {43690, 45, TAG_ENCRYPT_CLIENT_HELLO, 51, 17513, 43, 0, 16, 23, 11, 10, 35, 65281, 13, 27, 5, 18, 60138};
+static uint8_t *TAGS_DATA[NTAG] = {TAGS_01, TAGS_02, TAGS_03, TAGS_04, TAGS_05, TAGS_06, TAGS_07, TAGS_08, TAGS_09, TAGS_10, TAGS_11, TAGS_12, TAGS_13, TAGS_14, TAGS_15, TAGS_16, TAGS_17, TAGS_18};
+static size_t TAGS_LEN[NTAG] = {sizeof TAGS_01, sizeof TAGS_02, sizeof TAGS_03, sizeof TAGS_04, sizeof TAGS_05, sizeof TAGS_06, sizeof TAGS_07, sizeof TAGS_08, sizeof TAGS_09, sizeof TAGS_10, sizeof TAGS_11, sizeof TAGS_12, sizeof TAGS_13, sizeof TAGS_14, sizeof TAGS_15, sizeof TAGS_16, sizeof TAGS_17, sizeof TAGS_18};
+
+static int outer_extensions_init(struct outer_extensions_t *ctx)
+{
+    int i;
+
+    for (i = 0; i < countof(ctx->tags); i++) {
+        ctx->tags[i].ord = TAGS[i];
+        ctx->tags[i].buf = TAGS_DATA[i];
+        ctx->tags[i].size = TAGS_LEN[i];
+
+        struct taginfo tagi = ctx->tags[i];
+        LOGI("init tagi.tag %8x tagi.buf %p tagi.size: %d\n", tagi.ord, tagi.buf, tagi.size);
+    }
+
+    ctx->holdlen = 0;
+    ctx->lastcnt = 0;
+    ctx->tagoff = 0;
+
+    ctx->thissize = 0;
+    ctx->lastsize = 0;
+    return 0;
+}
+
+static int outer_extensions_add(struct outer_extensions_t *ctx, int tag, const uint8_t buf[], size_t len)
+{
+    int i;
+    int okay = 0;
+    struct taginfo *tmp;
+
+    for (i = 0; i < countof(TAGS); i++) {
+        if (tag != ctx->tags[i].ord) {
+            continue;
+        }
+
+        if (ctx->tagoff > i) {
+            memmove(ctx->tags + i, ctx->tags + i + 1, sizeof(ctx->tags[0]) * (ctx->tagoff - i));
+        } else {
+            ctx->tagoff = i;
+        }
+
+        LOGI("outer_extensions_add %d tag %8x buf %p len %ld\n", i, tag, buf, len);
+        tmp = ctx->tags + ctx->tagoff;
+        tmp->ord = tag;
+        tmp->buf = buf;
+        tmp->size = len;
+
+        ctx->thissize += len;
+        assert(ctx->lastcnt + ctx->holdlen < countof(ctx->hold));
+        (ctx->hold + ctx->lastcnt)[ctx->holdlen] = tag;
+        ctx->holdlen++;
+
+        LOGV("outer_extensions_add thissize %ld holdlen %d\n", ctx->thissize, ctx->holdlen);
+        // LOGV("ctx->holdlen = %d, ctx->len = %d, ctx->tagoff = %d\n", ctx->holdlen, ctx->len, ctx->tagoff);
+        okay = 1;
+        break;
+    }
+
+    // if (okay == 0) LOGV("ctx->holdlen = %d, ctx->len = %d, ctx->tagoff = %d, lost tag=%d\n", ctx->holdlen, ctx->len, ctx->tagoff, tag);
+
+    return okay;
+}
+
+static int outer_extensions_flush(struct outer_extensions_t *ctx, const void *buf)
+{
+    int count = ctx->holdlen;
+
+    LOGV("outer_extensions_flush %p count %d\n", buf, count);
+    if (count == 0) return 0;
+
+    if (ctx->thissize > ctx->lastsize) {
+        memmove(ctx->hold, ctx->hold + ctx->lastcnt, ctx->holdlen * sizeof(ctx->hold[0]));
+        ctx->lastsize = ctx->thissize;
+        ctx->lastcnt = ctx->holdlen;
+        ctx->tagbord = buf;
+        LOGI("update outer_extensions_flush %p count %d %d\n", buf, count, ctx->lastsize);
+    }
+
+    ctx->thissize = 0;
+    ctx->holdlen = 0;
+    return 0;
+}
+
+static int outer_extensions_build(struct outer_extensions_t *ctx, uint8_t *buf, size_t len)
+{
+    int count = ctx->lastcnt;
+
+    ctx->lastcnt = 0;
+    buf[0] = (TAG_OUTER_EXTENSIONS >> 8);
+    buf[1] = (TAG_OUTER_EXTENSIONS & 0xff);
+
+    int val = count * 2 + 1;
+    buf[2] = (val >> 8);
+    buf[3] = (val);
+    buf[4] = (count << 1);
+
+    for (int i = 0; i < count; i++) {
+        int code = ctx->hold[i];
+        buf[5 + i * 2] = (code >> 8);
+        buf[5 + i * 2 + 1] = (code);
+        LOGV("outer_extensions_flush: code=%d\n", code);
+    }
+    assert(5 + count * 2 + 2 < len);
+
+    LOGV("outer_extensions_flush: %d\n", count);
+
+    return 4 + val;
+}
+
+static int should_pullout(int tag)
+{
+    int allow_tags[] = {0xeaea, 0x0033, 0x0010, 0x000a, 0x001b, 0x002d, 0x0005, 0x4469, 0x0012, 0x000d, 0xcaca};
+
+    for (int i = 0; i < countof(allow_tags); i++) {
+        if (allow_tags[i] == tag) return 1;
+    }
+
+    return (tag != 0 && tag != TAG_ENCRYPT_CLIENT_HELLO);
+}
+
+static int setrandomize(void *buf, size_t len)
+{
+    int i;
+    int *data = (int *)buf;
+
+    for (i = 0; len >= 4; i++, len -= 4)
+        data[i] = random();
+
+    if (len > 0) {
+        int mask = ~0 << ((4 - len) * 8);
+        data[i] &= htonl(~mask);
+        data[i] |= htonl(mask & random());
+    }
+
+    return 0;
+}
+
+static void xxdump(const char *title, const void *data, size_t len)
+{
+    char line[128];
+    const uint8_t *ptr;
+    const uint8_t *start = (const uint8_t *)data;
+    const char map[] = "0123456789abcdef0";
+
+    ptr = start;
+    for (; len >= 16; len -= 16) {
+        char *p = line;
+
+        for (int i = 0; i < 16; i++) {
+            int code = *ptr++;
+            *p++ = map[code >> 4];
+            *p++ = map[code & 0xf];
+            *p++ = ' ';
+        }
+
+        if (p > line) {
+            p--;
+            *p = 0;
+        }
+
+        printf("%s: %s\n", title, line);
+    }
+
+    char *p1 = line;
+
+    for (int i = 0; i < len; i++) {
+        int code = *ptr++;
+        *p1++ = map[code >> 4];
+        *p1++ = map[code & 0xf];
+        *p1++ = ' ';
+    }
+
+    if (p1 > line) {
+        p1--;
+        *p1 = 0;
+    }
+
+    if (p1 > line) {
+        printf("%s: %s\n", title, line);
+    }
+
+    return ;
+}
+
+#define OFF_SESSION_ID (2 + 32)
+int scan_client_hello(struct ssl_parse_ctx *ctx, struct outer_extensions_t *outter_ext, const uint8_t *plain, size_t len)
+{
+    const uint8_t *data = NULL;
+    const uint8_t *limit = NULL;
+    const uint8_t *tlv_mem = NULL;
+    uint16_t tlv_tag = 0, tlv_len = 0;
+
+    assert(plain == ctx->base + 4);
+    data  = ctx->base + ctx->off_ext;
+    limit = plain + len;
+
+    int last_tag = -1;
+    while (data < limit) {
+        tlv_mem = data;
+
+        tlv_tag = *data++;
+        tlv_tag = (tlv_tag << 8) | *data++;
+
+        tlv_len = *data++;
+        tlv_len = (tlv_len << 8) | *data++;
+
+        LOGI("scan_client_hello tag %8x buf %p len %ld\n", tlv_tag, tlv_mem, tlv_len);
+        if (!should_pullout(tlv_tag) ||
+                !outer_extensions_add(outter_ext, tlv_tag, tlv_mem, tlv_len + 4))
+            outer_extensions_flush(outter_ext, tlv_mem);
+
+        last_tag = tlv_tag;
+        data += tlv_len;
+    }
+
+    outer_extensions_flush(outter_ext, limit);
+    LOGV("scan_client_hello: size=%d\n", outter_ext->lastsize);
+    return 0;
+}
+
+int save_data(const char *path, void *buf, size_t len)
+{
+    FILE *fp = fopen(path, "wb");
+
+    if (fp) {
+        size_t  tlen = len;
+        uint8_t header[9] = {0x16, 0x03, 0x01, 0xA, 0xB, 0x01, 0xA, 0xB, 0xC};
+        uint8_t *hp = header + 9;
+
+        tlen = len;
+        *--hp = tlen;
+
+        tlen >>= 8;
+        *--hp = tlen;
+
+        tlen >>= 8;
+        *--hp = tlen;
+
+        *--hp = 0x01;
+
+        tlen = (len + 4);
+        *--hp = tlen;
+
+        tlen >>= 8;
+        *--hp = tlen;
+
+        fwrite(header, 9, 1, fp);
+        fwrite(buf, len, 1, fp);
+        fclose(fp);
+    }
+
+    return 0;
+}
+
+int fold_client_hello(struct ssl_parse_ctx *ctx, struct outer_extensions_t *outter_ext, uint8_t *encoded, size_t ddsz, const uint8_t *plain, size_t len)
+{
+    uint8_t *dest = NULL;
+    const uint8_t *data = NULL;
+    const uint8_t *limit = NULL;
+    const uint8_t *tlv_mem = NULL;
+    uint16_t tlv_tag = 0, tlv_len = 0;
+
+    size_t off_ext = 0;
+    size_t l_session_id = plain[OFF_SESSION_ID];
+
+    off_ext = ctx->off_ext - l_session_id - 4;
+    memcpy(encoded, plain, OFF_SESSION_ID);
+    memcpy(encoded + OFF_SESSION_ID, plain + OFF_SESSION_ID + l_session_id, off_ext - OFF_SESSION_ID);
+    encoded[OFF_SESSION_ID] = 0;
+
+    int last_tag = -1;
+    int out_tag_indx = 0;
+
+    assert(plain == ctx->base + 4);
+    data  = ctx->base + ctx->off_ext;
+    dest  = encoded + off_ext;
+    limit = plain + len;
+
+    uint8_t * extbase = dest;
+    uint8_t * tagbord = (uint8_t *)outter_ext->tagbord;
+
+    if (outter_ext->lastcnt) {
+        size_t first_size = tagbord - outter_ext->lastsize - data;
+
+        memcpy(dest, data, first_size);
+        dest += first_size;
+
+        size_t outter_size = outer_extensions_build(outter_ext, dest, 1024);
+        dest += outter_size;
+
+        size_t last_size = limit - tagbord;
+        memcpy(dest, tagbord, last_size);
+        dest += last_size;
+    } else {
+        size_t last_size = limit - data;
+
+        memcpy(dest, data, last_size);
+        dest += last_size;
+    }
+
+    // fprintf(stderr, "dest %d encoded %p ddsz %d off_ext %d off-ext %d len %d\n", dest - encoded, encoded, ddsz, off_ext, ctx->off_ext, len);
+#if 0
+    assert (dest + 1024 < encoded + ddsz);
+    dest += outer_extensions_flush(outter_ext);
+#endif
+
+    size_t extsz = (dest - extbase);
+    *--extbase = extsz;
+    *--extbase = (extsz >> 8);
+
+    save_data("encoded.pcap", encoded, dest - encoded);
+    return dest - encoded;
+}
+
+int encode_client_hello(struct ssl_parse_ctx *ctx, uint8_t *encoded, size_t ddsz, const uint8_t *plain, size_t len, size_t *outlen)
+{
+    int i;
+    uint8_t *dest = encoded;
+    uint8_t *tlv_mem = NULL;
+    const uint8_t *data = plain;
+    const uint8_t *session_id = plain + OFF_SESSION_ID + 1;
+    uint16_t  tlv_tag = 0, tlv_len = 0;
+    size_t offset = 0, l_session_id = 0, off_ext;
+    word16 kemId = DHKEM_X25519_HKDF_SHA256, kdfId = HKDF_SHA256, aeadId = HPKE_AES_128_GCM;
+
+    l_session_id = plain[OFF_SESSION_ID];
+
+    Hpke hpke[1];
+    void *heap = NULL;
+    curve25519_key ephemeralKey[1];
+    curve25519_key receiverPrivkey0[1];
+    int ret = wc_HpkeInit(hpke, kemId, kdfId, aeadId, heap);
+
+    wc_curve25519_init(receiverPrivkey0);
+    wc_curve25519_import_public(pub, sizeof(pub), receiverPrivkey0);
+    wc_curve25519_import_private_raw(priv, sizeof(priv), pub, sizeof(pub), receiverPrivkey0);
+
+    *dest++ = 0x03;
+    *dest++ = 0x03;
+
+    setrandomize(dest, 32);
+    dest += 32;
+
+    *dest++ = l_session_id;
+    memcpy(dest, session_id, l_session_id);
+    dest += l_session_id;
+
+    uint8_t cipher_suites[] = {
+        0x3a, 0x3a, 0x13, 0x01, 0x13, 0x02, 0x13, 0x03, 0xc0, 0x2b, 0xc0, 0x2f, 0xc0, 0x2c, 0xc0, 0x30,
+        0xcc, 0xa9, 0xcc, 0xa8, 0xc0, 0x13, 0xc0, 0x14, 0x00, 0x9c, 0x00, 0x9d, 0x00, 0x2f, 0x00, 0x35
+    };
+
+    *dest++ = sizeof(cipher_suites) >> 8;
+    *dest++ = sizeof(cipher_suites);
+
+    memcpy(dest, cipher_suites, sizeof(cipher_suites));
+    dest += sizeof(cipher_suites);
+
+    int non_compress = 0;
+    int compress_length = 1;
+
+    *dest++ = compress_length;
+    *dest++ = non_compress;
+
+    uint8_t *lpext = dest;
+    uint8_t *pubKey = NULL;
+    uint8_t *ciphertext = NULL;
+    size_t payload_len = 0;
+    word16 pubKeySz = 0;
+
+    struct outer_extensions_t outter_ext;
+    outer_extensions_init(&outter_ext);
+    scan_client_hello(ctx, &outter_ext, plain, len);
+
+    dest += 2;
+    for (i = 0; i < countof(outter_ext.tags); i++) {
+        struct taginfo tagi = outter_ext.tags[i];
+
+        if (tagi.ord == TAG_ENCRYPT_CLIENT_HELLO) {
+            uint8_t *lplen0, *lplen1, *lplen2;
+            uint8_t *start = tlv_mem = dest;
+
+            *start++ = TAG_ENCRYPT_CLIENT_HELLO >> 8;
+            *start++ = TAG_ENCRYPT_CLIENT_HELLO & 0xff;
+
+            lplen0 = start;
+            start += 2;
+
+            *start++ = 0; *start++ = 0; *start++ = 0;
+            *start++ = 1; *start++ = 0; *start++ = 1;
+
+            lplen1 = start;
+            start += 2;
+
+            pubKey = start; pubKeySz = 32;
+            ret = wc_HpkeSerializePublicKey(hpke, receiverPrivkey0, pubKey, &pubKeySz);
+            start += pubKeySz;
+
+            lplen2 = start;
+            start += 2;
+
+            ciphertext = start;
+            payload_len = fold_client_hello(ctx, &outter_ext, ciphertext, 4096, plain, len);
+            start += payload_len;
+            start += 16;
+
+            tlv_len = (start - tlv_mem) - 4;
+            LOGI("tlv_len=%d\n", tlv_len);
+
+            *lplen1++ = (pubKeySz >> 8);
+            *lplen1++ = pubKeySz;
+
+            *lplen2++ = (payload_len + 16) >> 8;
+            *lplen2++ = (payload_len + 16);
+
+            *lplen0++ = (tlv_len >> 8);
+            *lplen0++ = tlv_len;
+
+            tagi.size = tlv_len + 4; // (start - tlv_mem);
+
+            int dlen = start - tlv_mem;
+            tagi.buf  = tlv_mem;
+            tagi.ord  = TAG_ENCRYPT_CLIENT_HELLO;
+        }
+
+        uint16_t taglen = 0;
+        memcpy(&taglen, tagi.buf + 2, 2);
+        taglen = htons(taglen);
+
+        assert(4 + taglen == tagi.size);
+        memmove(dest, tagi.buf, tagi.size);
+        dest += tagi.size;
+    }
+
+    uint16_t extsz = (dest - lpext - 2);
+    lpext[0] = (extsz >> 8);
+    lpext[1] = (extsz);
+
+#if 0
+    WC_RNG rng[1];
+    ret = wc_InitRng(rng);
+    assert(ret == 0);
+
+    void *ephemeralKey1 = 0, * receiverPrivkey1 = 0;
+    ret = wc_HpkeGenerateKeyPair(hpke, &ephemeralKey1, rng);
+    assert(ret == 0);
+#endif
+
+    // LOGV("payload_len=%d infoLen %d %d\n", payload_len, infoLen, dest - encoded);
+    ret = wc_HpkeSealBase(hpke, receiverPrivkey0, receiverPrivkey0,
+            (byte *)info, (word32)infoLen,
+            (byte *)encoded, (word32)(dest - encoded),
+            (byte *)ciphertext, payload_len,
+            ciphertext);
+
+    if (ret) {
+        xxdump("info", info, infoLen);
+        xxdump("aad", encoded, dest - encoded);
+        xxdump("cipher", ciphertext, payload_len);
+        xxdump("priv", priv, sizeof(priv));
+        xxdump("pub", pub, sizeof(pub));
+        xxdump("enc", pubKey, pubKeySz);
+    }
+
+#if 0
+    uint8_t plaintext0[4096];
+    assert(payload_len < sizeof(plaintext0));
+    int retval = wc_HpkeOpenBase(hpke, receiverPrivkey0, pubKey, pubKeySz,
+            (byte *)info, (word32)infoLen,
+            (byte *)encoded, (word32)(dest - encoded),
+            ciphertext, payload_len - 16,
+            plaintext0);
+#endif
+
+    memcpy(ciphertext, ciphertext, payload_len);
+
+    // LOGV("outter length: %d ret=%d, retval=%d, payload_len=%d, infoLen=%d aadlen=%d\n", dest - encoded, ret, 0, payload_len, infoLen, dest - encoded);
+    assert(dest - encoded < ddsz);
+    *outlen = dest - encoded;
+    LOGI("encode_client_hello %d\n", *outlen);
+
+    return 0;
+}
+
+int ssl_rewind_client_hello(struct ssl_parse_ctx *ctx, const char *buf, size_t size)
+{
+    uint8_t hold[65536];
+    uint8_t *dest = hold;
+    uint8_t *data = (uint8_t *)buf;
+    uint8_t *ptlv = NULL, *pech = NULL;
+    size_t tlv = 0, outlen = 0;
+
+    if (*data == HANDSHAKE_TYPE_CLIENT_HELLO) {
+        *dest++ = *data++;
+        ptlv = dest;
+        dest += 3;
+
+        tlv = *data++;
+        tlv = (tlv << 8) | *data++;
+        tlv = (tlv << 8) | *data++;
+
+        pech = data;
+        encode_client_hello(ctx, dest, sizeof(hold) - (dest - hold), pech, tlv, &outlen);
+
+        *ptlv++ = (outlen >> 16);
+        *ptlv++ = (outlen >> 8);
+        *ptlv++ = (outlen >> 0);
+
+        memcpy(ctx->base, hold, outlen + (ptlv - hold));
+        return outlen + 4;
+    }
+
+    LOG("bad\n");
+    return 0;
+}
+
+#define TLS_TAG_SNI    0
+#define HANDSHAKE_TYPE 22
+#define HANDSHAKE_TYPE_CLIENT_HELLO 1
+
+struct ssl_parse_ctx * ssl_parse_prepare(struct ssl_parse_ctx *ctx, void *buf, size_t size)
+{
+    uint8_t *base = (uint8_t *)buf;
+    uint8_t *data = base;
+    uint8_t *limit = (data + size);
+
+    int len = 0;
+    int type = 0;
+    int n_extention = 0;
+    int n_cipher_suite = 0;
+    int n_compress_method = 0;
+
+    uint16_t tag = 0, tlv = 0;
+    uint8_t *ext = 0, *lastext = 0;
+
+    type = *data++;
+    if (type == HANDSHAKE_TYPE_CLIENT_HELLO) {
+        assert (data + 3 <= limit);
+        len = *data++;
+        len = (len << 8) | *data++;
+        len = (len << 8) | *data++;
+
+        data += 2; // version;
+        data += 32; // random;
+
+        assert (data + 1 <= limit);
+        len   = *data++;
+        data += len;
+
+        assert (data + 2 <= limit);
+        len = *data++;
+        len = (len << 8) | *data++;
+        data += len;
+
+        n_cipher_suite = len;
+
+        assert (data + 2 <= limit);
+        len = *data++;
+        data += len;
+
+        n_compress_method = len;
+
+        assert (data + 2 <= limit);
+        len = *data++;
+        len = (len << 8) | *data++;
+
+        n_extention = len;
+
+        ext = data;
+        lastext = data + n_extention;
+
+        ctx->base = base;
+        ctx->size = size;
+        ctx->off_ext = (data - base);
+        ctx->len_ext = n_extention;
+
+        assert(lastext <= limit);
+        while (ext < lastext) {
+            assert (ext  <= lastext);
+
+            tag = *ext++;
+            tag = (tag << 8)|*ext++;
+
+            tlv = *ext++;
+            tlv = (tlv << 8)|*ext++;
+
+            ext += tlv;
+        }
+
+        return ctx;
+    }
+
+    return NULL;
+}
+
+const char *ssl_parse_get_sni(struct ssl_parse_ctx *ctx)
+{
+    char hostname[256];
+    uint16_t tag_tlv = 0;
+    uint16_t len_tlv = 0;
+    const uint8_t *sni_mem = NULL;
+    const uint8_t *data = ctx->base;
+    const uint8_t *limit = ctx->base + ctx->size;
+
+    const uint8_t *ext = data + ctx->off_ext;
+    const uint8_t *lastext = ext + ctx->len_ext;
+    uint16_t list_name_len = 0, fqdn_name_len = 0;
+
+    while (ext < lastext) {
+        tag_tlv = *ext++;
+        tag_tlv = (tag_tlv << 8) | *ext++;
+
+        len_tlv = *ext++;
+        len_tlv = (len_tlv << 8) | *ext++;
+
+        if (TLS_TAG_SNI == tag_tlv) {
+            sni_mem = ext;
+            break;
+        }
+
+        ext += len_tlv;
+    }
+
+    if (sni_mem != NULL) {
+        list_name_len = *sni_mem++;
+        list_name_len = (list_name_len << 8) | *sni_mem++;
+
+        uint8_t tag = *sni_mem++;
+        assert(tag == 0);
+
+        fqdn_name_len = *sni_mem++;
+        fqdn_name_len = (fqdn_name_len << 8) | *sni_mem++;
+
+        assert(fqdn_name_len + 3 == list_name_len);
+        assert(fqdn_name_len + 1 < sizeof(hostname));
+
+        memcpy(hostname, sni_mem, fqdn_name_len);
+        hostname[fqdn_name_len] = 0;
+
+        fprintf(stderr, "ssl server name: %s\n", hostname);
+    }
+
+    return NULL;
+}

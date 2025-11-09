@@ -26,6 +26,18 @@
 
 extern "C" int pidfd_open (__pid_t __pid, unsigned int __flags) __THROW;
 
+struct ssl_parse_ctx {
+    size_t size;
+    uint8_t *base;
+
+    size_t off_ext;
+    size_t len_ext;
+};
+
+const char *ssl_parse_get_sni(struct ssl_parse_ctx *ctx);
+int ssl_rewind_client_hello(struct ssl_parse_ctx *ctx, const char *buf, size_t size);
+struct ssl_parse_ctx * ssl_parse_prepare(struct ssl_parse_ctx *ctx, void *buf, size_t size);
+
 struct timer_task {
     tx_task_t task; 
     tx_timer_t timer; 
@@ -41,9 +53,9 @@ struct tcp_exchange_context {
 
 #define HASH_MASK 0xFFFF
 typedef struct cache_s {
-	size_t off;
-	size_t len;
-	char buf[655360];
+    size_t off;
+    size_t len;
+    char buf[655360];
 } cache_t;
 
 static int sendfd(int unixfd, int netfd)
@@ -140,9 +152,9 @@ int socket_netns(int family, int type, int protocol, const char *netns)
 }
 
 typedef struct _nat_conntrack_t {
-	int refcnt;
-	int st_flag;
-	char dbgflags[4];
+    int refcnt;
+    int st_flag;
+    char dbgflags[4];
 
     int sockfd;
     int mainfd;
@@ -155,11 +167,11 @@ typedef struct _nat_conntrack_t {
     int port;
     tx_aiocb file;
     tx_task_t task;
-	cache_t cache;
+    cache_t cache;
 
     tx_aiocb mainfile;
     tx_task_t maintask;
-	cache_t maincache;
+    cache_t maincache;
     LIST_ENTRY(_nat_conntrack_t) entry;
 } nat_conntrack_t;
 
@@ -222,43 +234,43 @@ static void update_timer(void *up)
 
 static int session_release(nat_conntrack_t *up, int dbg)
 {
-	assert(up);
-	assert(up->refcnt > 0);
-	assert(dbg < 4 && dbg >= 0);
+    assert(up);
+    assert(up->refcnt > 0);
+    assert(dbg < 4 && dbg >= 0);
 
-	up->dbgflags[dbg] = 'R';
-	up->refcnt--;
+    up->dbgflags[dbg] = 'R';
+    up->refcnt--;
 
-	LOG_INFO("session_release: %s refcnt: %d", up->dbgflags, up->refcnt);
-	if (up->refcnt == 0) {
-		tx_aiocb_fini(&up->file);
-		close(up->sockfd);
+    LOG_INFO("session_release: %s refcnt: %d", up->dbgflags, up->refcnt);
+    if (up->refcnt == 0) {
+        tx_aiocb_fini(&up->file);
+        close(up->sockfd);
 
-		tx_task_drop(&up->task);
-		tx_task_drop(&up->neg);
+        tx_task_drop(&up->task);
+        tx_task_drop(&up->neg);
 
-		tx_aiocb_fini(&up->mainfile);
-		close(up->mainfd);
+        tx_aiocb_fini(&up->mainfile);
+        close(up->mainfd);
 
-		tx_task_drop(&up->maintask);
-		LIST_REMOVE(up, entry);
-		free(up);
-	}
+        tx_task_drop(&up->maintask);
+        LIST_REMOVE(up, entry);
+        free(up);
+    }
 
-	return 0;
+    return 0;
 }
 
 static int flush_cache(tx_aiocb *file, cache_t *cache)
 {
-	int len = 1;
-	cache_t *d = cache;
+    int len = 1;
+    cache_t *d = cache;
 
-	while (len > 0 && d->off < d->len) { 
-		len = tx_outcb_write(file, d->buf + d->off, d->len - d->off);
-		if (len > 0) d->off += len;
-	}
+    while (len > 0 && d->off < d->len) { 
+        len = tx_outcb_write(file, d->buf + d->off, d->len - d->off);
+        if (len > 0) d->off += len;
+    }
 
-	return d->len == d->off;
+    return d->len == d->off;
 }
 
 static int pipling(tx_aiocb *filpin, tx_aiocb *filpout, tx_task_t *task, cache_t *cache)
@@ -270,17 +282,17 @@ static int pipling(tx_aiocb *filpin, tx_aiocb *filpout, tx_task_t *task, cache_t
 
         if (!tx_writable(filpout)) {
             tx_outcb_prepare(filpout, task, 0);
-			break;
+            break;
         }
 
         if (!flush_cache(filpout, d)) {
             tx_outcb_prepare(filpout, task, 0);
-			break;
+            break;
         }
 
         if (!tx_readable(filpin)) {
             tx_aincb_active(filpin, task);
-			break;
+            break;
         }
 
         count = recv(filpin->tx_fd, d->buf, sizeof(d->buf), MSG_DONTWAIT);
@@ -291,15 +303,25 @@ static int pipling(tx_aiocb *filpin, tx_aiocb *filpout, tx_task_t *task, cache_t
             d->off = 0;
         } else if (!tx_readable(filpin)) {
             tx_aincb_active(filpin, task);
-			break;
+            break;
         } else {
-			/* TODO:XXX */
+            /* TODO:XXX */
             return 0;
         }
 
     } while (count > 0);
 
     return 1;
+}
+
+static void save_file(const char *path, void *buf, size_t len)
+{
+    FILE *fp = fopen(path, "wb");
+    if (fp) {
+        fwrite(buf, len, 1, fp);
+        fclose(fp);
+    }
+    return;
 }
 
 static void do_sni_ssl_neg(void *upp)
@@ -327,6 +349,8 @@ static void do_sni_ssl_neg(void *upp)
     }
 
     if (d->buf[0] == 22 && d->buf[1] == 0x3 && d->buf[2] <= 3) {
+        struct ssl_parse_ctx ctx;
+
         memcpy(&len, &d->buf[3], 2);
         len = htons(len);
         if (len + 5 >= sizeof(d->buf)) {
@@ -338,20 +362,34 @@ static void do_sni_ssl_neg(void *upp)
             tx_aincb_active(&up->mainfile, &up->neg);
             return;
         }
+
+        if (NULL != ssl_parse_prepare(&ctx, d->buf + 5, len)) {
+            ssl_parse_get_sni(&ctx);
+            size_t size = ssl_rewind_client_hello(&ctx, d->buf + 5, len);
+            d->len = size + 5;
+
+            void *check  = ssl_parse_prepare(&ctx, d->buf + 5, size);
+            fprintf(stderr, "TODO:XXX size %ld old len %d check %p\n", size, len, check);
+            d->buf[3] = (size >> 8);
+            d->buf[4] = (size & 0xff);
+
+            save_file("ech_data.pcap", d->buf, d->len);
+            ssl_parse_get_sni(&ctx);
+        }
     }
 
     error = tx_aiocb_connect(&up->file, (struct sockaddr *)&up->target, sizeof(up->target), &up->maintask);
-	if (error == 0 || errno == EINPROGRESS) {
-	} else {
-		fprintf(stderr, "tx_aiocb_connect errno=%d\n", errno);
-		session_release(up, 0);
-		return;
-	}
+    if (error == 0 || errno == EINPROGRESS) {
+    } else {
+        fprintf(stderr, "tx_aiocb_connect errno=%d\n", errno);
+        session_release(up, 0);
+        return;
+    }
 
-	tx_aincb_stop(&up->mainfile, &up->neg);
+    tx_aincb_stop(&up->mainfile, &up->neg);
     tx_task_drop(&up->neg);
 
-	tx_task_active(&up->task, "pipling");
+    tx_task_active(&up->task, "pipling");
 
     up->st_flag = 1;
     up->refcnt++;
@@ -365,40 +403,40 @@ static void do_sni_ssl_neg(void *upp)
 
 static void do_tcp_exchange_backward(void *upp)
 {
-	int count;
-	nat_conntrack_t *up = (nat_conntrack_t *)upp;
-	cache_t *d = &up->cache;
+    int count;
+    nat_conntrack_t *up = (nat_conntrack_t *)upp;
+    cache_t *d = &up->cache;
 
-	if (pipling(&up->file, &up->mainfile, &up->task, d) > 0) {
-		up->last_alive = time(NULL);
-		return;
-	}
+    if (pipling(&up->file, &up->mainfile, &up->task, d) > 0) {
+        up->last_alive = time(NULL);
+        return;
+    }
 
-	LOG_INFO("read peerfd stream: %d errno=%d msg=%s", count, errno, strerror(errno));
-	LOG_INFO("reach end of peerfd stream");
-	tx_outcb_cancel(&up->mainfile, &up->task);
-	tx_aincb_stop(&up->file, &up->task);
-	tx_task_drop(&up->task);
-	session_release(up, 0);
+    LOG_INFO("read peerfd stream: %d errno=%d msg=%s", count, errno, strerror(errno));
+    LOG_INFO("reach end of peerfd stream");
+    tx_outcb_cancel(&up->mainfile, &up->task);
+    tx_aincb_stop(&up->file, &up->task);
+    tx_task_drop(&up->task);
+    session_release(up, 0);
     return;
 }
 
 static void do_tcp_exchange_forward(void *upp)
 {
-	int count;
-	nat_conntrack_t *up = (nat_conntrack_t *)upp;
-	cache_t *d = &up->maincache;
+    int count;
+    nat_conntrack_t *up = (nat_conntrack_t *)upp;
+    cache_t *d = &up->maincache;
 
-	if (pipling(&up->mainfile, &up->file, &up->maintask, d) > 0) {
-		up->last_alive = time(NULL);
-		return;
-	}
+    if (pipling(&up->mainfile, &up->file, &up->maintask, d) > 0) {
+        up->last_alive = time(NULL);
+        return;
+    }
 
-	LOG_INFO("reach end of mainfd stream");
-	tx_outcb_cancel(&up->file, &up->maintask);
-	tx_aincb_stop(&up->mainfile, &up->maintask);
-	tx_task_drop(&up->maintask);
-	session_release(up, 1);
+    LOG_INFO("reach end of mainfd stream");
+    tx_outcb_cancel(&up->file, &up->maintask);
+    tx_aincb_stop(&up->mainfile, &up->maintask);
+    tx_task_drop(&up->maintask);
+    session_release(up, 1);
     return;
 }
 
@@ -411,7 +449,7 @@ static int new_tcp_channel(int newfd, struct sockaddr_in6 *target)
         tx_loop_t *loop = tx_loop_default();
         int sockfd = socket(AF_INET6, SOCK_STREAM, 0);
         if (sockfd == -1) return -1;
-		tx_setblockopt(sockfd, 0);
+        tx_setblockopt(sockfd, 0);
 
         nat_conntrack_t *conn = ALLOC_NEW(nat_conntrack_t);
         conn->refcnt = 1;
@@ -442,7 +480,7 @@ static int new_tcp_channel(int newfd, struct sockaddr_in6 *target)
 
 static void do_tcp_accept(void *upp)
 {
-	int newfd;
+    int newfd;
     socklen_t in_len;
     nat_conntrack_t *session = NULL;
 
@@ -457,34 +495,34 @@ static void do_tcp_accept(void *upp)
     tx_listen_active(&up->file, &up->task);
 
     if (newfd != -1) {
-		char abuf[64], cbuf[64];
-		struct sockaddr_in6 target;
-		socklen_t tolen = sizeof(target);
+        char abuf[64], cbuf[64];
+        struct sockaddr_in6 target;
+        socklen_t tolen = sizeof(target);
 
         tx_setblockopt(newfd, 0);
-		int err = getsockname(newfd, (struct sockaddr *)&target, &tolen);
+        int err = getsockname(newfd, (struct sockaddr *)&target, &tolen);
 
-		inet_ntop(AF_INET6, &target.sin6_addr, abuf, sizeof(abuf));
-		inet_ntop(AF_INET6, &newaddr.sin6_addr, cbuf, sizeof(cbuf));
+        inet_ntop(AF_INET6, &target.sin6_addr, abuf, sizeof(abuf));
+        inet_ntop(AF_INET6, &newaddr.sin6_addr, cbuf, sizeof(cbuf));
 
         LOG_DEBUG("new client: %s:%u\n", cbuf, ntohs(newaddr.sin6_port));
         LOG_DEBUG("destination: %s:%u\n", abuf, ntohs(target.sin6_port));
 
-		uint32_t v4mapped_prefix[4];
-		inet_pton(AF_INET6, "::ffff:0:0", v4mapped_prefix);
-		target.sin6_port = htons(up->dport);
-		memcpy(&target.sin6_addr, v4mapped_prefix, 12);
+        uint32_t v4mapped_prefix[4];
+        inet_pton(AF_INET6, "::ffff:0:0", v4mapped_prefix);
+        target.sin6_port = htons(up->dport);
+        memcpy(&target.sin6_addr, v4mapped_prefix, 12);
 
-		inet_ntop(AF_INET6, &target.sin6_addr, abuf, sizeof(abuf));
+        inet_ntop(AF_INET6, &target.sin6_addr, abuf, sizeof(abuf));
         LOG_DEBUG("real destination: %s:%u\n", abuf, ntohs(target.sin6_port));
 
 #if 1
-		if (err == 0 && 0 == new_tcp_channel(newfd, &target)) {
-			newfd = -1;
-		}
+        if (err == 0 && 0 == new_tcp_channel(newfd, &target)) {
+            newfd = -1;
+        }
 #endif
 
-		close(newfd);
+        close(newfd);
     }
 
     return;
@@ -523,7 +561,7 @@ static void * tcp_exchange_create(int port, int dport)
 
     tx_listen_init(&up->file, loop, sockfd);
     tx_task_init(&up->task, loop, do_tcp_accept, up);
-	tx_listen_active(&up->file, &up->task);
+    tx_listen_active(&up->file, &up->task);
 
     return 0;
 }
@@ -547,7 +585,7 @@ int main(int argc, char *argv[])
     tx_timer_reset(&tmtask.timer, 500);
 
     for (int i = 1; i < argc; i++) {
-	int port, dport, match;
+        int port, dport, match;
         match = sscanf(argv[i], "%d:%d", &port, &dport);
         switch (match) {
             case 1:
@@ -576,3 +614,7 @@ int main(int argc, char *argv[])
 
     return 0;
 }
+
+#if 0
+/tools/ech_sni_proxy -r -l 443 -p 8443 -d smartad.10010.com ech=AET+DQBAyQAgACANIGbucQKF5Mwxg+73GX6mEndmLJtu5U3UiNzu7+1XNQAEAAEAAQARc21hcnRhZC4xMDAxMC5jb20AAA== pub=NVft7+7ciNRN5W6bLGZ3EqZ+GffugzHM5IUCce5mIA0= priv=dB0/4Ol+3eAZWv7jv7f1ecZyyfXDe/bZCPjSAvX+0xg= ::ffff:137.175.6.201
+#endif
