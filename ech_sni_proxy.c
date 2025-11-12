@@ -641,7 +641,7 @@ static int load_encrypt_client_hello(const void *ch, size_t chlen, const void *p
 	int ret = wc_HpkeInit(hpke, kemId, kdfId, aeadId, heap);
 
 	wc_curve25519_init(receiverPrivkey0);
-	wc_curve25519_import_private_raw(priv, sizeof(priv), pub, sizeof(pub), receiverPrivkey0);
+	wc_curve25519_import_private_raw_ex(priv, sizeof(priv), pub, sizeof(pub), receiverPrivkey0, EC25519_LITTLE_ENDIAN);
 
 	byte aad[4096] = {};
 	assert(sizeof(aad) > chlen);
@@ -889,8 +889,8 @@ int encode_client_hello(uint8_t *encoded, size_t ddsz, const uint8_t *plain, siz
 	ret = wc_HpkeInit(hpke, kemId, kdfId, aeadId, heap);
 
 	wc_curve25519_init(receiverPrivkey0);
-	wc_curve25519_import_public(pub, sizeof(pub), receiverPrivkey0);
-	wc_curve25519_import_private_raw(priv, sizeof(priv), pub, sizeof(pub), receiverPrivkey0);
+	wc_curve25519_import_public_ex(pub, sizeof(pub), receiverPrivkey0, 0);
+	wc_curve25519_import_private_raw_ex(priv, sizeof(priv), pub, sizeof(pub), receiverPrivkey0, EC25519_LITTLE_ENDIAN);
 
 	dest[0] = 0x03;
 	dest[1] = 0x03;
@@ -903,7 +903,6 @@ int encode_client_hello(uint8_t *encoded, size_t ddsz, const uint8_t *plain, siz
 	memcpy(dest + 1, session_id + 1, session_id[0]);
 	dest+= dest[0];
 	dest++;
-
 
 	uint8_t cipher_suites[] = {
 		0x3a, 0x3a, 0x13, 0x01, 0x13, 0x02, 0x13, 0x03, 0xc0, 0x2b, 0xc0, 0x2f, 0xc0, 0x2c, 0xc0, 0x30,

@@ -34,6 +34,7 @@ struct ssl_parse_ctx {
     size_t len_ext;
 };
 
+void parse_argopt(int argc, char *argv[]);
 const char *ssl_parse_get_sni(struct ssl_parse_ctx *ctx);
 int ssl_rewind_client_hello(struct ssl_parse_ctx *ctx, const char *buf, size_t size);
 struct ssl_parse_ctx * ssl_parse_prepare(struct ssl_parse_ctx *ctx, void *buf, size_t size);
@@ -286,6 +287,7 @@ static int pipling(tx_aiocb *filpin, tx_aiocb *filpout, tx_task_t *task, cache_t
         }
 
         if (!flush_cache(filpout, d)) {
+            if (tx_writable(filpout)) return 0;
             tx_outcb_prepare(filpout, task, 0);
             break;
         }
@@ -316,11 +318,13 @@ static int pipling(tx_aiocb *filpin, tx_aiocb *filpout, tx_task_t *task, cache_t
 
 static void save_file(const char *path, void *buf, size_t len)
 {
+#if 0
     FILE *fp = fopen(path, "wb");
     if (fp) {
         fwrite(buf, len, 1, fp);
         fclose(fp);
     }
+#endif
     return;
 }
 
@@ -417,6 +421,7 @@ static void do_tcp_exchange_backward(void *upp)
     tx_outcb_cancel(&up->mainfile, &up->task);
     tx_aincb_stop(&up->file, &up->task);
     tx_task_drop(&up->task);
+    shutdown(up->mainfd, SHUT_WR);
     session_release(up, 0);
     return;
 }
@@ -436,6 +441,7 @@ static void do_tcp_exchange_forward(void *upp)
     tx_outcb_cancel(&up->file, &up->maintask);
     tx_aincb_stop(&up->mainfile, &up->maintask);
     tx_task_drop(&up->maintask);
+    shutdown(up->sockfd, SHUT_WR);
     session_release(up, 1);
     return;
 }
@@ -584,8 +590,17 @@ int main(int argc, char *argv[])
     tx_task_init(&tmtask.task, loop, update_timer, &tmtask);
     tx_timer_reset(&tmtask.timer, 500);
 
+	parse_argopt(argc, argv);
     for (int i = 1; i < argc; i++) {
         int port, dport, match;
+
+        if (strchr(argv[i], '=') != NULL) {
+            continue;
+        } else if (*argv[i] == '-') {
+            i++;
+            continue;
+        }
+
         match = sscanf(argv[i], "%d:%d", &port, &dport);
         switch (match) {
             case 1:
@@ -616,5 +631,5 @@ int main(int argc, char *argv[])
 }
 
 #if 0
-/tools/ech_sni_proxy -r -l 443 -p 8443 -d smartad.10010.com ech=AET+DQBAyQAgACANIGbucQKF5Mwxg+73GX6mEndmLJtu5U3UiNzu7+1XNQAEAAEAAQARc21hcnRhZC4xMDAxMC5jb20AAA== pub=NVft7+7ciNRN5W6bLGZ3EqZ+GffugzHM5IUCce5mIA0= priv=dB0/4Ol+3eAZWv7jv7f1ecZyyfXDe/bZCPjSAvX+0xg= ::ffff:137.175.6.201
+/tools/ech_sni_proxy -r -l 443 -p 8443 -d smartad.10010.com ech=AET+DQBAyQAgACANIGbucQKF5Mwxg+73GX6mEndmLJtu5U3UiNzu7+1XNQAEAAEAAQARc21hcnRhZC4xMDAxMC5jb20AAA== priv=GNP+9QLS+AjZ9nvD9clyxnn1t7/j/loZ4N1+6eA/HXQ= ::ffff:137.175.6.201
 #endif

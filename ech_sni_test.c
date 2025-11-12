@@ -63,8 +63,8 @@ int main()
 
     curve25519_key receiverPrivkey0[1];
     wc_curve25519_init(receiverPrivkey0);
-    wc_curve25519_import_public(pub, sizeof(pub), receiverPrivkey0);
-    wc_curve25519_import_private_raw(priv, sizeof(priv), pub, sizeof(pub), receiverPrivkey0);
+    wc_curve25519_import_public_ex(pub, sizeof(pub), receiverPrivkey0, EC25519_LITTLE_ENDIAN);
+    wc_curve25519_import_private_raw_ex(priv, sizeof(priv), pub, sizeof(pub), receiverPrivkey0, EC25519_LITTLE_ENDIAN);
 
 
     /* export ephemeral key */

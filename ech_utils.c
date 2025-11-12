@@ -136,11 +136,11 @@ int GenerateEchConfig(void *heap, const char* publicName,
 	 }
 
 	 void * receiverPrivkey = (*ptr)->receiverPrivkey;
-	 wc_curve25519_export_key_raw(receiverPrivkey, priv, &privsz, pub, &pubsz);
+	 wc_curve25519_export_key_raw_ex(receiverPrivkey, priv, &privsz, pub, &pubsz, EC25519_LITTLE_ENDIAN);
 	 FreeEchConfigs(*ptr, heap);
 
 	 wc_curve25519_init(echConfigs->receiverPrivkey);
-	 wc_curve25519_import_private_raw(priv, privsz, pub, pubsz, echConfigs->receiverPrivkey);
+	 wc_curve25519_import_private_raw_ex(priv, privsz, pub, pubsz, echConfigs->receiverPrivkey, EC25519_LITTLE_ENDIAN);
        } while (0);
     }
 
@@ -333,7 +333,6 @@ int GetEchConfig(WOLFSSL_EchConfig* config, byte* output, word32* outputLen)
     return 0;
 }
 
-
 /* get the raw ech configs from our linked list of ech config structs */
 int GetEchConfigsEx(WOLFSSL_EchConfig* configs, byte* output, word32* outputLen)
 {
@@ -478,7 +477,7 @@ priv=ShUKsBaPdIjc6v2Bg+bmadad338VhOu/iNC1U26GG9A=
     }
 
     wc_curve25519_init(receiverPrivkey0);
-    wc_curve25519_import_private_raw(privData, ECH_KEY_LEN, pubData, ECH_KEY_LEN, receiverPrivkey0);
+    wc_curve25519_import_private_raw_ex(privData, ECH_KEY_LEN, pubData, ECH_KEY_LEN, receiverPrivkey0, EC25519_LITTLE_ENDIAN);
 
     outerLen -= 16;
     byte output[1024] = {};
@@ -533,7 +532,7 @@ static int keygen_ech(void *heap, const char *publicName, const char *list[])
 
     if (flags == FLAG_KEY_PAIR) {
       wc_curve25519_init(echConfigp->receiverPrivkey);
-      wc_curve25519_import_private_raw(privData, ECH_KEY_LEN, pubData, ECH_KEY_LEN, echConfigp->receiverPrivkey);
+      wc_curve25519_import_private_raw_ex(privData, ECH_KEY_LEN, pubData, ECH_KEY_LEN, echConfigp->receiverPrivkey, EC25519_LITTLE_ENDIAN);
       GenerateEchConfig(heap, publicName, 0, 0, 0, &echConfigp);
     }
 
@@ -545,7 +544,7 @@ static int keygen_ech(void *heap, const char *publicName, const char *list[])
     byte pub[256], priv[256];
     word32 pubsz = sizeof(pub), privsz = sizeof(priv);
 
-    wc_curve25519_export_key_raw(echConfigp->receiverPrivkey, priv, &privsz, pub, &pubsz);
+    wc_curve25519_export_key_raw_ex(echConfigp->receiverPrivkey, priv, &privsz, pub, &pubsz, 0);
 
     echConfigBase64Len = 512;
     Base64_Encode_NoNl(pub, pubsz, (byte*)echConfigBase64, &echConfigBase64Len);

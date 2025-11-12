@@ -49,20 +49,30 @@
 struct ssl_parse_ctx {
     size_t size;
     uint8_t *base;
-    size_t off_ext;                                                                                                                                                                                                      size_t len_ext;
+    size_t off_ext;
+    size_t len_ext;
 };
 
 static byte pub [] = {
-    0x16, 0xd4, 0x68, 0xcd, 0x30, 0xf4, 0x01, 0xaf, 0x98, 0x3e, 0xaa, 0x23,
-    0xcc, 0x8d, 0xa9, 0x2f, 0xbf, 0x51, 0x9d, 0x13, 0x32, 0xbd, 0x9f, 0xe9,
-    0xb2, 0xbd, 0xc1, 0x5c, 0xb6, 0x8b, 0xee, 0x7f
+    0x10, 0x39, 0x0e, 0x39, 0xde, 0x8e, 0x60, 0x03, 0x81, 0x91, 0xfe, 0xc5,
+    0x4c, 0x00, 0x4a, 0xa9, 0xb5, 0x15, 0xdc, 0xa0, 0xcb, 0x49, 0x9a, 0xf8,
+    0x4b, 0x79, 0x26, 0x9f, 0xce, 0xff, 0x23, 0x1e
 };
 
-static byte priv[] = {
-    0x4a, 0x15, 0x0a, 0xb0, 0x16, 0x8f, 0x74, 0x88, 0xdc, 0xea, 0xfd, 0x81,
-    0x83, 0xe6, 0xe6, 0x69, 0xd6, 0x9d, 0xdf, 0x7f, 0x15, 0x84, 0xeb, 0xbf,
-    0x88, 0xd0, 0xb5, 0x53, 0x6e, 0x86, 0x1b, 0xd0
+static byte _mypub [] = {
+    0x10, 0x39, 0x0e, 0x39, 0xde, 0x8e, 0x60, 0x03, 0x81, 0x91, 0xfe, 0xc5,
+    0x4c, 0x00, 0x4a, 0xa9, 0xb5, 0x15, 0xdc, 0xa0, 0xcb, 0x49, 0x9a, 0xf8,
+    0x4b, 0x79, 0x26, 0x9f, 0xce, 0xff, 0x23, 0x1e
 };
+
+static byte _mypriv[] = {
+    0xc8, 0xdc, 0x2a, 0xfc, 0xae, 0xe0, 0x63, 0xa2, 0x5d, 0x2f, 0x4e, 0x2e,
+    0x50, 0xb8, 0xe0, 0x25, 0x63, 0x0a, 0xd0, 0xfb, 0xc5, 0x85, 0xe7, 0x08,
+    0x9a, 0x4f, 0x05, 0xed, 0xde, 0xdd, 0xf3, 0x5e
+};
+
+static uint8_t ConfigId = 0;
+static uint8_t CipherSuitesData[4] = {0x00, 0x01, 0x00, 0x01};
 
 static byte info[1024];
 word32 infoLen = 0;
@@ -207,7 +217,6 @@ static int outer_extensions_init(struct outer_extensions_t *ctx)
         ctx->tags[i].size = TAGS_LEN[i];
 
         struct taginfo tagi = ctx->tags[i];
-        LOGI("init tagi.tag %8x tagi.buf %p tagi.size: %d\n", tagi.ord, tagi.buf, tagi.size);
     }
 
     ctx->holdlen = 0;
@@ -236,7 +245,6 @@ static int outer_extensions_add(struct outer_extensions_t *ctx, int tag, const u
             ctx->tagoff = i;
         }
 
-        LOGI("outer_extensions_add %d tag %8x buf %p len %ld\n", i, tag, buf, len);
         tmp = ctx->tags + ctx->tagoff;
         tmp->ord = tag;
         tmp->buf = buf;
@@ -247,13 +255,10 @@ static int outer_extensions_add(struct outer_extensions_t *ctx, int tag, const u
         (ctx->hold + ctx->lastcnt)[ctx->holdlen] = tag;
         ctx->holdlen++;
 
-        LOGV("outer_extensions_add thissize %ld holdlen %d\n", ctx->thissize, ctx->holdlen);
-        // LOGV("ctx->holdlen = %d, ctx->len = %d, ctx->tagoff = %d\n", ctx->holdlen, ctx->len, ctx->tagoff);
         okay = 1;
         break;
     }
 
-    // if (okay == 0) LOGV("ctx->holdlen = %d, ctx->len = %d, ctx->tagoff = %d, lost tag=%d\n", ctx->holdlen, ctx->len, ctx->tagoff, tag);
 
     return okay;
 }
@@ -262,7 +267,6 @@ static int outer_extensions_flush(struct outer_extensions_t *ctx, const void *bu
 {
     int count = ctx->holdlen;
 
-    LOGV("outer_extensions_flush %p count %d\n", buf, count);
     if (count == 0) return 0;
 
     if (ctx->thissize > ctx->lastsize) {
@@ -270,7 +274,6 @@ static int outer_extensions_flush(struct outer_extensions_t *ctx, const void *bu
         ctx->lastsize = ctx->thissize;
         ctx->lastcnt = ctx->holdlen;
         ctx->tagbord = buf;
-        LOGI("update outer_extensions_flush %p count %d %d\n", buf, count, ctx->lastsize);
     }
 
     ctx->thissize = 0;
@@ -295,11 +298,9 @@ static int outer_extensions_build(struct outer_extensions_t *ctx, uint8_t *buf, 
         int code = ctx->hold[i];
         buf[5 + i * 2] = (code >> 8);
         buf[5 + i * 2 + 1] = (code);
-        LOGV("outer_extensions_flush: code=%d\n", code);
     }
     assert(5 + count * 2 + 2 < len);
 
-    LOGV("outer_extensions_flush: %d\n", count);
 
     return 4 + val;
 }
@@ -401,7 +402,6 @@ int scan_client_hello(struct ssl_parse_ctx *ctx, struct outer_extensions_t *outt
         tlv_len = *data++;
         tlv_len = (tlv_len << 8) | *data++;
 
-        LOGI("scan_client_hello tag %8x buf %p len %ld\n", tlv_tag, tlv_mem, tlv_len);
         if (!should_pullout(tlv_tag) ||
                 !outer_extensions_add(outter_ext, tlv_tag, tlv_mem, tlv_len + 4))
             outer_extensions_flush(outter_ext, tlv_mem);
@@ -411,7 +411,6 @@ int scan_client_hello(struct ssl_parse_ctx *ctx, struct outer_extensions_t *outt
     }
 
     outer_extensions_flush(outter_ext, limit);
-    LOGV("scan_client_hello: size=%d\n", outter_ext->lastsize);
     return 0;
 }
 
@@ -506,7 +505,14 @@ int fold_client_hello(struct ssl_parse_ctx *ctx, struct outer_extensions_t *outt
     *--extbase = (extsz >> 8);
 
     save_data("encoded.pcap", encoded, dest - encoded);
-    return dest - encoded;
+    size_t padlen = dest - encoded;
+
+    while (padlen % 32) {
+        *dest++ = 0;
+        padlen++;
+    }
+
+    return padlen;
 }
 
 int encode_client_hello(struct ssl_parse_ctx *ctx, uint8_t *encoded, size_t ddsz, const uint8_t *plain, size_t len, size_t *outlen)
@@ -529,8 +535,10 @@ int encode_client_hello(struct ssl_parse_ctx *ctx, uint8_t *encoded, size_t ddsz
     int ret = wc_HpkeInit(hpke, kemId, kdfId, aeadId, heap);
 
     wc_curve25519_init(receiverPrivkey0);
-    wc_curve25519_import_public(pub, sizeof(pub), receiverPrivkey0);
-    wc_curve25519_import_private_raw(priv, sizeof(priv), pub, sizeof(pub), receiverPrivkey0);
+    wc_curve25519_import_public_ex(pub, sizeof(pub), receiverPrivkey0, EC25519_LITTLE_ENDIAN);
+
+    wc_curve25519_init(ephemeralKey);
+    wc_curve25519_import_private_raw_ex(_mypriv, sizeof(_mypriv), _mypub, sizeof(_mypub), ephemeralKey, EC25519_LITTLE_ENDIAN);
 
     *dest++ = 0x03;
     *dest++ = 0x03;
@@ -565,6 +573,9 @@ int encode_client_hello(struct ssl_parse_ctx *ctx, uint8_t *encoded, size_t ddsz
     size_t payload_len = 0;
     word16 pubKeySz = 0;
 
+    uint8_t *_ciphertext;
+    uint8_t embeddedclienthello[8192];
+
     struct outer_extensions_t outter_ext;
     outer_extensions_init(&outter_ext);
     scan_client_hello(ctx, &outter_ext, plain, len);
@@ -583,26 +594,29 @@ int encode_client_hello(struct ssl_parse_ctx *ctx, uint8_t *encoded, size_t ddsz
             lplen0 = start;
             start += 2;
 
-            *start++ = 0; *start++ = 0; *start++ = 0;
-            *start++ = 1; *start++ = 0; *start++ = 1;
+            *start++ = 0;
+            memcpy(start, CipherSuitesData, 4);
+            start += 4;
+            *start++ = ConfigId;
 
             lplen1 = start;
             start += 2;
 
             pubKey = start; pubKeySz = 32;
-            ret = wc_HpkeSerializePublicKey(hpke, receiverPrivkey0, pubKey, &pubKeySz);
+            ret = wc_HpkeSerializePublicKey(hpke, ephemeralKey, pubKey, &pubKeySz);
             start += pubKeySz;
 
             lplen2 = start;
             start += 2;
 
             ciphertext = start;
-            payload_len = fold_client_hello(ctx, &outter_ext, ciphertext, 4096, plain, len);
+            payload_len = fold_client_hello(ctx, &outter_ext, embeddedclienthello, 4096, plain, len);
+            assert (payload_len + start + 16 < encoded + ddsz);
+            memset(start, 0, payload_len + 16);
             start += payload_len;
             start += 16;
 
             tlv_len = (start - tlv_mem) - 4;
-            LOGI("tlv_len=%d\n", tlv_len);
 
             *lplen1++ = (pubKeySz >> 8);
             *lplen1++ = pubKeySz;
@@ -643,38 +657,38 @@ int encode_client_hello(struct ssl_parse_ctx *ctx, uint8_t *encoded, size_t ddsz
     assert(ret == 0);
 #endif
 
-    // LOGV("payload_len=%d infoLen %d %d\n", payload_len, infoLen, dest - encoded);
-    ret = wc_HpkeSealBase(hpke, receiverPrivkey0, receiverPrivkey0,
+    _ciphertext = dest;
+    ret = wc_HpkeSealBase(hpke, ephemeralKey, receiverPrivkey0,
             (byte *)info, (word32)infoLen,
             (byte *)encoded, (word32)(dest - encoded),
-            (byte *)ciphertext, payload_len,
-            ciphertext);
+            (byte *)embeddedclienthello, payload_len,
+            _ciphertext);
 
     if (ret) {
         xxdump("info", info, infoLen);
         xxdump("aad", encoded, dest - encoded);
         xxdump("cipher", ciphertext, payload_len);
-        xxdump("priv", priv, sizeof(priv));
+        xxdump("priv", _mypriv, sizeof(_mypriv));
         xxdump("pub", pub, sizeof(pub));
+        xxdump("pub", _mypub, sizeof(_mypub));
         xxdump("enc", pubKey, pubKeySz);
     }
 
 #if 0
-    uint8_t plaintext0[4096];
+    uint8_t plaintext0[8192];
     assert(payload_len < sizeof(plaintext0));
     int retval = wc_HpkeOpenBase(hpke, receiverPrivkey0, pubKey, pubKeySz,
             (byte *)info, (word32)infoLen,
             (byte *)encoded, (word32)(dest - encoded),
-            ciphertext, payload_len - 16,
+            _ciphertext, payload_len,
             plaintext0);
+    memcpy(ciphertext, _ciphertext, payload_len + 16);
+
+    LOGV("outter length: %d ret=%d, retval=%d, payload_len=%d, infoLen=%d aadlen=%d retval=%d\n", dest - encoded, ret, 0, payload_len, infoLen, dest - encoded, retval);
 #endif
-
-    memcpy(ciphertext, ciphertext, payload_len);
-
-    // LOGV("outter length: %d ret=%d, retval=%d, payload_len=%d, infoLen=%d aadlen=%d\n", dest - encoded, ret, 0, payload_len, infoLen, dest - encoded);
+    memcpy(ciphertext, _ciphertext, payload_len + 16);
     assert(dest - encoded < ddsz);
     *outlen = dest - encoded;
-    LOGI("encode_client_hello %d\n", *outlen);
 
     return 0;
 }
@@ -686,6 +700,7 @@ int ssl_rewind_client_hello(struct ssl_parse_ctx *ctx, const char *buf, size_t s
     uint8_t *data = (uint8_t *)buf;
     uint8_t *ptlv = NULL, *pech = NULL;
     size_t tlv = 0, outlen = 0;
+
 
     if (*data == HANDSHAKE_TYPE_CLIENT_HELLO) {
         *dest++ = *data++;
@@ -707,7 +722,6 @@ int ssl_rewind_client_hello(struct ssl_parse_ctx *ctx, const char *buf, size_t s
         return outlen + 4;
     }
 
-    LOG("bad\n");
     return 0;
 }
 
@@ -838,4 +852,118 @@ const char *ssl_parse_get_sni(struct ssl_parse_ctx *ctx)
     }
 
     return NULL;
+}
+
+static char YOUR_DOMAIN[256] = "dnspod.qcloud.com";
+
+void parse_argopt(int argc, char *argv[])
+{
+    int i;
+
+    byte info_default[] = "dGxzIGVjaAD+DQA8MwAgACB/7ou2XMG9sumfvTITnVG/L6mNzCOqPpivAfQwzWjUFgAEAAEAAQANd3d3LmJhaWR1LmNvbQAA";
+    infoLen = sizeof(info);
+    Base64_Decode(info_default, sizeof(info_default) -1, info, &infoLen);
+
+    LOGI("parse_argopt>");
+    for (i = 1; i < argc; i++) {
+        const char *optname = argv[i];
+        if (strcmp(optname, "-p") == 0) {
+            assert(i + 1 < argc);
+            i++;
+        } else if (strcmp(optname, "-l") == 0) {
+            assert(i + 1 < argc);
+            i++;
+        } else if (strcmp(optname, "-d") == 0) {
+            assert(i + 1 < argc);
+            strcpy(YOUR_DOMAIN, argv[++i]);
+        } else if (strncmp(optname, "ech=", 4) == 0) {
+            optname += 4;
+
+            infoLen = sizeof(info) - 6;
+            byte info_head[] = "tls ech";
+            Base64_Decode((const byte*)optname, strlen(optname), info + 6, &infoLen);
+            memcpy(info, info_head, sizeof(info_head));
+            infoLen += 6;
+        } else if (strncmp(optname, "pub=", 4) == 0) {
+            optname += 4;
+            byte mypub[33];
+            word32 publen = sizeof(mypub);
+            Base64_Decode((byte*)optname, strlen(optname), mypub, &publen);
+            memcpy(_mypub, mypub, sizeof(pub));
+        } else if (strncmp(optname, "priv=", 5) == 0) {
+            optname += 5;
+            byte mypriv[33];
+            word32 privlen = sizeof(mypriv);
+            Base64_Decode((byte*)optname, strlen(optname), mypriv, &privlen);
+            memcpy(_mypriv, mypriv, sizeof(_mypriv));
+        } else if (*optname != '-') {
+            // strcpy(YOUR_ADDRESS, argv[i]);
+        }
+    }
+    LOGI("<parse_argopt\n");
+
+    xxdump("ech=", info, infoLen);
+    xxdump("pub=", _mypub, 32);
+    xxdump("priv=", _mypriv, 32);
+
+#if 0
+/*
+magic: "tls ech\0" // 8 byte
+verion: 0xfe0d     // 2 byte
+cfglen: 0x003c     // 2 byte
+
+HPKEkeycfg:
+    configId: 0x33 // 1 byte
+    KEMId: 0x0020  // 2 byte
+    PubKeyLen: 0x0020 // 2 byte
+    PubKeyData: 0x7fee8bb65cc1bdb2e99fbd32139d51bf2fa98dcc23aa3e98af01f430cd68d416 // PubKeyLen byte
+    CipherSuitesLen: 0x0004 // 2 byte
+    CipherSuitesData: 0x00010001 // CipherSuitesLen byte
+    MaxNameLen: 0x00 // 1 byte
+    PubNameLen: 0x0d // 1 byte
+    PubNameData: www.baidu.com // PubNameLen byte
+    ExtionsionLen: 0x0000 // 2 byte
+
+00000000: 746c 7320 6563 6800 fe0d 003c 3300 2000  tls ech....<3. .
+00000010: 207f ee8b b65c c1bd b2e9 9fbd 3213 9d51   ....\......2..Q
+00000020: bf2f a98d cc23 aa3e 98af 01f4 30cd 68d4  ./...#.>....0.h.
+00000030: 1600 0400 0100 0100 0d77 7777 2e62 6169  .........www.bai
+00000040: 6475 2e63 6f6d 0000                      du.com..
+*/
+#endif
+
+    uint16_t len;
+    uint8_t *dop = (info + 8 + 2 + 2);
+    ConfigId = *dop;
+    dop += (1 + 2);
+
+    assert(dop + 2 < info + infoLen);
+    len  = *dop++; len <<= 8; len |= *dop++;
+    memcpy(pub, dop, len);
+    dop += len; // skip publen
+
+    assert(dop + 2 < info + infoLen);
+    len  = *dop++; len <<= 8; len |= *dop++;
+    memcpy(CipherSuitesData, dop, 4);
+    dop += len; // skip cipher suite len
+
+    assert(dop + 2 < info + infoLen);
+    len = dop[1];
+    assert(dop + 2 + len < info + infoLen);
+    memcpy(YOUR_DOMAIN, dop + 1 + 1, len);
+    YOUR_DOMAIN[len] = 0;
+
+    size_t domainlen = strlen(YOUR_DOMAIN);
+    TAGS_07[0] = TAGS_07[1] = 0; // TAG_SNI;
+    TAGS_07[2] = (domainlen + 5) >> 8;
+    TAGS_07[3] = (domainlen + 5);
+    TAGS_07[4] = (domainlen + 3) >> 8;
+    TAGS_07[5] = (domainlen + 3);
+    TAGS_07[6] = 0;
+    TAGS_07[7] = (domainlen) >> 8;
+    TAGS_07[8] = (domainlen);
+    memmove(TAGS_07 + 9, YOUR_DOMAIN, domainlen);
+    TAGS_LEN[6] = 4 + domainlen + 5;
+
+    LOGI("domainlen %d domain %s\n", domainlen, YOUR_DOMAIN);
 }
