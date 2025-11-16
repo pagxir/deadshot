@@ -655,7 +655,7 @@ int encode_client_hello(struct ssl_parse_ctx *ctx, uint8_t *encoded, size_t ddsz
         }
 
         uint16_t taglen = 0;
-        memcpy(&taglen, tagi.buf + 2, 2);
+        memcpy(&taglen, (char *)tagi.buf + 2, 2);
         taglen = htons(taglen);
 
         assert(4 + taglen == tagi.size);

@@ -24,7 +24,10 @@
 
 #include <txall.h>
 
-extern "C" int pidfd_open (__pid_t __pid, unsigned int __flags) __THROW;
+static int pidfd_open (pid_t pid, unsigned int flags) 
+{
+	return syscall(SYS_pidfd_open, pid, flags);
+}
 
 struct ssl_parse_ctx {
     size_t size;
