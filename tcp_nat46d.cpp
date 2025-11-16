@@ -50,6 +50,7 @@ struct tcp_exchange_context {
     int dport;
     tx_aiocb file;
     tx_task_t task;
+    struct sockaddr_in6 *gateway;
 };
 
 #define HASH_MASK 0xFFFF
@@ -508,8 +509,12 @@ static void do_tcp_accept(void *upp)
         tx_setblockopt(newfd, 0);
         int err = getsockname(newfd, (struct sockaddr *)&target, &tolen);
 
-        inet_ntop(AF_INET6, &target.sin6_addr, abuf, sizeof(abuf));
         inet_ntop(AF_INET6, &newaddr.sin6_addr, cbuf, sizeof(cbuf));
+        if (up->gateway) {
+            target.sin6_addr = up->gateway->sin6_addr;
+        } else {
+            inet_ntop(AF_INET6, &target.sin6_addr, abuf, sizeof(abuf));
+        }
 
         LOG_DEBUG("new client: %s:%u\n", cbuf, ntohs(newaddr.sin6_port));
         LOG_DEBUG("destination: %s:%u\n", abuf, ntohs(target.sin6_port));
@@ -534,7 +539,7 @@ static void do_tcp_accept(void *upp)
     return;
 }
 
-static void * tcp_exchange_create(int port, int dport)
+static void * tcp_exchange_create(int port, int dport, struct sockaddr_in6 *gateway)
 {
     int sockfd;
     int error = -1;
@@ -561,6 +566,7 @@ static void * tcp_exchange_create(int port, int dport)
     up->port  = port;
     up->dport  = dport;
     up->sockfd = sockfd;
+    up->gateway = gateway;
 
     error = listen(sockfd, 5);
     assert(error == 0);
@@ -577,6 +583,8 @@ int main(int argc, char *argv[])
     int err;
     unsigned int last_tick = 0;
     struct timer_task tmtask;
+    struct sockaddr_in6 gateway0;
+    struct sockaddr_in6 * gateway = NULL;
 
 #ifndef WIN32
     signal(SIGPIPE, SIG_IGN);
@@ -590,11 +598,20 @@ int main(int argc, char *argv[])
     tx_task_init(&tmtask.task, loop, update_timer, &tmtask);
     tx_timer_reset(&tmtask.timer, 500);
 
-	parse_argopt(argc, argv);
+    gateway0.sin6_family = AF_INET6;
+    gateway0.sin6_port   = 0;
+    parse_argopt(argc, argv);
     for (int i = 1; i < argc; i++) {
         int port, dport, match;
 
         if (strchr(argv[i], '=') != NULL) {
+            continue;
+        } else if (strcmp(argv[i], "-p") == 0 && i < argc) {
+            gateway0.sin6_port = atoi(argv[++i]);
+            continue;
+        } else if (strcmp(argv[i], "-r") == 0 && i < argc) {
+            inet_pton(AF_INET6, argv[++i], &gateway0.sin6_addr);
+            gateway = &gateway0;
             continue;
         } else if (*argv[i] == '-') {
             i++;
@@ -605,13 +622,13 @@ int main(int argc, char *argv[])
         switch (match) {
             case 1:
                 assert (port >  0 && port < 65536);
-                tcp_exchange_create(port, port);
+                tcp_exchange_create(port, port, gateway);
                 break;
 
             case 2:
                 assert (port >  0 && port < 65536);
                 assert (dport >  0 && dport < 65536);
-                tcp_exchange_create(port, dport);
+                tcp_exchange_create(port, dport, gateway);
                 break;
 
             default:

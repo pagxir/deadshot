@@ -416,6 +416,7 @@ int scan_client_hello(struct ssl_parse_ctx *ctx, struct outer_extensions_t *outt
 
 int save_data(const char *path, void *buf, size_t len)
 {
+#if 0
     FILE *fp = fopen(path, "wb");
 
     if (fp) {
@@ -444,6 +445,7 @@ int save_data(const char *path, void *buf, size_t len)
         fwrite(buf, len, 1, fp);
         fclose(fp);
     }
+#endif
 
     return 0;
 }
@@ -474,6 +476,15 @@ int fold_client_hello(struct ssl_parse_ctx *ctx, struct outer_extensions_t *outt
 
     uint8_t * extbase = dest;
     uint8_t * tagbord = (uint8_t *)outter_ext->tagbord;
+
+#if 0
+    /* Inner Client Hello */
+    *dest++ = 0xfe;
+    *dest++ = 0x0d;
+    *dest++ = 0;
+    *dest++ = 1;
+    *dest++ = 1;
+#endif
 
     if (outter_ext->lastcnt) {
         size_t first_size = tagbord - outter_ext->lastsize - data;
@@ -528,6 +539,10 @@ int encode_client_hello(struct ssl_parse_ctx *ctx, uint8_t *encoded, size_t ddsz
 
     l_session_id = plain[OFF_SESSION_ID];
 
+    uint16_t o_cipher_suites = l_session_id + OFF_SESSION_ID + 1;
+    uint16_t l_cipher_suites = plain[o_cipher_suites];
+    l_cipher_suites = (l_cipher_suites << 8) | plain[o_cipher_suites + 1];
+
     Hpke hpke[1];
     void *heap = NULL;
     curve25519_key ephemeralKey[1];
@@ -550,16 +565,21 @@ int encode_client_hello(struct ssl_parse_ctx *ctx, uint8_t *encoded, size_t ddsz
     memcpy(dest, session_id, l_session_id);
     dest += l_session_id;
 
+    const uint8_t *cipher_suitesp = plain + o_cipher_suites + 2;
+#if 1
     uint8_t cipher_suites[] = {
         0x3a, 0x3a, 0x13, 0x01, 0x13, 0x02, 0x13, 0x03, 0xc0, 0x2b, 0xc0, 0x2f, 0xc0, 0x2c, 0xc0, 0x30,
         0xcc, 0xa9, 0xcc, 0xa8, 0xc0, 0x13, 0xc0, 0x14, 0x00, 0x9c, 0x00, 0x9d, 0x00, 0x2f, 0x00, 0x35
     };
 
-    *dest++ = sizeof(cipher_suites) >> 8;
-    *dest++ = sizeof(cipher_suites);
+    l_cipher_suites = sizeof(cipher_suites);
+    cipher_suitesp = cipher_suites;
+#endif
 
-    memcpy(dest, cipher_suites, sizeof(cipher_suites));
-    dest += sizeof(cipher_suites);
+    *dest++ = l_cipher_suites >> 8;
+    *dest++ = l_cipher_suites;
+    memcpy(dest, plain + o_cipher_suites + 2, l_cipher_suites);
+    dest += l_cipher_suites;
 
     int non_compress = 0;
     int compress_length = 1;
