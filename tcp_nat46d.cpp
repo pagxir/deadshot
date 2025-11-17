@@ -24,9 +24,17 @@
 
 #include <txall.h>
 
-static int pidfd_open (pid_t pid, unsigned int flags) 
+int pidfd_open (pid_t pid, unsigned int flags)
 {
-	return syscall(SYS_pidfd_open, pid, flags);
+    char buf[256];
+    int fd = syscall(SYS_pidfd_open, pid, flags);
+
+    if (fd == -1) {
+        sprintf(buf, "/proc/%d/ns/net", pid);
+        return open(buf, O_RDONLY);
+    }
+
+    return fd;
 }
 
 struct ssl_parse_ctx {
@@ -149,7 +157,8 @@ int socket_netns(int family, int type, int protocol, const char *netns)
     fd = pidfd_open(pid, 0);
     close(sv[1]);
     err = setns(fd, CLONE_NEWNET);
-    // fprintf(stderr, "socket_netns pid=%d fd=%d err=%d\n", pid, fd, err);
+    if (err == -1)
+        fprintf(stderr, "socket_netns pid=%d fd=%d err=%d %d %s\n", pid, fd, err, errno, strerror(errno));
     newfd = socket(family, type, protocol);
     sendfd(sv[0], newfd);
     close(sv[0]);
@@ -332,6 +341,7 @@ static void save_file(const char *path, void *buf, size_t len)
     return;
 }
 
+#ifdef ENABLE_TLS_ECH
 static void do_sni_ssl_neg(void *upp)
 {
     nat_conntrack_t *up = (nat_conntrack_t *)upp;
@@ -388,6 +398,7 @@ static void do_sni_ssl_neg(void *upp)
 
     error = tx_aiocb_connect(&up->file, (struct sockaddr *)&up->target, sizeof(up->target), &up->maintask);
     if (error == 0 || errno == EINPROGRESS) {
+        /* connection is in progress, wait connect completed */
     } else {
         fprintf(stderr, "tx_aiocb_connect errno=%d\n", errno);
         session_release(up, 0);
@@ -407,7 +418,7 @@ static void do_sni_ssl_neg(void *upp)
     fprintf(stderr, "ssl segment length: %d dlen %ld doff %ld %s:%d\n", len, d->len, d->off, host, htons(up->target.sin6_port));
     return;
 }
-
+#endif
 
 static void do_tcp_exchange_backward(void *upp)
 {
@@ -473,8 +484,24 @@ static int new_tcp_channel(int newfd, struct sockaddr_in6 *target)
         tx_aiocb_init(&conn->file, loop, sockfd);
         tx_task_init(&conn->task, loop, do_tcp_exchange_backward, conn);
 
+        tx_task_init(&conn->neg, loop, NULL, NULL);
+#ifdef ENABLE_TLS_ECH
         tx_task_init(&conn->neg, loop, do_sni_ssl_neg, conn);
         tx_aincb_active(&conn->mainfile, &conn->neg);
+#else
+        conn->target  = *target;
+        error = tx_aiocb_connect(&conn->file, (struct sockaddr *)&conn->target, sizeof(conn->target), &conn->maintask);
+        if (error == 0 || errno == EINPROGRESS) {
+            fprintf(stderr, "tx_aiocb_connect success %d\n", errno);
+            tx_aincb_active(&conn->mainfile, &conn->maintask);
+            tx_aincb_active(&conn->file, &conn->task);
+            conn->refcnt++;
+        } else {
+            fprintf(stderr, "tx_aiocb_connect errno=%d\n", errno);
+            session_release(conn, 0);
+            return 0;
+        }
+#endif
 
         memset(&conn->maincache, 0, sizeof(conn->maincache));
         memset(&conn->cache, 0, sizeof(conn->cache));
@@ -518,6 +545,7 @@ static void do_tcp_accept(void *upp)
         } else {
             inet_ntop(AF_INET6, &target.sin6_addr, abuf, sizeof(abuf));
         }
+        inet_ntop(AF_INET6, &target.sin6_addr, abuf, sizeof(abuf));
 
         LOG_DEBUG("new client: %s:%u\n", cbuf, ntohs(newaddr.sin6_port));
         LOG_DEBUG("destination: %s:%u\n", abuf, ntohs(target.sin6_port));
@@ -603,7 +631,9 @@ int main(int argc, char *argv[])
 
     gateway0.sin6_family = AF_INET6;
     gateway0.sin6_port   = 0;
+#ifdef ENABLE_TLS_ECH
     parse_argopt(argc, argv);
+#endif
     for (int i = 1; i < argc; i++) {
         int port, dport, match;
 
