@@ -25,7 +25,6 @@ int tx_setblockopt(int fd, int blockopt)
     return iflags;
 }
 
-
 #ifdef ENABLE_HTTP_CONVERT
 static int http_convert(char *header, size_t len, int *outlen)
 {
@@ -259,11 +258,14 @@ int main(int argc, char *argv[])
                 if (transfer > 0) {
                     inoff += transfer;
                     indir &= ~2;
-                } else if (errno == EAGAIN) {
+                } else if (wolfSSL_want_write(ssl)) {
                     indir &= ~2;
+                } else if (wolfSSL_want_read(ssl)) {
+                    outdir &= ~1;
                 } else {
-                    err = wolfSSL_get_error(ssl, 0);
-                    fprintf(stderr, "wolfSSL_write: %d\n", err);
+                    err = wolfSSL_get_error(ssl, transfer);
+                    fprintf(stderr, "wolfSSL_write %d error %d\n", transfer, err);
+                    assert(transfer == SSL_FATAL_ERROR);
                     if (inoff == inlen) indir |= 4;
                     return 0;
                 }
@@ -326,11 +328,14 @@ int main(int argc, char *argv[])
                 transfer = wolfSSL_read(ssl, outbuf + outlen, sizeof(outbuf) - outlen);
                 if (transfer > 0) {
                     outlen += transfer;
-                } else if (transfer == -1 && errno == EAGAIN) {
+                } else if (wolfSSL_want_read(ssl)) {
                     outdir &= ~1;
+                } else if (wolfSSL_want_write(ssl)) {
+                    indir &= ~2;
                 } else {
-                    err = wolfSSL_get_error(ssl, 0);
-                    perror("wolfSSL_read");
+                    err = wolfSSL_get_error(ssl, transfer);
+                    fprintf(stderr, "wolfSSL_read %d error %d\n", transfer, err);
+                    assert(transfer == SSL_FATAL_ERROR);
                     if (outoff == outlen) outdir |= 4;
                     // return 0;
                 }
@@ -345,7 +350,8 @@ int main(int argc, char *argv[])
         if (~outdir & 2) FD_SET(1, &writefds);
         if (~indir & 2) FD_SET(sockfd, &writefds);
 
-        selected = select(sockfd + 1, &readfds, &writefds, NULL, 0);
+        struct timeval timeout = { .tv_sec = 100, .tv_usec = 100 };
+        selected = select(sockfd + 1, &readfds, &writefds, NULL, &timeout);
 
     }  while (selected > 0 && (indir < 4 || outdir < 4));
 
