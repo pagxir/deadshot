@@ -1,23 +1,23 @@
 #include <stdlib.h>
 #include <assert.h>
+#include <signal.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <wolfssl/options.h>
 #include <wolfssl/ssl.h>  /* compatibility layer */
 #include <wolfssl/error-ssl.h>
 
-#define caCertFile        "./certs/ca-cert.pem"
+#define caCertFile "./certs/ca-cert.pem"
 
 int tx_setblockopt(int fd, int blockopt)
 {
-    int iflags;
-
-    int oflags;
+    int iflags, oflags;
 
     iflags = fcntl(fd, F_GETFL);
 
+    oflags = (iflags | O_NONBLOCK);
     if (blockopt)
         oflags = (iflags & ~O_NONBLOCK);
-    else
-        oflags = (iflags | O_NONBLOCK);
 
     if (iflags != oflags)
         iflags = fcntl(fd, F_SETFL, oflags);
@@ -105,12 +105,20 @@ static int http_convert(char *header, size_t len, int *outlen)
 }
 #endif
 
+static int child_quit = 0;
+static void child_check_flags(int signo)
+{
+	child_quit = 1;
+}
+
 int main(int argc, char *argv[])
 {
     int ret, err;
     int sockfd = 0;
     const char *host = "www.baidu.com";
     const char *servername = "www.baidu.com";
+    const char *listen_port = "80";
+    const char *connect_host = "172.67.206.226";
 
     WOLFSSL*     ssl = NULL;
     WOLFSSL_CTX* ctx = wolfSSL_CTX_new(wolfTLSv1_2_client_method());
@@ -129,6 +137,10 @@ int main(int argc, char *argv[])
             }
         } else if (strcmp(arg, "-host") == 0 && i < argc) {
             host = argv[++i];
+        } else if (strcmp(arg, "-connect") == 0 && i < argc) {
+            connect_host = argv[++i];
+        } else if (strcmp(arg, "-listen") == 0 && i < argc) {
+            listen_port = argv[++i];
         } else if (strcmp(arg, "-servername") == 0 && i < argc) {
             servername = argv[++i];
         } else if (strcmp(arg, "-nonca") == 0) {
@@ -141,7 +153,7 @@ int main(int argc, char *argv[])
 
     struct sockaddr_in6 local6;
     local6.sin6_family = AF_INET6;
-    local6.sin6_port   = htons(80);
+    local6.sin6_port   = htons(atoi(listen_port));
     local6.sin6_addr   = in6addr_any;
 
     int error = bind(servfd, (struct sockaddr *)&local6, sizeof(local6));
@@ -153,11 +165,14 @@ int main(int argc, char *argv[])
     socklen_t addrln = sizeof(local6);
     int httpfd = accept(servfd, (struct sockaddr *)&local6, &addrln);
 
+	int child_count = 0;
+	signal(SIGCHLD, child_check_flags);
     while (httpfd  > 0) {
         char buf[128];
-        fprintf(stderr, "from %s:%d\n", inet_ntop(AF_INET6, &local6.sin6_addr, buf, sizeof(buf)), htons(local6.sin6_port));
+        fprintf(stderr, "%d from %s:%d\n", child_count,
+                inet_ntop(AF_INET6, &local6.sin6_addr, buf, sizeof(buf)), htons(local6.sin6_port));
 
-        pid_t pid = fork();
+        pid_t pid = child_count < 500? fork(): -1;
 
         if (pid == 0) {
             dup2(httpfd, 0);
@@ -167,9 +182,22 @@ int main(int argc, char *argv[])
             break;
         }
 
+		if (pid > 0) {
+			child_count++;
+		}
+
         close(httpfd);
         addrln = sizeof(local6);
         httpfd = accept(servfd, (struct sockaddr *)&local6, &addrln);
+		if (child_quit) {
+			child_quit = 0;
+			int status = 0;
+			pid_t pid = waitpid(-1, &status, WNOHANG);
+			while (pid > 0) {
+				child_quit--;
+				pid = waitpid(-1, &status, WNOHANG);
+			}
+		}
     }
     assert(httpfd > 0);
 #endif
@@ -188,7 +216,7 @@ int main(int argc, char *argv[])
     struct sockaddr_in servaddr;
     servaddr.sin_family = AF_INET;
     servaddr.sin_port   = htons(443);
-    inet_pton(AF_INET, "172.67.206.226", &servaddr.sin_addr);
+    inet_pton(AF_INET, connect_host, &servaddr.sin_addr);
 
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
     err = connect(sockfd, (struct sockaddr *)&servaddr, sizeof(servaddr));
@@ -264,7 +292,7 @@ int main(int argc, char *argv[])
                     outdir &= ~1;
                 } else {
                     err = wolfSSL_get_error(ssl, transfer);
-                    fprintf(stderr, "wolfSSL_write %d error %d\n", transfer, err);
+                    fprintf(stderr, "wolfSSL_write %ld error %d\n", transfer, err);
                     assert(transfer == SSL_FATAL_ERROR);
                     if (inoff == inlen) indir |= 4;
                     return 0;
@@ -334,8 +362,8 @@ int main(int argc, char *argv[])
                     indir &= ~2;
                 } else {
                     err = wolfSSL_get_error(ssl, transfer);
-                    fprintf(stderr, "wolfSSL_read %d error %d\n", transfer, err);
-                    assert(transfer == SSL_FATAL_ERROR);
+                    fprintf(stderr, "wolfSSL_read %ld error %d\n", transfer, err);
+                    assert(transfer == SSL_FATAL_ERROR || err == WOLFSSL_ERROR_ZERO_RETURN);
                     if (outoff == outlen) outdir |= 4;
                     // return 0;
                 }

@@ -43,13 +43,39 @@ int tun_alloc(char *dev)
 int setblockopt(int devfd, int block)
 {
     int flags;
+    int test = block? 0: O_NONBLOCK;
 
     flags = fcntl(devfd, F_GETFL);
-    if ((block? 0: O_NONBLOCK) ^ (flags & O_NONBLOCK)) {
-        flags = fcntl(devfd, F_SETFL, flags^O_NONBLOCK);
+    if ((test ^ flags) & O_NONBLOCK) {
+        flags = fcntl(devfd, F_SETFL, flags ^ O_NONBLOCK);
     }
 
     return flags;
+}
+
+int update_bufsize(int sockfd)
+{
+    int ret;
+    int bufsize = 0;
+    socklen_t optlen = sizeof(bufsize);
+#define BUFSIZE (655360 * 3)
+
+    ret = getsockopt(sockfd, SOL_SOCKET, SO_SNDBUF, &bufsize, &optlen);
+    if (ret == 0 && bufsize < BUFSIZE) {
+        printf("update send buffer to %d %d\n", bufsize, BUFSIZE);
+        bufsize = BUFSIZE;
+        setsockopt(sockfd, SOL_SOCKET, SO_SNDBUF, &bufsize, sizeof(bufsize));
+    }
+
+    optlen = sizeof(bufsize);
+    ret = getsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, &bufsize, &optlen);
+    if (ret == 0 && bufsize < BUFSIZE) {
+        printf("update receive buffer to %d %d\n", bufsize, BUFSIZE);
+        bufsize = BUFSIZE;
+        setsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, &bufsize, sizeof(bufsize));
+    }
+
+    return ret;
 }
 
 uint32_t csum_fold(uint32_t check)
@@ -63,13 +89,46 @@ uint32_t csum_fold(uint32_t check)
     return check;
 }
 
+struct session_tracker {
+    int sockfd;
+    time_t last_active;
+
+    uint32_t ident;
+    struct sockaddr_in from;
+};
+
+struct ip6_hdr {
+    uint32_t ip6_verison;
+    uint16_t ip6_plen;
+    uint8_t ip6_next;
+    uint8_t ip6_limit;
+    struct in6_addr ip6_src;
+    struct in6_addr ip6_dst;
+};
+
+struct tcp_hdr {
+    uint16_t th_sport;
+    uint16_t th_dport;
+    uint32_t th_seq;
+    uint32_t th_ack;
+    uint8_t  th_hlen;
+    uint8_t  th_flags;
+    uint16_t th_win;
+    uint16_t th_sum;
+    uint16_t th_urp;
+} __packed;
+
+struct session_tracker *_tracker_list[100];
+#define ALLOC_NEW(T) (T *) calloc(1, sizeof(T))
+#define ARRAY_SIZE(array) (sizeof(array)/sizeof(array[0]))
+
 static int from_len = 0;
 static struct sockaddr_in6 tunnel_from6;
 
 int tunnel_read(int tunnelfd, void *buf, size_t len, int passive)
 {
     int nbyte;
-    uint8_t data[2048];
+    uint8_t data[20480];
     static int ipv4_ident = 0;
 
     if (passive)
@@ -214,7 +273,7 @@ int tunnel_write(int tunnelfd, void *buf, size_t len, int passive)
 {
     uint8_t *data = (uint8_t *)buf;
     if (len < 28) {
-        fprintf(stderr, "tunnelfd len=%d\n", len);
+        fprintf(stderr, "tunnelfd len=%ld\n", len);
         return -1;
     }
 
@@ -343,6 +402,111 @@ int tunnel_write(int tunnelfd, void *buf, size_t len, int passive)
     return -1;
 }
 
+static int reinitfd(struct session_tracker *tracker, struct sockaddr_in6 *dest)
+{
+    int sockfd = tracker->sockfd;
+
+    if (tracker->last_active + 1000 <  time(NULL)) {
+        sockfd = socket(AF_INET6, SOCK_DGRAM, 0);
+        if (dest) connect(sockfd, (struct sockaddr *)dest, sizeof(*dest));
+        update_bufsize(sockfd);
+        setblockopt(sockfd, 0);
+        close(tracker->sockfd);
+        tracker->sockfd = sockfd;
+        assert(sockfd != -1);
+    }
+
+    return sockfd;
+}
+
+static int lockfd(struct session_tracker **list, int *pcount, size_t size, void *buf, size_t nbytes, struct sockaddr_in6 *dest, int defaultfd)
+{
+    int count = pcount[0];
+    uint32_t ident = 0;
+    uint32_t *dlist;
+
+    int ndefrag = 0;
+    time_t stamp = time(NULL);
+    struct session_tracker *oldest = NULL;
+    struct session_tracker *tracker = NULL;
+
+    uint8_t *v4v6 = (uint8_t *)buf;
+    uint16_t *ttlproto = (uint16_t *)buf;
+
+    if ((v4v6[0] & 0xf0) == 0x60) {
+        dlist = (uint32_t *)(v4v6 + 8);
+        ident = dlist[8] + ttlproto[3];
+
+        ident ^= (dlist[0] ^ dlist[1]);
+        ident ^= (dlist[2] + dlist[3]);
+
+        ident ^= (dlist[4] ^ dlist[5]);
+        ident ^= (dlist[6] + dlist[7]);
+    } else if (v4v6[0] == 0x45) {
+        dlist = (uint32_t *)(v4v6 + 12);
+        ident = dlist[2] + ttlproto[4];
+        ident ^= (dlist[0] ^ dlist[1]);
+    }
+
+    for (int cc = 0; cc < count; cc++) {
+        tracker = list[cc];
+
+        if (tracker->ident == ident) {
+            reinitfd(tracker, dest);
+            tracker->last_active = time(NULL) - 1;
+            return tracker->sockfd;
+        }
+
+        if (tracker->last_active + 150 < time(NULL)) {
+            ndefrag++;
+        }
+
+        if (stamp > tracker->last_active) {
+            oldest = tracker;
+            stamp  = tracker->last_active;
+        }
+    }
+
+    if (ndefrag == count) {
+        for (int cc = 0; cc < count; cc++) {
+            struct session_tracker *tracker = list[cc];
+            close(tracker->sockfd);
+            free(tracker);
+            list[cc] = 0;
+        }
+
+        *pcount = 0;
+        ndefrag = 0;
+        count = 0;
+    }
+
+    if (count < size) {
+        tracker = ALLOC_NEW(struct session_tracker);
+        list[count++] = tracker;
+        tracker->sockfd = socket(AF_INET6, SOCK_DGRAM, 0); 
+        if (dest) connect(tracker->sockfd, (struct sockaddr *)dest, sizeof(*dest));
+        setblockopt(tracker->sockfd, 0);
+        update_bufsize(tracker->sockfd);
+        tracker->ident = ident;
+        tracker->last_active = time(NULL) - 1;
+        assert(tracker->sockfd != -1);
+        *pcount = count;
+        return tracker->sockfd;
+    }
+
+    if (oldest != NULL && stamp + 27 < time(NULL)) {
+        tracker = oldest;
+        tracker->ident = ident;
+        tracker->last_active = 0;
+        reinitfd(tracker, dest);
+        tracker->last_active = time(NULL) - 1;
+        assert(tracker->sockfd != -1);
+        return tracker->sockfd;
+    }
+
+    return defaultfd;
+}
+
 int main(int argc, char *argv[])
 {
     struct sockaddr_in6 destination;
@@ -419,18 +583,37 @@ int main(int argc, char *argv[])
     setblockopt(tuninfd, 0);
     setblockopt(tunnelfd, 0);
 
-    for (ready = select(maxfd + 1, &readfds, NULL, &exceptfds, 0); ready != -1; ready = select(maxfd + 1, &readfds, NULL, &exceptfds, 0)) {
+    int _tracker_count = 0;
+    struct session_tracker *_tracker_list[100];
+    for (int cc = 0; cc < _tracker_count; cc++) {
+        int sockfd = _tracker_list[cc]->sockfd;
+        FD_SET(sockfd, &readfds);
+        maxfd = sockfd > maxfd? sockfd: maxfd;
+    }
 
+    for (ready = select(maxfd + 1, &readfds, NULL, &exceptfds, 0); ready != -1; ready = select(maxfd + 1, &readfds, NULL, &exceptfds, 0)) {
+        int more_todo = 0;
+
+again:
+        more_todo = 0;
         if (FD_ISSET(tuninfd, &readfds)) {
+            int sockfd;
             nbytes = read(tuninfd, buffer, sizeof(buffer));
 
             error = nbytes;
-            if (nbytes > 0)
-                error = tunnel_write(tunnelfd, buffer, nbytes, passive_mode);
+            if (nbytes > 0) {
+                sockfd = lockfd(_tracker_list, &_tracker_count, ARRAY_SIZE(_tracker_list), buffer, nbytes, passive_mode? NULL: &destination, tunnelfd);
+                error = tunnel_write(sockfd, buffer, nbytes, passive_mode);
+            } else {
+                /* clear */
+                FD_CLR(tuninfd, &readfds);
+            }
 
             if (error == -1) {
                 perror("write tuninfd");
-                fprintf(stderr, "ready tuninfd=%d nbytes=%d\n", tuninfd, nbytes);
+                fprintf(stderr, "ready tuninfd=%d nbytes=%d\n", sockfd, nbytes);
+            } else if (nbytes > 0) {
+                more_todo++;
             }
         }
 
@@ -440,15 +623,43 @@ int main(int argc, char *argv[])
             if (nbytes > 0) {
                 error = write(tunoutfd, buffer, nbytes);
                 assert (error == nbytes);
+                more_todo++;
             } else {
                 fprintf(stderr, "ready tunnelfd=%d nbytes=%d\n", tunnelfd, nbytes);
                 perror("write tunnelfd");
+                FD_CLR(tunnelfd, &readfds);
             }
         }
+
+        for (int cc = 0; cc < _tracker_count; cc++) {
+            int sockfd = _tracker_list[cc]->sockfd;
+            if (FD_ISSET(sockfd, &readfds)) {
+                nbytes = tunnel_read(sockfd, buffer, sizeof(buffer), passive_mode);
+
+                if (nbytes > 0) {
+                    _tracker_list[cc]->last_active = time(NULL);
+                    error = write(tunoutfd, buffer, nbytes);
+                    assert (error == nbytes);
+                    more_todo++;
+                } else {
+                    fprintf(stderr, "ready tunnelfd=%d nbytes=%d\n", sockfd, nbytes);
+                    perror("write tunnelfd");
+                    FD_CLR(sockfd, &readfds);
+                }
+            }
+        }
+
+        if (more_todo) goto again;
 
         FD_ZERO(&readfds);
         FD_SET(tuninfd, &readfds);
         FD_SET(tunnelfd, &readfds);
+
+        for (int cc = 0; cc < _tracker_count; cc++) {
+            int sockfd = _tracker_list[cc]->sockfd;
+            FD_SET(sockfd, &readfds);
+            maxfd = sockfd > maxfd? sockfd: maxfd;
+        }
     }
 
     return 0;
