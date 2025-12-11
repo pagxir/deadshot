@@ -26,13 +26,12 @@ int tx_setblockopt(int fd, int blockopt)
 }
 
 #ifdef ENABLE_HTTP_CONVERT
-static int http_convert(char *header, size_t len, int *outlen)
+static int http_convert(const char *hostopt, char *header, size_t len, int *outlen)
 {
     int line = 0;
     int sol = 0;
     char * url = header;
     char domain[256];
-    char hostopt[] = "Host: dl.603030.xyz\r\n";
     int host0 = 0, host9 = 0, urlend = 0;
 
     for (int i = 0; i < len; i++) {
@@ -119,6 +118,7 @@ int main(int argc, char *argv[])
     const char *servername = "www.baidu.com";
     const char *listen_port = "80";
     const char *connect_host = "172.67.206.226";
+    char hostopt[384] = "Host: dl.603030.xyz\r\n";
 
     WOLFSSL*     ssl = NULL;
     WOLFSSL_CTX* ctx = wolfSSL_CTX_new(wolfTLSv1_2_client_method());
@@ -137,6 +137,7 @@ int main(int argc, char *argv[])
             }
         } else if (strcmp(arg, "-host") == 0 && i < argc) {
             host = argv[++i];
+			snprintf(hostopt, sizeof(hostopt), "Host: %s\r\n", host);
         } else if (strcmp(arg, "-connect") == 0 && i < argc) {
             connect_host = argv[++i];
         } else if (strcmp(arg, "-listen") == 0 && i < argc) {
@@ -323,7 +324,7 @@ int main(int argc, char *argv[])
 
 #ifdef ENABLE_HTTP_CONVERT
             // fprintf(stderr, "LONE %d %d %d %d %d\n", __LINE__, inoff, inlen, reserve, converted);
-            if (converted == 0 && http_convert(inbuf, reserve, &reserve)) {
+            if (converted == 0 && http_convert(hostopt, inbuf, reserve, &reserve)) {
                 fprintf(stderr, "LINE %d %ld %ld %d %d\n", __LINE__, inoff, inlen, reserve, converted);
                 converted = 1;
                 inlen = reserve;
