@@ -64,7 +64,6 @@ struct tcp_exchange_context {
     struct sockaddr_in6 *gateway;
 };
 
-#define HASH_MASK 0xFFFF
 typedef struct cache_s {
     size_t off;
     size_t len;
@@ -172,7 +171,8 @@ typedef struct _nat_conntrack_t {
 
     int sockfd;
     int mainfd;
-    int hash_idx;
+    int do_flush;
+    int rx_mark;
     time_t last_alive;
     struct sockaddr_in6 source;
     struct sockaddr_in6 target;
@@ -189,13 +189,14 @@ typedef struct _nat_conntrack_t {
     LIST_ENTRY(_nat_conntrack_t) entry;
 } nat_conntrack_t;
 
-static nat_conntrack_t *_session_last[HASH_MASK + 1] = {};
 static LIST_HEAD(nat_conntrack_q, _nat_conntrack_t) _session_header = LIST_HEAD_INITIALIZER(_session_header);
 
 static time_t _session_gc_time = 0;
 static int conngc_session(time_t now, nat_conntrack_t *skip)
 {
     int timeout = 30;
+    int nfreed = 0;
+
     if (now < _session_gc_time || now > _session_gc_time + 30) {
         nat_conntrack_t *item, *next;
 
@@ -207,13 +208,7 @@ static int conngc_session(time_t now, nat_conntrack_t *skip)
 
             if ((item->last_alive > now) ||
                     (item->last_alive + timeout < now)) {
-                LOG_INFO("free datagram connection: %p, %d\n", skip, 0);
-                int hash_idx = item->hash_idx;
-
-                if (item == _session_last[hash_idx]) {
-                    _session_last[hash_idx] = NULL;
-                }
-
+                if (nfreed < 3) LOG_INFO("free connection: %p, %d\n", skip, nfreed);
                 tx_aiocb_fini(&item->file);
                 tx_task_drop(&item->task);
                 close(item->sockfd);
@@ -225,10 +220,12 @@ static int conngc_session(time_t now, nat_conntrack_t *skip)
                 tx_task_drop(&item->neg);
                 LIST_REMOVE(item, entry);
                 free(item);
+                nfreed++;
             }
         }
     }
 
+    LOG_INFO("freed connection: %p, %d\n", skip, nfreed);
     return 0;
 }
 
@@ -279,7 +276,7 @@ static int flush_cache(tx_aiocb *file, cache_t *cache)
     int len = 1;
     cache_t *d = cache;
 
-    while (len > 0 && d->off < d->len) { 
+    while (tx_writable(file) && len > 0 && d->off < d->len) { 
         len = tx_outcb_write(file, d->buf + d->off, d->len - d->off);
         if (len > 0) d->off += len;
     }
@@ -310,6 +307,7 @@ static int pipling(tx_aiocb *filpin, tx_aiocb *filpout, tx_task_t *task, cache_t
             break;
         }
 
+        assert(d->len == d->off);
         count = recv(filpin->tx_fd, d->buf, sizeof(d->buf), MSG_DONTWAIT);
         tx_aincb_update(filpin, count);
 
@@ -351,11 +349,19 @@ static void do_sni_ssl_neg(void *upp)
     int count, error;
 
     assert(up->st_flag == 0);
-    count = recv(filp->tx_fd, d->buf, sizeof(d->buf), MSG_DONTWAIT);
+    if (d->len >= sizeof(d->buf)) {
+        session_release(up, 0);
+        return;
+    }
+
+    count = recv(filp->tx_fd, d->buf + d->len, sizeof(d->buf) - d->len, MSG_DONTWAIT);
     tx_aincb_update(filp, count);
 
     if (count > 0) {
         d->len += count;
+    } else if (tx_readable(filp)) {
+        session_release(up, 0);
+        return;
     } else {
         tx_aincb_active(&up->mainfile, &up->neg);
         return;
@@ -381,8 +387,7 @@ static void do_sni_ssl_neg(void *upp)
             return;
         }
 
-        if (NULL != ssl_parse_prepare(&ctx, d->buf + 5, len)) {
-            ssl_parse_get_sni(&ctx);
+        if (NULL != ssl_parse_prepare(&ctx, d->buf + 5, len) && ssl_parse_get_sni(&ctx) == NULL) {
             size_t size = ssl_rewind_client_hello(&ctx, d->buf + 5, len);
             d->len = size + 5;
 
@@ -437,7 +442,149 @@ static void do_tcp_exchange_backward(void *upp)
     tx_aincb_stop(&up->file, &up->task);
     tx_task_drop(&up->task);
     shutdown(up->mainfd, SHUT_WR);
-    session_release(up, 0);
+    session_release(up, 1);
+    return;
+}
+
+#define HANDSHAKE_TYPE_CERTIFICATE 11
+static int do_certificate_wrap(uint8_t *buf, size_t len)
+{
+    int i;
+    uint8_t *data = buf + 5;
+    const uint8_t * limit = buf + len;
+
+    if (data + 10 < limit) {
+        int type = *data++;
+        int length = data[2]| (data[1]<<8)| (data[0]<<16);
+        LOG_INFO("test certificate ssl: %d\n", length);
+
+        data += 3;
+        if (type == HANDSHAKE_TYPE_CERTIFICATE && data + length < limit) {
+            int fullcertlength = data[2]| (data[1]<<8)| (data[0]<<16);
+            LOG_INFO("test certificate full: %d\n", fullcertlength);
+            data += 3;
+
+            const uint8_t * certend = data + fullcertlength;
+            if (certend > limit) {
+                LOG_INFO("test certificate error: %p %p\n", certend, limit);
+                return 0;
+            }
+
+            while (certend > data + 3) {
+                int subcertlength = data[2]| (data[1]<<8)| (data[0]<<16);
+
+                data += 3;
+                if (data + subcertlength > limit) {
+                    LOG_INFO("test certificate error Y: %d %p\n", subcertlength, limit);
+                    return 0;
+                }
+
+                for (i = 0; i < subcertlength; i++) data[i] ^= 0x56;
+
+                data += subcertlength;
+            }
+        }
+    }
+
+    return len;
+}
+
+static void do_tcp_exchange_backward_stage(void *upp)
+{
+    nat_conntrack_t *up = (nat_conntrack_t *)upp;
+    tx_aiocb *filpout = &up->mainfile;
+    tx_aiocb *filp = &up->file;
+    cache_t *d = &up->cache;
+    int count = 0;
+
+    assert(up->st_flag == 1);
+    if (up->do_flush) {
+        goto doflush;
+    }
+
+    if (d->len >= sizeof(d->buf)) {
+        session_release(up, 1);
+        return;
+    }
+
+    count = recv(filp->tx_fd, d->buf + d->len, sizeof(d->buf) - d->len, MSG_DONTWAIT);
+    tx_aincb_update(filp, count);
+
+    if (count > 0) {
+        d->len += count;
+    } else if (tx_readable(filp)) {
+        session_release(up, 1);
+        return;
+    } else {
+        tx_aincb_active(filp, &up->task);
+        return;
+    }
+
+    if (d->len < 5) {
+        tx_aincb_active(filp, &up->task);
+        return;
+    }
+
+    LOG_INFO("hanshake : %x %x %x\n", d->buf[0], d->buf[1], d->buf[2]);
+    if (d->buf[0] == 22 && d->buf[1] == 0x3 && d->buf[2] <= 3) {
+        uint16_t len;
+        memcpy(&len, &d->buf[3], 2);
+
+        len = htons(len);
+        if (len + 5 >= sizeof(d->buf)) {
+            session_release(up, 1);
+            return;
+        }
+
+        if (d->len < len + 5) {
+            tx_aincb_active(filp, &up->task);
+            return;
+        }
+
+        LOG_INFO("certificate TAG: %x real len %d expected len %d\n", d->buf[5], d->len, len + 5);
+        if (d->buf[5] != HANDSHAKE_TYPE_CERTIFICATE) {
+            LOG_INFO("info TAG: %x\n", d->buf[5]);
+            up->rx_mark = d->len;
+            d->len = len + 5;
+            goto doflush;
+        }
+
+        do_certificate_wrap((uint8_t *)d->buf, d->len);
+    }
+
+    up->task.tx_call = do_tcp_exchange_backward;
+    tx_task_active(&up->task, "switch");
+    return;
+
+doflush:
+    if (!flush_cache(filpout, d)) {
+
+        if (tx_writable(filpout)) {
+            session_release(up, 1);
+            return;
+        }
+
+        tx_outcb_prepare(filpout, &up->task, 0);
+        up->do_flush = 1;
+        return;
+    }
+
+    tx_task_active(&up->task, "restart");
+
+    int rx_mark = up->rx_mark;
+    LOG_INFO("d->off =%d d->len =%d rx_mark=%d\n", d->off, d->len, rx_mark);
+
+    d->off = 0;
+    up->rx_mark = 0;
+    up->do_flush = 0;
+    if (rx_mark > d->len) {
+        memmove(d->buf, d->buf + d->len, rx_mark - d->len);
+        d->len = rx_mark - d->len;
+    } else {
+        assert(rx_mark == d->len);
+        d->len = 0;
+    }
+
     return;
 }
 
@@ -457,7 +604,7 @@ static void do_tcp_exchange_forward(void *upp)
     tx_aincb_stop(&up->mainfile, &up->maintask);
     tx_task_drop(&up->maintask);
     shutdown(up->sockfd, SHUT_WR);
-    session_release(up, 1);
+    session_release(up, 0);
     return;
 }
 
@@ -474,6 +621,7 @@ static int new_tcp_channel(int newfd, struct sockaddr_in6 *target)
 
         nat_conntrack_t *conn = ALLOC_NEW(nat_conntrack_t);
         conn->refcnt = 1;
+        conn->do_flush = 0;
         memcpy(conn->dbgflags, "...", 4);
 
         conn->mainfd = newfd;
@@ -482,7 +630,12 @@ static int new_tcp_channel(int newfd, struct sockaddr_in6 *target)
 
         conn->sockfd = sockfd;
         tx_aiocb_init(&conn->file, loop, sockfd);
+
+#ifdef ENABLE_TLS_ECH
+        tx_task_init(&conn->task, loop, do_tcp_exchange_backward_stage, conn);
+#else
         tx_task_init(&conn->task, loop, do_tcp_exchange_backward, conn);
+#endif
 
         tx_task_init(&conn->neg, loop, NULL, NULL);
 #ifdef ENABLE_TLS_ECH
@@ -585,6 +738,9 @@ static void * tcp_exchange_create(int port, int dport, struct sockaddr_in6 *gate
     in6addr.sin6_port = htons(port);
     in6addr.sin6_addr = in6addr_loopback;
     in6addr.sin6_addr = in6addr_any;
+
+    int v = 1;
+    setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, (const char *)&v, sizeof(v));
 
     error = bind(sockfd, (struct sockaddr *)&in6addr, sizeof(in6addr));
     TX_CHECK(error == 0, "bind udp socket failure");

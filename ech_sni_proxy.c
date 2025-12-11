@@ -1162,7 +1162,7 @@ int unwind_encrypt_client_hello(uint8_t *snibuff, size_t length)
             size_t outlen = 0;
             int ret = load_encrypt_client_hello(ech_start, snibuff + length - ech_start, start + 8 + enclen + 2, payload_len, start + 8, enclen, plain, &outlen);
 	    if (ret == 0) {
-                decode_client_hello(decoded, 1024, plain, outlen, snibuff + 9, length - 9, &outlen);
+                decode_client_hello(decoded, 4096, plain, outlen, snibuff + 9, length - 9, &outlen);
 		memcpy(snibuff + 9, decoded, outlen);
 		int newlen = outlen;
 		snibuff[6] = newlen >> 16;
@@ -1425,8 +1425,19 @@ static int do_certificate_wrap(char *buf, size_t len)
         p += 3;
 
         if (type == HANDSHAKE_TYPE_CERTIFICATE) {
-            LOGI("test certificate: %d\n", length);
-            for (i = 0; i < length; i++) p[i] ^= 0x56;
+            int total = p[2]|(p[1]<<8)|(p[0]<<16);
+            LOGI("test certificate: %d total %d\n", length, total);
+
+            int off = 3;
+            do {
+                int certlen = p[2 + off]|(p[1 + off]<<8)|(p[0 + off]<<16);
+                off += 3;
+
+                for (i = off; i < length && i < off + certlen; i++) p[i] ^= 0x56;
+                off += certlen;
+
+                LOGI("test certificate one cert %d \n", certlen);
+            } while (off < length);
         }
 
         p += length;

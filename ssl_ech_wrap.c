@@ -824,6 +824,8 @@ struct ssl_parse_ctx * ssl_parse_prepare(struct ssl_parse_ctx *ctx, void *buf, s
     return NULL;
 }
 
+static char YOUR_DOMAIN[256] = "dnspod.qcloud.com";
+
 const char *ssl_parse_get_sni(struct ssl_parse_ctx *ctx)
 {
     char hostname[256];
@@ -868,13 +870,13 @@ const char *ssl_parse_get_sni(struct ssl_parse_ctx *ctx)
         memcpy(hostname, sni_mem, fqdn_name_len);
         hostname[fqdn_name_len] = 0;
 
-        fprintf(stderr, "ssl server name: %s\n", hostname);
+		int match = strcmp(hostname, YOUR_DOMAIN);
+        fprintf(stderr, "ssl server name: %s match=%d\n", hostname, match);
+		return match == 0? YOUR_DOMAIN: NULL;
     }
 
     return NULL;
 }
-
-static char YOUR_DOMAIN[256] = "dnspod.qcloud.com";
 
 void parse_argopt(int argc, char *argv[])
 {
