@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <sys/wait.h>
@@ -609,9 +610,26 @@ again:
                 FD_CLR(tuninfd, &readfds);
             }
 
-            if (error == -1) {
+            if (error == -1 && errno != EAGAIN) {
+                int code = errno;
                 perror("write tuninfd");
-                fprintf(stderr, "ready tuninfd=%d nbytes=%d\n", sockfd, nbytes);
+                fprintf(stderr, "ready tuninfd=%d nbytes=%d errno=%d\n", sockfd, nbytes, code);
+                if (passive_mode == 0) {
+					int used = 0;
+                    close(sockfd);
+                    if (tunnelfd == sockfd) {
+                        tunnelfd = socket(AF_INET6, SOCK_DGRAM, 0);
+                        assert(tunnelfd != -1);
+                        error = connect(tunnelfd, (struct sockaddr *)&destination, sizeof(destination));
+                        assert(error == 0);
+						used = _tracker_count;
+					} else for (int cc = 0; cc < _tracker_count; cc++) {
+						if (sockfd != _tracker_list[cc]->sockfd) {
+							_tracker_list[used++] = _tracker_list[cc];
+						}
+					}
+					_tracker_count = used;
+                }
             } else if (nbytes > 0) {
                 more_todo++;
             }
@@ -624,6 +642,8 @@ again:
                 error = write(tunoutfd, buffer, nbytes);
                 assert (error == nbytes);
                 more_todo++;
+            } else if (nbytes == -1 && errno == EAGAIN) {
+                FD_CLR(tunnelfd, &readfds);
             } else {
                 fprintf(stderr, "ready tunnelfd=%d nbytes=%d\n", tunnelfd, nbytes);
                 perror("write tunnelfd");
@@ -641,6 +661,8 @@ again:
                     error = write(tunoutfd, buffer, nbytes);
                     assert (error == nbytes);
                     more_todo++;
+				} else if (nbytes == -1 && errno == EAGAIN) {
+                    FD_CLR(sockfd, &readfds);
                 } else {
                     fprintf(stderr, "ready tunnelfd=%d nbytes=%d\n", sockfd, nbytes);
                     perror("write tunnelfd");

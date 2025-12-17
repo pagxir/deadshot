@@ -1,6 +1,10 @@
+#define _GNU_SOURCE
+
 #include <stdlib.h>
 #include <assert.h>
 #include <signal.h>
+#include <sched.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <wolfssl/options.h>
@@ -26,6 +30,113 @@ int tx_setblockopt(int fd, int blockopt)
 }
 
 #ifdef ENABLE_HTTP_CONVERT
+int pidfd_open (pid_t pid, unsigned int flags)
+{
+    char buf[256];
+    int fd = syscall(SYS_pidfd_open, pid, flags);
+
+    if (fd == -1) {
+        sprintf(buf, "/proc/%d/ns/net", pid);
+        return open(buf, O_RDONLY);
+    }
+
+    return fd;
+}
+
+static int sendfd(int unixfd, int netfd)
+{
+    char dummy[] = "ABC";
+    struct iovec io = {
+        .iov_base = dummy,
+        .iov_len = 3
+    };
+    struct msghdr msg = { 0 };
+    char buf[CMSG_SPACE(sizeof(netfd))] = {};
+
+    msg.msg_iov = &io;
+    msg.msg_iovlen = 1;
+    msg.msg_control = buf;
+    msg.msg_controllen = sizeof(buf);
+
+    struct cmsghdr * cmsg = CMSG_FIRSTHDR(&msg);
+    cmsg->cmsg_level = SOL_SOCKET;
+    cmsg->cmsg_type = SCM_RIGHTS;
+    cmsg->cmsg_len = CMSG_LEN(sizeof(netfd));
+
+    memmove(CMSG_DATA(cmsg), &netfd, sizeof(netfd));
+    msg.msg_controllen = CMSG_SPACE(sizeof(netfd));
+
+    return sendmsg(unixfd, &msg, 0);
+}
+
+static int receivefd(int unixfd)
+{
+    int netfd;
+    char buffer[256];
+    struct iovec io = {
+        .iov_base = buffer,
+        .iov_len = sizeof(buffer)
+    };
+
+    struct msghdr msg = {0};
+    msg.msg_iov = &io;
+    msg.msg_iovlen = 1;
+
+    char control[256];
+    msg.msg_control = control;
+    msg.msg_controllen = sizeof(control);
+
+    if (recvmsg(unixfd, &msg, 0) < 0) {
+        return -1;
+    }
+
+    struct cmsghdr * cmsg = CMSG_FIRSTHDR(&msg);
+    unsigned char * data = CMSG_DATA(cmsg);
+
+    memcpy(&netfd, data, sizeof(netfd));
+    return netfd;
+}
+
+int socket_netns(int family, int type, int protocol, const char *netns)
+{
+    int sv[2];
+    int netfd;
+    pid_t pid, child;
+    int fd, err, newfd;
+
+    netns = netns? netns: getenv("NETNS");
+
+    if (netns == NULL)
+        return socket(family, type, protocol);
+
+    if (sscanf(netns, "%d", &pid) != 1)
+        return socket(family, type, protocol);
+
+    err = socketpair(AF_UNIX, SOCK_DGRAM, 0, sv);
+    assert (err == 0);
+
+    child = fork();
+    assert(child != -1);
+
+    if (child > 0) {
+        close(sv[0]);
+        netfd = receivefd(sv[1]);
+        close(sv[1]);
+        return netfd;
+    }
+
+    assert (child == 0);
+    fd = pidfd_open(pid, 0);
+    close(sv[1]);
+    err = setns(fd, CLONE_NEWNET);
+    if (err == -1)
+        fprintf(stderr, "socket_netns pid=%d fd=%d err=%d %d %s\n", pid, fd, err, errno, strerror(errno));
+    newfd = socket(family, type, protocol);
+    sendfd(sv[0], newfd);
+    close(sv[0]);
+    exit(0);
+}
+
 static int http_convert(const char *hostopt, char *header, size_t len, int *outlen)
 {
     int line = 0;
@@ -115,6 +226,7 @@ int main(int argc, char *argv[])
     int ret, err;
     int sockfd = 0;
     const char *host = "www.baidu.com";
+    const char *netns = NULL;
     const char *servername = "www.baidu.com";
     const char *listen_port = "80";
     const char *connect_host = "172.67.206.226";
@@ -144,13 +256,15 @@ int main(int argc, char *argv[])
             listen_port = argv[++i];
         } else if (strcmp(arg, "-servername") == 0 && i < argc) {
             servername = argv[++i];
+        } else if (strcmp(arg, "-netns") == 0) {
+			netns = argv[++i];
         } else if (strcmp(arg, "-nonca") == 0) {
             wolfSSL_CTX_set_verify(ctx, WOLFSSL_VERIFY_NONE, NULL);
         }
     }
 
 #ifdef ENABLE_HTTP_CONVERT
-    int servfd = socket(AF_INET6, SOCK_STREAM, 0); 
+    int servfd = socket_netns(AF_INET6, SOCK_STREAM, 0, netns); 
 
     struct sockaddr_in6 local6;
     local6.sin6_family = AF_INET6;
