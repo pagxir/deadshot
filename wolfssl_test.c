@@ -137,13 +137,53 @@ int socket_netns(int family, int type, int protocol, const char *netns)
     exit(0);
 }
 
+static int http_set_connection_close(char *header, size_t len, int *outlen)
+{
+    int sol = 0;
+    int line = 0;
+    int adjust = 0;
+    char * url = header;
+    char connetionopt[256] = "Connection: Close\r\n";
+    int connection0 = 0, connection9 = 0, urlend = 0;
+
+    for (int i = 0; i < len; i++) {
+        if (header[i] == '\n') {
+            if (sol == 0) {
+                urlend = i;
+            } else if (strncasecmp(header + sol, "Connection:", 11) == 0) {
+                connection0 = sol;
+                connection9 = i + 1;
+                break;
+            } else if (strncasecmp(header + sol, "host:", 5) == 0 && connection0 == 0) {
+                connection0 = i + 1;
+                connection9 = i + 1;
+            }
+
+            sol = i + 1;
+            line++;
+        }
+    }
+
+    if (connection0 > 0) {
+        adjust = connection0 + strlen(connetionopt);
+        memmove(header + adjust, header + connection9, len - connection9);
+        memcpy(header + connection0, connetionopt, strlen(connetionopt));
+        len = len + strlen(connetionopt) - (connection9 - connection0);
+        header[len] = 0;
+        *outlen = len;
+    }
+
+    return 0;
+}
+
 static int http_convert(const char *hostopt, char *header, size_t len, int *outlen)
 {
     int line = 0;
     int sol = 0;
     char * url = header;
-    char domain[256];
+    char domain[256] = "dummy";
     int host0 = 0, host9 = 0, urlend = 0;
+    int connection0 = 0, connection9 = 0;
 
     for (int i = 0; i < len; i++) {
         if (header[i] == '\n') {
@@ -157,6 +197,10 @@ static int http_convert(const char *hostopt, char *header, size_t len, int *outl
                 fprintf(stderr, "host: %s\n", domain);
                 host0 = sol;
                 host9 = i + 1;
+                break;
+            } else if (strncasecmp(header + sol, "Connection:", 11) == 0) {
+                connection0 = sol;
+                connection9 = i + 1;
                 break;
             } else {
                 // fprintf(stderr, "\n===%c.%c.%c=====\n", header[sol], header[sol+1], header[sol+2]);
@@ -197,16 +241,20 @@ static int http_convert(const char *hostopt, char *header, size_t len, int *outl
         strncpy(header + slash + 14, domain, strlen(domain));
 
         header[result] = 0;
+        *outlen = result;
+        http_set_connection_close(header, result, outlen);
+
         fprintf(stderr, "UPDATE \n%s\n", header);
         fprintf(stderr, "------------------\n");
         fprintf(stderr, "\n\n");
 
+#if 0
         {
             FILE *fp = fopen("dump_http.dat", "wb");
-            if (fp) {fwrite(header, result, 1, fp); fclose(fp); }
+            if (fp) { fwrite(header, result, 1, fp); fclose(fp); }
         }
+#endif
 
-        *outlen = result;
         return 1;
         exit(0);
     }
@@ -218,7 +266,7 @@ static int http_convert(const char *hostopt, char *header, size_t len, int *outl
 static int child_quit = 0;
 static void child_check_flags(int signo)
 {
-	child_quit = 1;
+    child_quit = 1;
 }
 
 int main(int argc, char *argv[])
@@ -257,7 +305,7 @@ int main(int argc, char *argv[])
         } else if (strcmp(arg, "-servername") == 0 && i < argc) {
             servername = argv[++i];
         } else if (strcmp(arg, "-netns") == 0) {
-			netns = argv[++i];
+            netns = argv[++i];
         } else if (strcmp(arg, "-nonca") == 0) {
             wolfSSL_CTX_set_verify(ctx, WOLFSSL_VERIFY_NONE, NULL);
         }
@@ -271,6 +319,9 @@ int main(int argc, char *argv[])
     local6.sin6_port   = htons(atoi(listen_port));
     local6.sin6_addr   = in6addr_any;
 
+    int reuse = 1;
+    if (setsockopt(servfd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) perror("setsockopt(SO_REUSEADDR) failed");
+
     int error = bind(servfd, (struct sockaddr *)&local6, sizeof(local6));
     assert (error == 0);
 
@@ -280,8 +331,8 @@ int main(int argc, char *argv[])
     socklen_t addrln = sizeof(local6);
     int httpfd = accept(servfd, (struct sockaddr *)&local6, &addrln);
 
-	int child_count = 0;
-	signal(SIGCHLD, child_check_flags);
+    int child_count = 0;
+    signal(SIGCHLD, child_check_flags);
     while (httpfd  > 0) {
         char buf[128];
         fprintf(stderr, "%d from %s:%d\n", child_count,
@@ -297,22 +348,22 @@ int main(int argc, char *argv[])
             break;
         }
 
-		if (pid > 0) {
-			child_count++;
-		}
+        if (pid > 0) {
+            child_count++;
+        }
 
         close(httpfd);
         addrln = sizeof(local6);
         httpfd = accept(servfd, (struct sockaddr *)&local6, &addrln);
-		if (child_quit) {
-			child_quit = 0;
-			int status = 0;
-			pid_t pid = waitpid(-1, &status, WNOHANG);
-			while (pid > 0) {
-				child_quit--;
-				pid = waitpid(-1, &status, WNOHANG);
-			}
-		}
+        if (child_quit) {
+            child_quit = 0;
+            int status = 0;
+            pid_t pid = waitpid(-1, &status, WNOHANG);
+            while (pid > 0) {
+                child_quit--;
+                pid = waitpid(-1, &status, WNOHANG);
+            }
+        }
     }
     assert(httpfd > 0);
 #endif

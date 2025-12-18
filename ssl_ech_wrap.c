@@ -41,10 +41,12 @@
 #define HANDSHAKE_TYPE_KEY_EXCHAGE         12
 #define HANDSHAKE_TYPE_SERVER_HELLO_DONE   14
 
+#if 0
 #define LOG(fmt, args...) fprintf(stderr, fmt, ##args)
 #define LOGD(fmt, args...) fprintf(stderr, fmt, ##args)
 #define LOGV(fmt, args...)
-#define LOGI(fmt, args...) fprintf(stderr, fmt, ##args)
+#endif
+#define LOG_INFO(fmt, args...) fprintf(stderr, fmt, ##args)
 
 struct ssl_parse_ctx {
     size_t size;
@@ -886,7 +888,7 @@ void parse_argopt(int argc, char *argv[])
     infoLen = sizeof(info);
     Base64_Decode(info_default, sizeof(info_default) -1, info, &infoLen);
 
-    LOGI("parse_argopt>");
+    LOG_INFO("parse_argopt>");
     for (i = 1; i < argc; i++) {
         const char *optname = argv[i];
         if (strcmp(optname, "-p") == 0) {
@@ -922,7 +924,7 @@ void parse_argopt(int argc, char *argv[])
             // strcpy(YOUR_ADDRESS, argv[i]);
         }
     }
-    LOGI("<parse_argopt\n");
+    LOG_INFO("<parse_argopt\n");
 
     xxdump("ech=", info, infoLen);
     xxdump("pub=", _mypub, 32);
@@ -987,5 +989,5 @@ HPKEkeycfg:
     memmove(TAGS_07 + 9, YOUR_DOMAIN, domainlen);
     TAGS_LEN[6] = 4 + domainlen + 5;
 
-    LOGI("domainlen %d domain %s\n", domainlen, YOUR_DOMAIN);
+    LOG_INFO("domainlen %d domain %s\n", domainlen, YOUR_DOMAIN);
 }

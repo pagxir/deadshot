@@ -225,7 +225,7 @@ static int conngc_session(time_t now, nat_conntrack_t *skip)
         }
     }
 
-    LOG_INFO("freed connection: %p, %d\n", skip, nfreed);
+    if (nfreed) LOG_INFO("freed connection: %p, %d\n", skip, nfreed);
     return 0;
 }
 
