@@ -538,6 +538,16 @@ int main(int argc, char *argv[])
         } else if (strcmp(arg, "-port") == 0) {
             if (i >= argc) continue;
             port = atoi(argv[++i]);
+        } else if (strcmp(arg, "-help") == 0) {
+			fprintf(stderr, "%s [options] target\n", argv[0]);
+			fprintf(stderr, "\t -dev <tun>   tun device name\n");
+			fprintf(stderr, "\t -port <port> destination port\n");
+			fprintf(stderr, "\t -passive     use passive mode, accept client to connect\n");
+			fprintf(stderr, "\t              act as a server\n");
+			fprintf(stderr, "\t -help        print this usage\n");
+			fprintf(stderr, "\t target       destination ipv6 address\n");
+			fprintf(stderr, "\n");
+			exit(0);
         } else if (*arg != '-') {
             strncpy(thepeer, arg, 63);
         }
@@ -615,20 +625,19 @@ again:
                 perror("write tuninfd");
                 fprintf(stderr, "ready tuninfd=%d nbytes=%d errno=%d\n", sockfd, nbytes, code);
                 if (passive_mode == 0) {
-					int used = 0;
                     close(sockfd);
                     if (tunnelfd == sockfd) {
                         tunnelfd = socket(AF_INET6, SOCK_DGRAM, 0);
                         assert(tunnelfd != -1);
                         error = connect(tunnelfd, (struct sockaddr *)&destination, sizeof(destination));
                         assert(error == 0);
-						used = _tracker_count;
-					} else for (int cc = 0; cc < _tracker_count; cc++) {
-						if (sockfd != _tracker_list[cc]->sockfd) {
-							_tracker_list[used++] = _tracker_list[cc];
-						}
-					}
-					_tracker_count = used;
+                    } else {
+                        int ntracker = 0;
+                        for (int cc = 0; cc < _tracker_count; cc++)
+                            if (sockfd != _tracker_list[cc]->sockfd)
+                                _tracker_list[ntracker++] = _tracker_list[cc];
+                        _tracker_count = ntracker;
+                    }
                 }
             } else if (nbytes > 0) {
                 more_todo++;

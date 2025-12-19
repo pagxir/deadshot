@@ -798,6 +798,13 @@ int main(int argc, char *argv[])
         } else if (strcmp(argv[i], "-p") == 0 && i < argc) {
             gateway0.sin6_port = atoi(argv[++i]);
             continue;
+        } else if (strcmp(argv[i], "-h") == 0 && i < argc) {
+			fprintf(stderr, "%s [option] port | %s [option] port:map_port\n", argv[0], argv[0]);
+			fprintf(stderr, "\t key=val   set key pair, for example ech=xxx pub=xxx priv=xxx\n");
+			fprintf(stderr, "\t -r <ipv6> set destination ipv6 address\n");
+			fprintf(stderr, "\t -p <port> set destination port\n");
+			fprintf(stderr, "\t -h        print this usage\n");
+            exit(0);
         } else if (strcmp(argv[i], "-r") == 0 && i < argc) {
             inet_pton(AF_INET6, argv[++i], &gateway0.sin6_addr);
             gateway = &gateway0;

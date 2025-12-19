@@ -273,15 +273,18 @@ int main(int argc, char *argv[])
 {
     int ret, err;
     int sockfd = 0;
-    const char *host = "www.baidu.com";
+    char *echcfg = NULL;
+    const char *host = NULL;
     const char *netns = NULL;
     const char *servername = "www.baidu.com";
     const char *listen_port = "80";
+    const char *connect_port = "443";
     const char *connect_host = "172.67.206.226";
     char hostopt[384] = "Host: dl.603030.xyz\r\n";
 
+    wolfSSL_Init();
     WOLFSSL*     ssl = NULL;
-    WOLFSSL_CTX* ctx = wolfSSL_CTX_new(wolfTLSv1_2_client_method());
+    WOLFSSL_CTX* ctx = wolfSSL_CTX_new(wolfTLSv1_3_client_method());
 
     for (int i = 1; i < argc; i++) {
         const char *arg = argv[i];
@@ -295,17 +298,35 @@ int main(int argc, char *argv[])
             if (WOLFSSL_SUCCESS != wolfSSL_CTX_load_verify_locations_ex(ctx, argv[i], NULL, WOLFSSL_LOAD_FLAG_NONE)) {
                 perror("wolfSSL_CTX_load_verify_locations_ex");
             }
+        } else if (strcmp(arg, "-help") == 0 || strcmp(arg, "-h") == 0 || strcmp(arg, "--help") == 0) {
+            fprintf(stderr, "%s [option] \n", argv[0]);
+            fprintf(stderr, "\t -ca <caPath>           load root certificate from caPath\n");
+            fprintf(stderr, "\t -ech <base64ech>       load ech info in base64 format\n");
+            fprintf(stderr, "\t -host <host>           set Host: in the http request header\n");
+            fprintf(stderr, "\t -servername <SNI>      set SNI name in the tls client handshake\n");
+            fprintf(stderr, "\t -connect <destination> the connect destionation in ipv4 address\n");
+            fprintf(stderr, "\t -listen <port>         the local listen port\n");
+            fprintf(stderr, "\t -port <port>           the connect port\n");
+            fprintf(stderr, "\t -netns  <pid>          set netns for the listen socket\n");
+            fprintf(stderr, "\t -cert   <caPath>       same as -ca\n");
+            fprintf(stderr, "\t -nonca                 do not verify peer certifcation\n");
+            fprintf(stderr, "\t -help                  print this usage\n");
+            exit(0);
         } else if (strcmp(arg, "-host") == 0 && i < argc) {
             host = argv[++i];
-			snprintf(hostopt, sizeof(hostopt), "Host: %s\r\n", host);
+            snprintf(hostopt, sizeof(hostopt), "Host: %s\r\n", host);
         } else if (strcmp(arg, "-connect") == 0 && i < argc) {
             connect_host = argv[++i];
+        } else if (strcmp(arg, "-port") == 0 && i < argc) {
+            connect_port = argv[++i];
         } else if (strcmp(arg, "-listen") == 0 && i < argc) {
             listen_port = argv[++i];
         } else if (strcmp(arg, "-servername") == 0 && i < argc) {
             servername = argv[++i];
         } else if (strcmp(arg, "-netns") == 0) {
             netns = argv[++i];
+        } else if (strcmp(arg, "-ech") == 0) {
+            echcfg = argv[++i];
         } else if (strcmp(arg, "-nonca") == 0) {
             wolfSSL_CTX_set_verify(ctx, WOLFSSL_VERIFY_NONE, NULL);
         }
@@ -368,6 +389,12 @@ int main(int argc, char *argv[])
     assert(httpfd > 0);
 #endif
 
+    if (echcfg)
+        wolfSSL_CTX_SetEchEnable(ctx, 1);
+
+	int groups[] = { WOLFSSL_ECC_X25519 };
+	wolfSSL_CTX_set_groups(ctx, groups, 1);
+
     ssl = wolfSSL_new(ctx);
     if (ssl == NULL) {
         goto done;
@@ -379,9 +406,12 @@ int main(int argc, char *argv[])
     wolfSSL_set_verify(ssl, WOLFSSL_VERIFY_NONE, NULL);
 #endif
 
+    if (echcfg)
+        wolfSSL_SetEchConfigsBase64(ssl, echcfg, strlen(echcfg));
+
     struct sockaddr_in servaddr;
     servaddr.sin_family = AF_INET;
-    servaddr.sin_port   = htons(443);
+    servaddr.sin_port   = htons(atoi(connect_port));
     inet_pton(AF_INET, connect_host, &servaddr.sin_addr);
 
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -400,27 +430,6 @@ int main(int argc, char *argv[])
     err = wolfSSL_get_error(ssl, 0);
     wolfSSL_set_using_nonblock(ssl, 1);
 
-#if 0
-    char msg[] = "GET / HTTP/1.0\r\n"
-        "Host: www.baidu.com\r\n"
-        "\r\n";
-    size_t msgSz = sizeof(msg);
-
-    if (wolfSSL_write(ssl, msg, msgSz) != msgSz) {
-        /*err_sys("SSL_write failed");*/
-        goto done;
-    }
-
-    size_t input;
-    char reply[1200];
-
-    input = wolfSSL_read(ssl, reply, sizeof(reply)-1);
-    if (input > 0) {
-        reply[input] = '\0';
-        fprintf(stderr, "Server response: %s\n", reply);
-    }
-#endif
-
     fd_set readfds, writefds;
     FD_ZERO(&readfds);
     FD_ZERO(&writefds);
@@ -435,7 +444,7 @@ int main(int argc, char *argv[])
     tx_setblockopt(sockfd, 0);
 
 #ifdef ENABLE_HTTP_CONVERT
-    converted = 0;
+    converted = host == NULL;
 #endif
 
     do {

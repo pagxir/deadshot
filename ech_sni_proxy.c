@@ -1491,7 +1491,7 @@ int push(int connfd, int remotefd, int *direct)
 
     // read the message from client and copy it in buffer
     l = read_flush(connfd, buff, 5);
-    LOGV("%d l %d\n", connfd, l);
+    LOGI("%d l %d\n", connfd, l);
     if (l <= 0) return l;
     assert(l == 5);
     header.type = buff[0];
@@ -1506,8 +1506,12 @@ int push(int connfd, int remotefd, int *direct)
 
     l = read_flush(connfd, buff + 5, header.length);
 
-    if (header.type == APPLICATION_DATA_TYPE) *direct = 1;
-    if (header.type == HANDSHAKE_TYPE && l == header.length && HANDSHAKE_TYPE_CLIENT_HELLO == (buff[0] & 0xff)) {
+		fprintf(stderr, "TODO:XXX tag=%x %x\n", header.type, buff[5]);
+	if (header.type == APPLICATION_DATA_TYPE) {
+		fprintf(stderr, "set redirect TODO:XXX\n");
+		*direct = 1;
+	} else
+    if (header.type == HANDSHAKE_TYPE && l == header.length && HANDSHAKE_TYPE_CLIENT_HELLO == (buff[5] & 0xff)) {
 
         char hostname[128];
         get_sni_name(buff + 5, header.length, hostname);
@@ -1521,6 +1525,7 @@ int push(int connfd, int remotefd, int *direct)
         if (*hostname == 0) {
             LOGI("rehandshake failure: %s %s tag=%x\n", hostname, "", buff[5]);
         }
+		
     }
 
     // dump(buff + 5, l, &header, "PUSH");
@@ -1892,6 +1897,11 @@ void parse_argopt(int argc, char *argv[])
 	if (strcmp(optname, "-z") == 0) {
 	    RELAY_MODE = MODE_RELAY_SERVER;
 	    unwind_rewind_client_hello = rewind_client_zero;
+	} else
+	if (strcmp(optname, "-h") == 0) {
+		fprintf(stderr, "%s [options] [destination]\n", argv[0]);
+		fprintf(stderr, "\t -p -l -d -s -e -r -c -z -h\n");
+		exit(0);
 	} else
 	if (*optname != '-') {
 	    strcpy(YOUR_ADDRESS, argv[i]);
