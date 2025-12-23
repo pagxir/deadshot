@@ -24,6 +24,7 @@
 
 #include <txall.h>
 
+#ifdef ENABLE_NETNS
 int pidfd_open (pid_t pid, unsigned int flags)
 {
     char buf[256];
@@ -36,6 +37,7 @@ int pidfd_open (pid_t pid, unsigned int flags)
 
     return fd;
 }
+#endif
 
 struct ssl_parse_ctx {
     size_t size;
@@ -70,6 +72,7 @@ typedef struct cache_s {
     char buf[655360];
 } cache_t;
 
+#ifdef ENABLE_NETNS
 static int sendfd(int unixfd, int netfd)
 {
     char dummy[] = "ABC";
@@ -163,6 +166,11 @@ int socket_netns(int family, int type, int protocol, const char *netns)
     close(sv[0]);
     exit(0);
 }
+#endif
+
+#ifndef ENABLE_NETNS
+#define socket_netns(a, t, p, ss) socket(a, t, p)
+#endif
 
 typedef struct _nat_conntrack_t {
     int refcnt;
@@ -388,6 +396,13 @@ static void do_sni_ssl_neg(void *upp)
         }
 
         if (NULL != ssl_parse_prepare(&ctx, d->buf + 5, len) && ssl_parse_get_sni(&ctx) == NULL) {
+            size_t nhold = 0;
+            static char _hold[64 * 2025];
+            if (d->len > len + 5) {
+                nhold = d->len - len - 5;
+                memcpy(_hold, d->buf + len + 5, nhold);
+            }
+
             size_t size = ssl_rewind_client_hello(&ctx, d->buf + 5, len);
             d->len = size + 5;
 
@@ -398,6 +413,12 @@ static void do_sni_ssl_neg(void *upp)
 
             save_file("ech_data.pcap", d->buf, d->len);
             ssl_parse_get_sni(&ctx);
+
+            if (nhold > 0) {
+                assert(nhold + d->len < sizeof(d->buf));
+                memcpy(d->buf + d->len, _hold, nhold);
+                d->len += nhold;
+            }
         }
     }
 
