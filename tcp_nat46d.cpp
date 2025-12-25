@@ -480,7 +480,7 @@ static int do_certificate_wrap(uint8_t *buf, size_t len)
         LOG_INFO("test certificate ssl: %d\n", length);
 
         data += 3;
-        if (type == HANDSHAKE_TYPE_CERTIFICATE && data + length < limit) {
+        if (type == HANDSHAKE_TYPE_CERTIFICATE && data + length <= limit) {
             int fullcertlength = data[2]| (data[1]<<8)| (data[0]<<16);
             LOG_INFO("test certificate full: %d\n", fullcertlength);
             data += 3;
