@@ -293,6 +293,11 @@ int main(int argc, char *argv[])
             if (WOLFSSL_SUCCESS != wolfSSL_CTX_load_verify_locations(ctx, caCert, 0)) {
                 perror("wolfSSL_CTX_load_verify_locations");
             }
+        } else if (strcmp(arg, "-capath") == 0 && i < argc) {
+            const char *caPath = argv[++i];
+            if (WOLFSSL_SUCCESS != wolfSSL_CTX_load_verify_locations(ctx, NULL, caPath)) {
+                perror("wolfSSL_CTX_load_verify_locations");
+            }
         } else if (strcmp(arg, "-cert") == 0 && i < argc) {
             const char *caCert = argv[++i];
             if (WOLFSSL_SUCCESS != wolfSSL_CTX_load_verify_locations_ex(ctx, argv[i], NULL, WOLFSSL_LOAD_FLAG_NONE)) {
@@ -300,7 +305,8 @@ int main(int argc, char *argv[])
             }
         } else if (strcmp(arg, "-help") == 0 || strcmp(arg, "-h") == 0 || strcmp(arg, "--help") == 0) {
             fprintf(stderr, "%s [option] \n", argv[0]);
-            fprintf(stderr, "\t -ca <caPath>           load root certificate from caPath\n");
+            fprintf(stderr, "\t -ca <caFile>           load root certificate from caFile\n");
+            fprintf(stderr, "\t -capath <caPath>           load root certificate from caPath\n");
             fprintf(stderr, "\t -ech <base64ech>       load ech info in base64 format\n");
             fprintf(stderr, "\t -host <host>           set Host: in the http request header\n");
             fprintf(stderr, "\t -servername <SNI>      set SNI name in the tls client handshake\n");
@@ -310,8 +316,16 @@ int main(int argc, char *argv[])
             fprintf(stderr, "\t -netns  <pid>          set netns for the listen socket\n");
             fprintf(stderr, "\t -cert   <caPath>       same as -ca\n");
             fprintf(stderr, "\t -nonca                 do not verify peer certifcation\n");
+            fprintf(stderr, "\t -sysca                 do load system ca certifcation\n");
             fprintf(stderr, "\t -help                  print this usage\n");
             exit(0);
+        } else if (strcmp(arg, "-sysca") == 0 && i < argc) {
+            word32 numDirs;
+            const char** dirs;
+            dirs = wolfSSL_get_system_CA_dirs(&numDirs);
+            for (int i = 0; i < numDirs; ++i)
+                fprintf(stderr, "Potential system CA dir: %s\n", dirs[i]);
+            wolfSSL_CTX_load_system_CA_certs(ctx);
         } else if (strcmp(arg, "-host") == 0 && i < argc) {
             host = argv[++i];
             snprintf(hostopt, sizeof(hostopt), "Host: %s\r\n", host);
@@ -392,8 +406,8 @@ int main(int argc, char *argv[])
     if (echcfg)
         wolfSSL_CTX_SetEchEnable(ctx, 1);
 
-	int groups[] = { WOLFSSL_ECC_X25519 };
-	wolfSSL_CTX_set_groups(ctx, groups, 1);
+    int groups[] = { WOLFSSL_ECC_X25519, WOLFSSL_ECC_SECP256R1 };
+    wolfSSL_CTX_set_groups(ctx, groups, 2);
 
     ssl = wolfSSL_new(ctx);
     if (ssl == NULL) {
