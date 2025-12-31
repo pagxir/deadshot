@@ -69,8 +69,34 @@ struct tcp_exchange_context {
 typedef struct cache_s {
     size_t off;
     size_t len;
-    char buf[655360];
+    char *buf;
 } cache_t;
+
+#define BUFSZ (32 * 4096)
+size_t bufsize(cache_t *d)
+{
+    return BUFSZ;
+}
+
+static char * lockbuf(cache_t *d)
+{
+    if (!d->buf) {
+        assert(d->len == d->off);
+        d->buf = (char *)malloc(BUFSZ);
+    }
+
+    return d->buf;
+}
+
+static size_t unlockbuf(cache_t *d)
+{
+    if (d->buf && d->len == d->off) {
+        free(d->buf);
+        d->buf = NULL;
+    }
+
+    return 0;
+}
 
 #ifdef ENABLE_NETNS
 static int sendfd(int unixfd, int netfd)
@@ -251,16 +277,22 @@ static void update_timer(void *up)
 
 #define ALLOC_NEW(type)  (type *)calloc(1, sizeof(type))
 
-static int session_release(nat_conntrack_t *up, int dbg)
+static int session_release(nat_conntrack_t *up, cache_t *d)
 {
     assert(up);
     assert(up->refcnt > 0);
-    assert(dbg < 4 && dbg >= 0);
+    assert(d == &up->cache || d == &up->maincache);
 
-    up->dbgflags[dbg] = 'R';
+    if (d == &up->cache)
+        up->dbgflags[0] = 'R';
+    else
+        up->dbgflags[1] = 'R';
     up->refcnt--;
 
     LOG_INFO("session_release: %s refcnt: %d", up->dbgflags, up->refcnt);
+    d->off = d->len = 0;
+    unlockbuf(d);
+
     if (up->refcnt == 0) {
         tx_aiocb_fini(&up->file);
         close(up->sockfd);
@@ -316,7 +348,7 @@ static int pipling(tx_aiocb *filpin, tx_aiocb *filpout, tx_task_t *task, cache_t
         }
 
         assert(d->len == d->off);
-        count = recv(filpin->tx_fd, d->buf, sizeof(d->buf), MSG_DONTWAIT);
+        count = recv(filpin->tx_fd, lockbuf(d), bufsize(d), MSG_DONTWAIT);
         tx_aincb_update(filpin, count);
 
         if (count > 0) {
@@ -332,6 +364,7 @@ static int pipling(tx_aiocb *filpin, tx_aiocb *filpout, tx_task_t *task, cache_t
 
     } while (count > 0);
 
+    unlockbuf(d);
     return 1;
 }
 
@@ -355,23 +388,25 @@ static void do_sni_ssl_neg(void *upp)
     cache_t *d = &up->maincache;
     uint16_t len = 0;
     int count, error;
+    char *buf = NULL;
 
     assert(up->st_flag == 0);
-    if (d->len >= sizeof(d->buf)) {
-        session_release(up, 0);
+    if (d->len >= bufsize(d)) {
+        session_release(up, d);
         return;
     }
 
-    count = recv(filp->tx_fd, d->buf + d->len, sizeof(d->buf) - d->len, MSG_DONTWAIT);
+    count = recv(filp->tx_fd, lockbuf(d) + d->len, bufsize(d) - d->len, MSG_DONTWAIT);
     tx_aincb_update(filp, count);
 
     if (count > 0) {
         d->len += count;
     } else if (tx_readable(filp)) {
-        session_release(up, 0);
+        session_release(up, d);
         return;
     } else {
         tx_aincb_active(&up->mainfile, &up->neg);
+        unlockbuf(d);
         return;
     }
 
@@ -380,13 +415,14 @@ static void do_sni_ssl_neg(void *upp)
         return;
     }
 
-    if (d->buf[0] == 22 && d->buf[1] == 0x3 && d->buf[2] <= 3) {
+    buf = lockbuf(d);
+    if (buf[0] == 22 && buf[1] == 0x3 && buf[2] <= 3) {
         struct ssl_parse_ctx ctx;
 
-        memcpy(&len, &d->buf[3], 2);
+        memcpy(&len, &buf[3], 2);
         len = htons(len);
-        if (len + 5 >= sizeof(d->buf)) {
-            session_release(up, 0);
+        if (len + 5 >= bufsize(d)) {
+            session_release(up, d);
             return;
         }
 
@@ -395,28 +431,28 @@ static void do_sni_ssl_neg(void *upp)
             return;
         }
 
-        if (NULL != ssl_parse_prepare(&ctx, d->buf + 5, len) && ssl_parse_get_sni(&ctx) == NULL) {
+        if (NULL != ssl_parse_prepare(&ctx, buf + 5, len) && ssl_parse_get_sni(&ctx) == NULL) {
             size_t nhold = 0;
             static char _hold[64 * 2025];
             if (d->len > len + 5) {
                 nhold = d->len - len - 5;
-                memcpy(_hold, d->buf + len + 5, nhold);
+                memcpy(_hold, buf + len + 5, nhold);
             }
 
-            size_t size = ssl_rewind_client_hello(&ctx, d->buf + 5, len);
+            size_t size = ssl_rewind_client_hello(&ctx, buf + 5, len);
             d->len = size + 5;
 
-            void *check  = ssl_parse_prepare(&ctx, d->buf + 5, size);
+            void *check  = ssl_parse_prepare(&ctx, buf + 5, size);
             fprintf(stderr, "TODO:XXX size %ld old len %d check %p\n", size, len, check);
-            d->buf[3] = (size >> 8);
-            d->buf[4] = (size & 0xff);
+            buf[3] = (size >> 8);
+            buf[4] = (size & 0xff);
 
-            save_file("ech_data.pcap", d->buf, d->len);
+            save_file("ech_data.pcap", buf, d->len);
             ssl_parse_get_sni(&ctx);
 
             if (nhold > 0) {
-                assert(nhold + d->len < sizeof(d->buf));
-                memcpy(d->buf + d->len, _hold, nhold);
+                assert(nhold + d->len < bufsize(d));
+                memcpy(buf + d->len, _hold, nhold);
                 d->len += nhold;
             }
         }
@@ -427,7 +463,7 @@ static void do_sni_ssl_neg(void *upp)
         /* connection is in progress, wait connect completed */
     } else {
         fprintf(stderr, "tx_aiocb_connect errno=%d\n", errno);
-        session_release(up, 0);
+        session_release(up, d);
         return;
     }
 
@@ -462,8 +498,9 @@ static void do_tcp_exchange_backward(void *upp)
     tx_outcb_cancel(&up->mainfile, &up->task);
     tx_aincb_stop(&up->file, &up->task);
     tx_task_drop(&up->task);
+
     shutdown(up->mainfd, SHUT_WR);
-    session_release(up, 1);
+    session_release(up, d);
     return;
 }
 
@@ -516,6 +553,7 @@ static void do_tcp_exchange_backward_stage(void *upp)
     tx_aiocb *filpout = &up->mainfile;
     tx_aiocb *filp = &up->file;
     cache_t *d = &up->cache;
+    char *buf = NULL;
     int count = 0;
 
     assert(up->st_flag == 1);
@@ -523,20 +561,22 @@ static void do_tcp_exchange_backward_stage(void *upp)
         goto doflush;
     }
 
-    if (d->len >= sizeof(d->buf)) {
-        session_release(up, 1);
+    if (d->len >= bufsize(d)) {
+        session_release(up, d);
         return;
     }
 
-    count = recv(filp->tx_fd, d->buf + d->len, sizeof(d->buf) - d->len, MSG_DONTWAIT);
+    count = recv(filp->tx_fd, lockbuf(d) + d->len, bufsize(d) - d->len, MSG_DONTWAIT);
     tx_aincb_update(filp, count);
 
     if (count > 0) {
         d->len += count;
     } else if (tx_readable(filp)) {
-        session_release(up, 1);
+        unlockbuf(d);
+        session_release(up, d);
         return;
     } else {
+        unlockbuf(d);
         tx_aincb_active(filp, &up->task);
         return;
     }
@@ -546,14 +586,15 @@ static void do_tcp_exchange_backward_stage(void *upp)
         return;
     }
 
-    LOG_INFO("hanshake : %x %x %x\n", d->buf[0], d->buf[1], d->buf[2]);
-    if (d->buf[0] == 22 && d->buf[1] == 0x3 && d->buf[2] <= 3) {
+    buf = lockbuf(d);
+    LOG_INFO("hanshake : %x %x %x\n", buf[0], buf[1], buf[2]);
+    if (buf[0] == 22 && buf[1] == 0x3 && buf[2] <= 3) {
         uint16_t len;
-        memcpy(&len, &d->buf[3], 2);
+        memcpy(&len, &buf[3], 2);
 
         len = htons(len);
-        if (len + 5 >= sizeof(d->buf)) {
-            session_release(up, 1);
+        if (len + 5 >= bufsize(d)) {
+            session_release(up, d);
             return;
         }
 
@@ -562,15 +603,15 @@ static void do_tcp_exchange_backward_stage(void *upp)
             return;
         }
 
-        LOG_INFO("certificate TAG: %x real len %d expected len %d\n", d->buf[5], d->len, len + 5);
-        if (d->buf[5] != HANDSHAKE_TYPE_CERTIFICATE) {
-            LOG_INFO("info TAG: %x\n", d->buf[5]);
+        LOG_INFO("certificate TAG: %x real len %d expected len %d\n", buf[5], d->len, len + 5);
+        if (buf[5] != HANDSHAKE_TYPE_CERTIFICATE) {
+            LOG_INFO("info TAG: %x\n", buf[5]);
             up->rx_mark = d->len;
             d->len = len + 5;
             goto doflush;
         }
 
-        do_certificate_wrap((uint8_t *)d->buf, d->len);
+        do_certificate_wrap((uint8_t *)buf, d->len);
     }
 
     up->task.tx_call = do_tcp_exchange_backward;
@@ -581,7 +622,7 @@ doflush:
     if (!flush_cache(filpout, d)) {
 
         if (tx_writable(filpout)) {
-            session_release(up, 1);
+            session_release(up, d);
             return;
         }
 
@@ -599,7 +640,8 @@ doflush:
     up->rx_mark = 0;
     up->do_flush = 0;
     if (rx_mark > d->len) {
-        memmove(d->buf, d->buf + d->len, rx_mark - d->len);
+        buf = lockbuf(d);
+        memmove(buf, buf + d->len, rx_mark - d->len);
         d->len = rx_mark - d->len;
     } else {
         assert(rx_mark == d->len);
@@ -625,7 +667,7 @@ static void do_tcp_exchange_forward(void *upp)
     tx_aincb_stop(&up->mainfile, &up->maintask);
     tx_task_drop(&up->maintask);
     shutdown(up->sockfd, SHUT_WR);
-    session_release(up, 0);
+    session_release(up, d);
     return;
 }
 
@@ -672,7 +714,7 @@ static int new_tcp_channel(int newfd, struct sockaddr_in6 *target)
             conn->refcnt++;
         } else {
             fprintf(stderr, "tx_aiocb_connect errno=%d\n", errno);
-            session_release(conn, 0);
+            session_release(conn, d);
             return 0;
         }
 #endif
@@ -820,11 +862,11 @@ int main(int argc, char *argv[])
             gateway0.sin6_port = atoi(argv[++i]);
             continue;
         } else if (strcmp(argv[i], "-h") == 0 && i < argc) {
-			fprintf(stderr, "%s [option] port | %s [option] port:map_port\n", argv[0], argv[0]);
-			fprintf(stderr, "\t key=val   set key pair, for example ech=xxx pub=xxx priv=xxx\n");
-			fprintf(stderr, "\t -r <ipv6> set destination ipv6 address\n");
-			fprintf(stderr, "\t -p <port> set destination port\n");
-			fprintf(stderr, "\t -h        print this usage\n");
+            fprintf(stderr, "%s [option] port | %s [option] port:map_port\n", argv[0], argv[0]);
+            fprintf(stderr, "\t key=val   set key pair, for example ech=xxx pub=xxx priv=xxx\n");
+            fprintf(stderr, "\t -r <ipv6> set destination ipv6 address\n");
+            fprintf(stderr, "\t -p <port> set destination port\n");
+            fprintf(stderr, "\t -h        print this usage\n");
             exit(0);
         } else if (strcmp(argv[i], "-r") == 0 && i < argc) {
             inet_pton(AF_INET6, argv[++i], &gateway0.sin6_addr);
