@@ -369,6 +369,7 @@ int main(int argc, char *argv[])
     int child_count = 0;
     signal(SIGCHLD, child_check_flags);
     while (httpfd  > 0) {
+        int status = 0;
         char buf[128];
         fprintf(stderr, "%d from %s:%d\n", child_count,
                 inet_ntop(AF_INET6, &local6.sin6_addr, buf, sizeof(buf)), htons(local6.sin6_port));
@@ -392,12 +393,8 @@ int main(int argc, char *argv[])
         httpfd = accept(servfd, (struct sockaddr *)&local6, &addrln);
         if (child_quit) {
             child_quit = 0;
-            int status = 0;
-            pid_t pid = waitpid(-1, &status, WNOHANG);
-            while (pid > 0) {
-                child_quit--;
-                pid = waitpid(-1, &status, WNOHANG);
-            }
+            while (waitpid(-1, &status, WNOHANG) > 0)
+                child_count --;
         }
     }
     assert(httpfd > 0);

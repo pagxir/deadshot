@@ -452,7 +452,40 @@ int save_data(const char *path, void *buf, size_t len)
     return 0;
 }
 
-int fold_client_hello(struct ssl_parse_ctx *ctx, struct outer_extensions_t *outter_ext, uint8_t *encoded, size_t ddsz, const uint8_t *plain, size_t len)
+static size_t build_fake_sni(uint8_t *dest, size_t size, const char *sni)
+{
+    const uint8_t *origin = dest;
+
+    if (sni) {
+	size_t namelen = strlen(sni) + 5;
+
+	*dest++ = 0;
+	*dest++ = 0;
+
+	*dest++ = (namelen >> 8);
+	*dest++ = (namelen & 0xff);
+
+	namelen -= 2;
+	*dest++ = (namelen >> 8);
+	*dest++ = (namelen & 0xff);
+
+	*dest++ = 1;
+	namelen -= 1;
+
+	*dest++ = (namelen >> 8);
+	*dest++ = (namelen & 0xff);
+	namelen -= 2;
+
+	memcpy(dest, sni, namelen);
+	dest += namelen;
+
+	return (dest - origin);
+    }
+
+    return 0;
+}
+
+int fold_client_hello(struct ssl_parse_ctx *ctx, struct outer_extensions_t *outter_ext, uint8_t *encoded, size_t ddsz, const uint8_t *plain, size_t len, const char *sni)
 {
     uint8_t *dest = NULL;
     const uint8_t *data = NULL;
@@ -497,6 +530,9 @@ int fold_client_hello(struct ssl_parse_ctx *ctx, struct outer_extensions_t *outt
         size_t outter_size = outer_extensions_build(outter_ext, dest, 1024);
         dest += outter_size;
 
+	size_t fake_sni_size = build_fake_sni(dest, 1024, sni);
+	dest += fake_sni_size;
+
         size_t last_size = limit - tagbord;
         memcpy(dest, tagbord, last_size);
         dest += last_size;
@@ -528,7 +564,7 @@ int fold_client_hello(struct ssl_parse_ctx *ctx, struct outer_extensions_t *outt
     return padlen;
 }
 
-int encode_client_hello(struct ssl_parse_ctx *ctx, uint8_t *encoded, size_t ddsz, const uint8_t *plain, size_t len, size_t *outlen)
+int encode_client_hello(struct ssl_parse_ctx *ctx, uint8_t *encoded, size_t ddsz, const uint8_t *plain, size_t len, size_t *outlen, const char *sni)
 {
     int i;
     uint8_t *dest = encoded;
@@ -632,7 +668,7 @@ int encode_client_hello(struct ssl_parse_ctx *ctx, uint8_t *encoded, size_t ddsz
             start += 2;
 
             ciphertext = start;
-            payload_len = fold_client_hello(ctx, &outter_ext, embeddedclienthello, 4096, plain, len);
+            payload_len = fold_client_hello(ctx, &outter_ext, embeddedclienthello, 4096, plain, len, sni);
             assert (payload_len + start + 16 < encoded + ddsz);
             memset(start, 0, payload_len + 16);
             start += payload_len;
@@ -715,7 +751,7 @@ int encode_client_hello(struct ssl_parse_ctx *ctx, uint8_t *encoded, size_t ddsz
     return 0;
 }
 
-int ssl_rewind_client_hello(struct ssl_parse_ctx *ctx, const char *buf, size_t size)
+int ssl_rewind_client_hello(struct ssl_parse_ctx *ctx, const char *buf, size_t size, const char *sni)
 {
     uint8_t hold[65536];
     uint8_t *dest = hold;
@@ -734,7 +770,7 @@ int ssl_rewind_client_hello(struct ssl_parse_ctx *ctx, const char *buf, size_t s
         tlv = (tlv << 8) | *data++;
 
         pech = data;
-        encode_client_hello(ctx, dest, sizeof(hold) - (dest - hold), pech, tlv, &outlen);
+        encode_client_hello(ctx, dest, sizeof(hold) - (dest - hold), pech, tlv, &outlen, sni);
 
         *ptlv++ = (outlen >> 16);
         *ptlv++ = (outlen >> 8);
@@ -750,6 +786,7 @@ int ssl_rewind_client_hello(struct ssl_parse_ctx *ctx, const char *buf, size_t s
 #define TLS_TAG_SNI    0
 #define HANDSHAKE_TYPE 22
 #define HANDSHAKE_TYPE_CLIENT_HELLO 1
+#define FAILURE_RETURN_ASSERT(expr) if (expr) {} else return NULL
 
 struct ssl_parse_ctx * ssl_parse_prepare(struct ssl_parse_ctx *ctx, void *buf, size_t size)
 {
@@ -776,24 +813,24 @@ struct ssl_parse_ctx * ssl_parse_prepare(struct ssl_parse_ctx *ctx, void *buf, s
         data += 2; // version;
         data += 32; // random;
 
-        assert (data + 1 <= limit);
+        FAILURE_RETURN_ASSERT (data + 1 <= limit);
         len   = *data++;
         data += len;
 
-        assert (data + 2 <= limit);
+        FAILURE_RETURN_ASSERT (data + 2 <= limit);
         len = *data++;
         len = (len << 8) | *data++;
         data += len;
 
         n_cipher_suite = len;
 
-        assert (data + 2 <= limit);
+        FAILURE_RETURN_ASSERT (data + 2 <= limit);
         len = *data++;
         data += len;
 
         n_compress_method = len;
 
-        assert (data + 2 <= limit);
+        FAILURE_RETURN_ASSERT (data + 2 <= limit);
         len = *data++;
         len = (len << 8) | *data++;
 
@@ -828,7 +865,7 @@ struct ssl_parse_ctx * ssl_parse_prepare(struct ssl_parse_ctx *ctx, void *buf, s
 
 static char YOUR_DOMAIN[256] = "dnspod.qcloud.com";
 
-const char *ssl_parse_get_sni(struct ssl_parse_ctx *ctx)
+const char *ssl_parse_get_sni(struct ssl_parse_ctx *ctx, char *buf)
 {
     char hostname[256];
     uint16_t tag_tlv = 0;
@@ -871,6 +908,8 @@ const char *ssl_parse_get_sni(struct ssl_parse_ctx *ctx)
 
         memcpy(hostname, sni_mem, fqdn_name_len);
         hostname[fqdn_name_len] = 0;
+
+		if (buf) strcpy(buf, hostname);
 
 		int match = strcmp(hostname, YOUR_DOMAIN);
         fprintf(stderr, "ssl server name: %s match=%d\n", hostname, match);

@@ -63,17 +63,17 @@ int update_bufsize(int sockfd)
 
     ret = getsockopt(sockfd, SOL_SOCKET, SO_SNDBUF, &bufsize, &optlen);
     if (ret == 0 && bufsize < BUFSIZE) {
-        printf("update send buffer to %d %d\n", bufsize, BUFSIZE);
         bufsize = BUFSIZE;
         setsockopt(sockfd, SOL_SOCKET, SO_SNDBUF, &bufsize, sizeof(bufsize));
+        printf("update send buffer to %d %d\n", bufsize, BUFSIZE);
     }
 
     optlen = sizeof(bufsize);
     ret = getsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, &bufsize, &optlen);
     if (ret == 0 && bufsize < BUFSIZE) {
-        printf("update receive buffer to %d %d\n", bufsize, BUFSIZE);
         bufsize = BUFSIZE;
         setsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, &bufsize, sizeof(bufsize));
+        printf("update receive buffer to %d %d\n", bufsize, BUFSIZE);
     }
 
     return ret;
@@ -81,12 +81,8 @@ int update_bufsize(int sockfd)
 
 uint32_t csum_fold(uint32_t check)
 {
-    uint16_t high = 0;
-
-    for (high = check >> 16; high; high = check >> 16) {
-        check = high + (uint16_t)check;
-    }
-
+    while (check & 0xffff0000)
+        check = (check >> 16) + (check & 0xffff);
     return check;
 }
 
@@ -187,11 +183,11 @@ int tunnel_read(int tunnelfd, void *buf, size_t len, int passive)
         if (passive) {
             inet_pton(AF_INET6, "3402:52e2:76b5::5efe:0:0", src6);
             memcpy(src6 + 2, sod - sizeof(s4rc), sizeof(s4rc));
-            memcpy(&dst6, sod + dlen, sizeof(dst6));
+            memcpy(dst6, sod + dlen, sizeof(dst6));
         } else {
             inet_pton(AF_INET6, "3402:52e2:76b5::5efe:0:0", dst6);
             memcpy(dst6 + 2, sod - sizeof(d4st), sizeof(d4st));
-            memcpy(&src6, sod + dlen, sizeof(src6));
+            memcpy(src6, sod + dlen, sizeof(src6));
         }
     }
 
@@ -242,7 +238,7 @@ int tunnel_read(int tunnelfd, void *buf, size_t len, int passive)
         memcpy(packet, src6, sizeof(src6));
         packet += sizeof(src6);
 
-        memcpy(packet, &dst6, sizeof(dst6));
+        memcpy(packet, dst6, sizeof(dst6));
         packet += sizeof(dst6);
     }
 
@@ -436,7 +432,7 @@ static int lockfd(struct session_tracker **list, int *pcount, size_t size, void 
 
     if ((v4v6[0] & 0xf0) == 0x60) {
         dlist = (uint32_t *)(v4v6 + 8);
-        ident = dlist[8] + ttlproto[3];
+        ident = dlist[8] + v4v6[6];
 
         ident ^= (dlist[0] ^ dlist[1]);
         ident ^= (dlist[2] + dlist[3]);
@@ -445,16 +441,19 @@ static int lockfd(struct session_tracker **list, int *pcount, size_t size, void 
         ident ^= (dlist[6] + dlist[7]);
     } else if (v4v6[0] == 0x45) {
         dlist = (uint32_t *)(v4v6 + 12);
-        ident = dlist[2] + ttlproto[4];
+        ident = dlist[2] + v4v6[9];
         ident ^= (dlist[0] ^ dlist[1]);
-    }
+	} else {
+		return defaultfd;
+	}
 
     for (int cc = 0; cc < count; cc++) {
         tracker = list[cc];
 
         if (tracker->ident == ident) {
             reinitfd(tracker, dest);
-            tracker->last_active = time(NULL) - 1;
+            if (tracker->last_active < time(NULL))
+                tracker->last_active = time(NULL) - 1;
             return tracker->sockfd;
         }
 
@@ -631,6 +630,7 @@ again:
                         assert(tunnelfd != -1);
                         error = connect(tunnelfd, (struct sockaddr *)&destination, sizeof(destination));
                         assert(error == 0);
+                        setblockopt(tunnelfd, 0);
                     } else {
                         int ntracker = 0;
                         for (int cc = 0; cc < _tracker_count; cc++)

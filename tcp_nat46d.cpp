@@ -6,6 +6,7 @@
 #include <stdlib.h>
 
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/nameser.h>
 #include <resolv.h>
 
@@ -48,8 +49,8 @@ struct ssl_parse_ctx {
 };
 
 void parse_argopt(int argc, char *argv[]);
-const char *ssl_parse_get_sni(struct ssl_parse_ctx *ctx);
-int ssl_rewind_client_hello(struct ssl_parse_ctx *ctx, const char *buf, size_t size);
+const char *ssl_parse_get_sni(struct ssl_parse_ctx *ctx, char *buf);
+int ssl_rewind_client_hello(struct ssl_parse_ctx *ctx, const char *buf, size_t size, const char *sni);
 struct ssl_parse_ctx * ssl_parse_prepare(struct ssl_parse_ctx *ctx, void *buf, size_t size);
 
 struct timer_task {
@@ -61,6 +62,7 @@ struct tcp_exchange_context {
     int sockfd;
     int port;
     int dport;
+    int refcnt;
     tx_aiocb file;
     tx_task_t task;
     struct sockaddr_in6 *gateway;
@@ -198,15 +200,50 @@ int socket_netns(int family, int type, int protocol, const char *netns)
 #define socket_netns(a, t, p, ss) socket(a, t, p)
 #endif
 
+static int context_refer_inc(void *upp)
+{
+    tcp_exchange_context *up = (tcp_exchange_context *)upp;
+    return up->refcnt++;
+}
+
+static int context_refer_dec(void *upp)
+{
+    tcp_exchange_context *up = (tcp_exchange_context *)upp;
+    return up->refcnt--;
+}
+
+static int context_refer_count(void *upp)
+{
+    tcp_exchange_context *up = (tcp_exchange_context *)upp;
+    return up->refcnt - 10;
+}
+
+static int socket_keepalive_set(tx_aiocb *filp)
+{
+    int sockfd = filp->tx_fd;
+
+    int keepalive = 1, errors_list[4];
+    int keepcnt = 2, keepidle = 148, keepintvl = 13;
+
+    errors_list[0] = setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPCNT, &keepcnt, sizeof(int));
+    errors_list[1] = setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPIDLE, &keepidle, sizeof(int));
+    errors_list[2] = setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPINTVL, &keepintvl, sizeof(int));
+
+    errors_list[3] = setsockopt(sockfd, SOL_SOCKET, SO_KEEPALIVE, &keepalive, sizeof(int));
+    return errors_list[0] + errors_list[1] + errors_list[2] + errors_list[3];
+}
+
+
 typedef struct _nat_conntrack_t {
     int refcnt;
-    int st_flag;
+    int st_flag:4, st_keepalive:4;
     char dbgflags[4];
 
     int sockfd;
     int mainfd;
     int do_flush;
     int rx_mark;
+    void *parent;
     time_t last_alive;
     struct sockaddr_in6 source;
     struct sockaddr_in6 target;
@@ -240,9 +277,20 @@ static int conngc_session(time_t now, nat_conntrack_t *skip)
                 continue;
             }
 
+            timeout = 30;
+            if (context_refer_count(item->parent) <= 0
+                    && item->refcnt == 2) {
+                if (!item->st_keepalive)
+                    socket_keepalive_set(&item->file);
+                item->st_keepalive = 1;
+                timeout = 1837;
+            }
+
             if ((item->last_alive > now) ||
                     (item->last_alive + timeout < now)) {
                 if (nfreed < 3) LOG_INFO("free connection: %p, %d\n", skip, nfreed);
+                context_refer_dec(item->parent);
+
                 tx_aiocb_fini(&item->file);
                 tx_task_drop(&item->task);
                 close(item->sockfd);
@@ -269,7 +317,7 @@ static void update_timer(void *up)
     ttp = (struct timer_task*)up;
 
     tx_timer_reset(&ttp->timer, 50000);
-    LOG_INFO("update_timer %d\n", tx_ticks);
+    LOG_DEBUG("update_timer %d\n", tx_ticks);
 
     conngc_session(time(NULL), NULL);
     return;
@@ -305,6 +353,8 @@ static int session_release(nat_conntrack_t *up, cache_t *d)
 
         tx_task_drop(&up->maintask);
         LIST_REMOVE(up, entry);
+
+        context_refer_dec(up->parent);
         free(up);
     }
 
@@ -405,13 +455,13 @@ static void do_sni_ssl_neg(void *upp)
         session_release(up, d);
         return;
     } else {
-        tx_aincb_active(&up->mainfile, &up->neg);
+        tx_aincb_active(filp, &up->neg);
         unlockbuf(d);
         return;
     }
 
     if (d->len < 5) {
-        tx_aincb_active(&up->mainfile, &up->neg);
+        tx_aincb_active(filp, &up->neg);
         return;
     }
 
@@ -427,19 +477,51 @@ static void do_sni_ssl_neg(void *upp)
         }
 
         if (d->len < len + 5) {
-            tx_aincb_active(&up->mainfile, &up->neg);
+            tx_aincb_active(filp, &up->neg);
             return;
         }
 
-        if (NULL != ssl_parse_prepare(&ctx, buf + 5, len) && ssl_parse_get_sni(&ctx) == NULL) {
+        if (NULL != ssl_parse_prepare(&ctx, buf + 5, len) && ssl_parse_get_sni(&ctx, NULL) == NULL) {
             size_t nhold = 0;
+            char hostname[256];
+            const char *sni = NULL;
             static char _hold[64 * 2025];
             if (d->len > len + 5) {
                 nhold = d->len - len - 5;
                 memcpy(_hold, buf + len + 5, nhold);
             }
 
-            size_t size = ssl_rewind_client_hello(&ctx, buf + 5, len);
+#ifdef CFTUNNEL
+            struct sockaddr_in6 target;
+            struct in6_addr tunnel1, tunnel2;
+            socklen_t targetlen = sizeof(target);
+
+            sni = ssl_parse_get_sni(&ctx, hostname);
+            if (strcmp(hostname, "h2.cftunnel.com") == 0 &&
+                    0 == getsockname(filp->tx_fd, (struct sockaddr *)&target, &targetlen)) {
+                char abuf[64];
+                const char *cftunnel = NULL;
+                inet_pton(AF_INET6, "::ffff:198.41.192.77", &tunnel2);
+                inet_pton(AF_INET6, "::ffff:198.41.200.193", &tunnel1);
+
+                if (IN6_ARE_ADDR_EQUAL(&tunnel1, &target.sin6_addr)) {
+                    sni = getenv("CFTUNNELA_SNI");
+                    cftunnel = getenv("CFTUNNELA");
+                } else if (IN6_ARE_ADDR_EQUAL(&tunnel1, &target.sin6_addr)) {
+                    sni = getenv("CFTUNNELB_SNI");
+                    cftunnel = getenv("CFTUNNELB");
+                }
+
+                if (cftunnel) {
+                    inet_pton(AF_INET6, cftunnel, &up->target.sin6_addr);
+                }
+
+                inet_ntop(AF_INET6, &target.sin6_addr, abuf, sizeof(abuf));
+                LOG_INFO("real target=%s sni=%s tunnel=%s", abuf, sni, cftunnel);
+            }
+#endif
+
+            size_t size = ssl_rewind_client_hello(&ctx, buf + 5, len, sni);
             d->len = size + 5;
 
             void *check  = ssl_parse_prepare(&ctx, buf + 5, size);
@@ -448,7 +530,7 @@ static void do_sni_ssl_neg(void *upp)
             buf[4] = (size & 0xff);
 
             save_file("ech_data.pcap", buf, d->len);
-            ssl_parse_get_sni(&ctx);
+            ssl_parse_get_sni(&ctx, NULL);
 
             if (nhold > 0) {
                 assert(nhold + d->len < bufsize(d));
@@ -671,7 +753,7 @@ static void do_tcp_exchange_forward(void *upp)
     return;
 }
 
-static int new_tcp_channel(int newfd, struct sockaddr_in6 *target)
+static int new_tcp_channel(int newfd, struct sockaddr_in6 *target, void *parent)
 {
     int error;
 
@@ -685,6 +767,8 @@ static int new_tcp_channel(int newfd, struct sockaddr_in6 *target)
         nat_conntrack_t *conn = ALLOC_NEW(nat_conntrack_t);
         conn->refcnt = 1;
         conn->do_flush = 0;
+        conn->parent = parent;
+        context_refer_inc(parent);
         memcpy(conn->dbgflags, "...", 4);
 
         conn->mainfd = newfd;
@@ -775,7 +859,7 @@ static void do_tcp_accept(void *upp)
         LOG_DEBUG("real destination: %s:%u\n", abuf, ntohs(target.sin6_port));
 
 #if 1
-        if (err == 0 && 0 == new_tcp_channel(newfd, &target)) {
+        if (err == 0 && 0 == new_tcp_channel(newfd, &target, upp)) {
             newfd = -1;
         }
 #endif
@@ -817,6 +901,7 @@ static void * tcp_exchange_create(int port, int dport, struct sockaddr_in6 *gate
     up->dport  = dport;
     up->sockfd = sockfd;
     up->gateway = gateway;
+    up->refcnt  = 0;
 
     error = listen(sockfd, 5);
     assert(error == 0);

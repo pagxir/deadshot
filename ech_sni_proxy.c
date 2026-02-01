@@ -170,7 +170,7 @@ char * get_sni_name(uint8_t *snibuff, size_t len, char *hostname)
     }
 
     if (set_hook_name)
-	strcpy(hostname, YOUR_DOMAIN);
+        strcpy(hostname, YOUR_DOMAIN);
 
     return hostname;
 }
@@ -344,15 +344,15 @@ static byte info[1024];
 word32 infoLen = 0;
 
 struct outer_extensions_t {
-   uint8_t *tags[18];
-   int order[18];
-   int tagoff;
+    uint8_t *tags[18];
+    int order[18];
+    int tagoff;
 
-   int hold[18];
-   int holdlen;
+    int hold[18];
+    int holdlen;
 
-   int len;
-   uint8_t buf[4096];
+    int len;
+    uint8_t buf[4096];
 };
 
 #define countof(x) (sizeof(x) / sizeof(x[0]))
@@ -470,8 +470,8 @@ static int outer_extensions_init(struct outer_extensions_t *ctx)
     int i;
 
     for (i = 0; i < countof(ctx->tags); i++) {
-	ctx->order[i] = TAGS[i];
-	ctx->tags[i]  = TAGS_DATA[i];
+        ctx->order[i] = TAGS[i];
+        ctx->tags[i]  = TAGS_DATA[i];
     }
     ctx->holdlen = 0;
     ctx->tagoff = 0;
@@ -493,532 +493,532 @@ static uint8_t *tag_alloc(struct outer_extensions_t *ctx, const uint8_t *buf, si
 
 static int outer_extensions_add(struct outer_extensions_t *ctx, int tag, const uint8_t buf[], size_t len)
 {
-	int i, j;
-	int okay = 0;
+    int i, j;
+    int okay = 0;
 
-	for (i = 0; i < countof(TAGS); i++) {
-		if (tag == ctx->order[i]) {
-			ctx->tags[i] = tag_alloc(ctx, buf, len);
-			if (ctx->tagoff > i) {
-				int order = ctx->order[i];
-				uint8_t *tmp = ctx->tags[i];
-				for (j = i; j < ctx->tagoff; j++) {
-					ctx->order[j] = ctx->order[j + 1];
-					ctx->tags[j] = ctx->tags[j + 1];
-				}
-				ctx->order[j] = order;
-				ctx->tags[j] = tmp;
-			} else {
-				ctx->tagoff = i;
-			}
-			okay = 1;
+    for (i = 0; i < countof(TAGS); i++) {
+        if (tag == ctx->order[i]) {
+            ctx->tags[i] = tag_alloc(ctx, buf, len);
+            if (ctx->tagoff > i) {
+                int order = ctx->order[i];
+                uint8_t *tmp = ctx->tags[i];
+                for (j = i; j < ctx->tagoff; j++) {
+                    ctx->order[j] = ctx->order[j + 1];
+                    ctx->tags[j] = ctx->tags[j + 1];
+                }
+                ctx->order[j] = order;
+                ctx->tags[j] = tmp;
+            } else {
+                ctx->tagoff = i;
+            }
+            okay = 1;
 
-			LOGV("ctx->holdlen = %d, ctx->len = %d, ctx->tagoff = %d\n", ctx->holdlen, ctx->len, ctx->tagoff);
-			ctx->hold[ctx->holdlen++] = tag;
-			break;
-		}
-	}
+            LOGV("ctx->holdlen = %d, ctx->len = %d, ctx->tagoff = %d\n", ctx->holdlen, ctx->len, ctx->tagoff);
+            ctx->hold[ctx->holdlen++] = tag;
+            break;
+        }
+    }
 
-	if (okay == 0) LOGV("ctx->holdlen = %d, ctx->len = %d, ctx->tagoff = %d, lost tag=%d\n", ctx->holdlen, ctx->len, ctx->tagoff, tag);
+    if (okay == 0) LOGV("ctx->holdlen = %d, ctx->len = %d, ctx->tagoff = %d, lost tag=%d\n", ctx->holdlen, ctx->len, ctx->tagoff, tag);
 
-	return okay;
+    return okay;
 }
 
 static int outer_extensions_flush(struct outer_extensions_t *ctx, uint8_t *buf, size_t len)
 {
     int count = ctx->holdlen;
 
-	if (count == 0) return 0;
+    if (count == 0) return 0;
 
-	ctx->holdlen = 0;
-	buf[0] = (TAG_OUTER_EXTENSIONS >> 8);
-	buf[1] = (TAG_OUTER_EXTENSIONS & 0xff);
+    ctx->holdlen = 0;
+    buf[0] = (TAG_OUTER_EXTENSIONS >> 8);
+    buf[1] = (TAG_OUTER_EXTENSIONS & 0xff);
 
-	int val = count * 2 + 1;
-	buf[2] = (val >> 8);
-	buf[3] = (val);
-	buf[4] = (count << 1);
+    int val = count * 2 + 1;
+    buf[2] = (val >> 8);
+    buf[3] = (val);
+    buf[4] = (count << 1);
 
-	for (int i = 0; i < count; i++) {
-		int code = ctx->hold[i];
-		buf[5 + i * 2] = (code >> 8);
-		buf[5 + i * 2 + 1] = (code);
-		LOGV("outer_extensions_flush: code=%d\n", code);
-	}
-	assert(5 + count * 2 + 2 < len);
+    for (int i = 0; i < count; i++) {
+        int code = ctx->hold[i];
+        buf[5 + i * 2] = (code >> 8);
+        buf[5 + i * 2 + 1] = (code);
+        LOGV("outer_extensions_flush: code=%d\n", code);
+    }
+    assert(5 + count * 2 + 2 < len);
 
-	LOGV("outer_extensions_flush: %d\n", count);
+    LOGV("outer_extensions_flush: %d\n", count);
 
-	return 4 + val;
+    return 4 + val;
 }
 
 static int should_pullout(int tag)
 {
-   int allow_tags[] = {0xeaea, 0x0033, 0x0010, 0x000a, 0x001b, 0x002d, 0x0005, 0x4469, 0x0012, 0x000d, 0xcaca};
+    int allow_tags[] = {0xeaea, 0x0033, 0x0010, 0x000a, 0x001b, 0x002d, 0x0005, 0x4469, 0x0012, 0x000d, 0xcaca};
 
-   for (int i = 0; i < countof(allow_tags); i++) {
-       if (allow_tags[i] == tag) return 1;
-   }
+    for (int i = 0; i < countof(allow_tags); i++) {
+        if (allow_tags[i] == tag) return 1;
+    }
 
     return (tag != 0 && tag != TAG_ENCRYPT_CLIENT_HELLO);
 }
 
 static int setrandomize(void *buf, size_t len)
 {
-	int i;
-	int *data = (int *)buf;
+    int i;
+    int *data = (int *)buf;
 
-	for (i = 0; len >= 4; i++, len -= 4)
-		data[i] = random();
+    for (i = 0; len >= 4; i++, len -= 4)
+        data[i] = random();
 
-	if (len > 0) {
-		int mask = ~0 << ((4 - len) * 8);
-		data[i] &= htonl(~mask);
-		data[i] |= htonl(mask & random());
-	}
+    if (len > 0) {
+        int mask = ~0 << ((4 - len) * 8);
+        data[i] &= htonl(~mask);
+        data[i] |= htonl(mask & random());
+    }
 
-	return 0;
+    return 0;
 }
 
 static void xxdump(const char *title, const void *data, size_t len)
 {
-	char line[128];
-	const uint8_t *ptr;
-	const uint8_t *start = (const uint8_t *)data;
-	const char map[] = "0123456789abcdef0";
+    char line[128];
+    const uint8_t *ptr;
+    const uint8_t *start = (const uint8_t *)data;
+    const char map[] = "0123456789abcdef0";
 
-	ptr = start;
-	for (; len >= 16; len -= 16) {
-		char *p = line;
+    ptr = start;
+    for (; len >= 16; len -= 16) {
+        char *p = line;
 
-		for (int i = 0; i < 16; i++) {
-			int code = *ptr++;
-			*p++ = map[code >> 4];
-			*p++ = map[code & 0xf];
-			*p++ = ' ';
-		}
+        for (int i = 0; i < 16; i++) {
+            int code = *ptr++;
+            *p++ = map[code >> 4];
+            *p++ = map[code & 0xf];
+            *p++ = ' ';
+        }
 
-		if (p > line) {
-			p--;
-			*p = 0;
-		}
+        if (p > line) {
+            p--;
+            *p = 0;
+        }
 
-		printf("%s: %s\n", title, line); 
-	}
+        printf("%s: %s\n", title, line); 
+    }
 
-	char *p1 = line;
+    char *p1 = line;
 
-	for (int i = 0; i < len; i++) {
-		int code = *ptr++;
-		*p1++ = map[code >> 4];
-		*p1++ = map[code & 0xf];
-		*p1++ = ' ';
-	}
+    for (int i = 0; i < len; i++) {
+        int code = *ptr++;
+        *p1++ = map[code >> 4];
+        *p1++ = map[code & 0xf];
+        *p1++ = ' ';
+    }
 
-	if (p1 > line) {
-		p1--;
-		*p1 = 0;
-	}
+    if (p1 > line) {
+        p1--;
+        *p1 = 0;
+    }
 
-	if (p1 > line) {
-		printf("%s: %s\n", title, line); 
-	}
+    if (p1 > line) {
+        printf("%s: %s\n", title, line); 
+    }
 
-	return ;
+    return ;
 }
 
 static int load_encrypt_client_hello(const void *ch, size_t chlen, const void *payload, size_t payload_len, const void *enc, size_t enclen, uint8_t *output, size_t *outlen)
 {
-	word16 kemId = 0, kdfId = 0, aeadId =0;
+    word16 kemId = 0, kdfId = 0, aeadId =0;
 
-	kemId = DHKEM_X25519_HKDF_SHA256;
-	kdfId = HKDF_SHA256;
-	aeadId = HPKE_AES_128_GCM;
+    kemId = DHKEM_X25519_HKDF_SHA256;
+    kdfId = HKDF_SHA256;
+    aeadId = HPKE_AES_128_GCM;
 
-	Hpke hpke[1];
-	void *heap = NULL;
-	curve25519_key receiverPrivkey0[1];
-	int ret = wc_HpkeInit(hpke, kemId, kdfId, aeadId, heap);
+    Hpke hpke[1];
+    void *heap = NULL;
+    curve25519_key receiverPrivkey0[1];
+    int ret = wc_HpkeInit(hpke, kemId, kdfId, aeadId, heap);
 
-	wc_curve25519_init(receiverPrivkey0);
-	wc_curve25519_import_private_raw_ex(priv, sizeof(priv), pub, sizeof(pub), receiverPrivkey0, EC25519_LITTLE_ENDIAN);
+    wc_curve25519_init(receiverPrivkey0);
+    wc_curve25519_import_private_raw_ex(priv, sizeof(priv), pub, sizeof(pub), receiverPrivkey0, EC25519_LITTLE_ENDIAN);
 
-	byte aad[4096] = {};
-	assert(sizeof(aad) > chlen);
-	memcpy(aad, ch, chlen);
+    byte aad[4096] = {};
+    assert(sizeof(aad) > chlen);
+    memcpy(aad, ch, chlen);
 
-	uint8_t *d1 = (uint8_t*)ch;
-	uint8_t *d2 = (uint8_t*)payload;
-	memset(aad + (d2 - d1), 0, payload_len);
+    uint8_t *d1 = (uint8_t*)ch;
+    uint8_t *d2 = (uint8_t*)payload;
+    memset(aad + (d2 - d1), 0, payload_len);
 
-	ret = wc_HpkeOpenBase(hpke, receiverPrivkey0, (const byte *)enc,
-			enclen, info, infoLen, aad, chlen, (byte *)payload, payload_len - 16, output);
+    ret = wc_HpkeOpenBase(hpke, receiverPrivkey0, (const byte *)enc,
+            enclen, info, infoLen, aad, chlen, (byte *)payload, payload_len - 16, output);
 
-	if (ret == 0) *outlen = payload_len - 16;
-	LOGI("load_encrypt_client_hello: ret=%d\n", ret);
-	LOGI("TODO:XXXX load_encrypt_client_hello: ret=%d infoLen=%d aadlen=%d payload_len=%d\n", ret, infoLen, chlen, payload_len);
+    if (ret == 0) *outlen = payload_len - 16;
+    LOGI("load_encrypt_client_hello: ret=%d\n", ret);
+    LOGI("TODO:XXXX load_encrypt_client_hello: ret=%d infoLen=%d aadlen=%d payload_len=%d\n", ret, infoLen, chlen, payload_len);
 
-	if (ret) {
-		xxdump("enc", enc, enclen);
-		xxdump("info", info, infoLen);
-		xxdump("aad", aad, chlen);
-		xxdump("payload", payload, payload_len);
-		xxdump("pub", pub, 32);
-		xxdump("priv", priv, 32);
-	}
+    if (ret) {
+        xxdump("enc", enc, enclen);
+        xxdump("info", info, infoLen);
+        xxdump("aad", aad, chlen);
+        xxdump("payload", payload, payload_len);
+        xxdump("pub", pub, 32);
+        xxdump("priv", priv, 32);
+    }
 
-	return ret;
+    return ret;
 }
 
 int decode_client_hello(uint8_t *decoded, size_t ddsz, const uint8_t *plain, size_t len, const uint8_t *outer, size_t outerlen, size_t *outlen)
 {
-	uint8_t *dest = decoded;
-	const uint8_t *p = plain;
-	const uint8_t *refer = outer;
+    uint8_t *dest = decoded;
+    const uint8_t *p = plain;
+    const uint8_t *refer = outer;
 
-	uint8_t *ech_start = (uint8_t *)p;
+    uint8_t *ech_start = (uint8_t *)p;
 
-	dest[0] = p[0]; dest[1] = p[1];
-	dest += 2;
-	p += 2; // version;
-	refer += 2;
+    dest[0] = p[0]; dest[1] = p[1];
+    dest += 2;
+    p += 2; // version;
+    refer += 2;
 
-	memcpy(dest, p, 32);
-	dest += 32;
-	p += 32; //random;
-	refer += 32;
+    memcpy(dest, p, 32);
+    dest += 32;
+    p += 32; //random;
+    refer += 32;
 
-	dest[0] = refer[0]; //session id length
-	memcpy(&dest[1], &refer[1], dest[0]);
-	dest += dest[0];
-	dest++;
+    dest[0] = refer[0]; //session id length
+    memcpy(&dest[1], &refer[1], dest[0]);
+    dest += dest[0];
+    dest++;
 
-	refer += refer[0];
-	refer++;
+    refer += refer[0];
+    refer++;
 
-	assert(*p ==0);
-	p += *p;
-	p++;
+    assert(*p ==0);
+    p += *p;
+    p++;
 
-	int cipher_suite_length = p[1]|(p[0]<<8);
-	int cipher_suite_length_out = refer[1]|(refer[0]<<8);
-	dest[0] = p[0];
-	dest[1] = p[1];
-	dest+=2;
-	p+=2;
-	refer+=2;
+    int cipher_suite_length = p[1]|(p[0]<<8);
+    int cipher_suite_length_out = refer[1]|(refer[0]<<8);
+    dest[0] = p[0];
+    dest[1] = p[1];
+    dest+=2;
+    p+=2;
+    refer+=2;
 
-	memcpy(dest, p, cipher_suite_length);
-	dest += cipher_suite_length;
-	p += cipher_suite_length;
-	refer += cipher_suite_length_out;
+    memcpy(dest, p, cipher_suite_length);
+    dest += cipher_suite_length;
+    p += cipher_suite_length;
+    refer += cipher_suite_length_out;
 
-	int compress_method_len = *p;
-	int compress_method_len_out = *refer;
-	*dest++ = *p++;
-	refer++;
+    int compress_method_len = *p;
+    int compress_method_len_out = *refer;
+    *dest++ = *p++;
+    refer++;
 
-	memcpy(dest, p, compress_method_len);
-	dest += compress_method_len;
-	p += compress_method_len;
-	refer += compress_method_len_out;
+    memcpy(dest, p, compress_method_len);
+    dest += compress_method_len;
+    p += compress_method_len;
+    refer += compress_method_len_out;
 
-	int extention_length = p[1]|(p[0]<<8);
-	int extention_length_out = refer[1]|(refer[0]<<8);
-	uint8_t *extention_lengthp = dest;
-	dest += 2;
-	p += 2;
-	refer += 2;
+    int extention_length = p[1]|(p[0]<<8);
+    int extention_length_out = refer[1]|(refer[0]<<8);
+    uint8_t *extention_lengthp = dest;
+    dest += 2;
+    p += 2;
+    refer += 2;
 
-	const uint8_t *limit = p + extention_length;
-	const uint8_t *limit_out = refer + extention_length_out;
+    const uint8_t *limit = p + extention_length;
+    const uint8_t *limit_out = refer + extention_length_out;
 
-	int last_tag = -1;
-	char hostname[256] = "";
+    int last_tag = -1;
+    char hostname[256] = "";
 
-	int out_tag_indx = 0;
-	while (p < limit) {
-		uint16_t tag = p[1]|(p[0]<<8);
-		uint16_t len = p[3]|(p[2]<<8);
-		LOGV("ext tag: %d %d %d\n", tag, len, p[4]);
-		uint16_t fqdn_name_len = 0;
+    int out_tag_indx = 0;
+    while (p < limit) {
+        uint16_t tag = p[1]|(p[0]<<8);
+        uint16_t len = p[3]|(p[2]<<8);
+        LOGV("ext tag: %d %d %d\n", tag, len, p[4]);
+        uint16_t fqdn_name_len = 0;
 
-		if (tag == TAG_OUTER_EXTENSIONS) {
-			const uint8_t *start = (p + 4);
-			int len = *start++;
+        if (tag == TAG_OUTER_EXTENSIONS) {
+            const uint8_t *start = (p + 4);
+            int len = *start++;
 
-			for (int i = 0; i < len; i +=2) {
-				uint16_t etag = start[i + 1]|(start[i] << 8);
-				LOGV("outer etag: 0x%04x\n", etag);
+            for (int i = 0; i < len; i +=2) {
+                uint16_t etag = start[i + 1]|(start[i] << 8);
+                LOGV("outer etag: 0x%04x\n", etag);
 
-				int found = 0;
-				while (refer < limit_out) {
-					uint16_t tag_out = refer[1]|(refer[0]<<8);
-					uint16_t len_out = refer[3]|(refer[2]<<8);
+                int found = 0;
+                while (refer < limit_out) {
+                    uint16_t tag_out = refer[1]|(refer[0]<<8);
+                    uint16_t len_out = refer[3]|(refer[2]<<8);
 
-					if (etag == tag_out) {
-						LOGV("match tag: 0x%04x\n", tag_out);
-						memcpy(dest, refer, len_out + 4);
-						dest += len_out;
-						dest += 4;
-						found = 1;
-						break;
-					}
+                    if (etag == tag_out) {
+                        LOGV("match tag: 0x%04x\n", tag_out);
+                        memcpy(dest, refer, len_out + 4);
+                        dest += len_out;
+                        dest += 4;
+                        found = 1;
+                        break;
+                    }
 
-					// LOGV("mismatch tag%d: 0x%04x 0x%04x\n", out_tag_indx++, tag_out, etag);
-					refer += len_out;
-					refer += 4;
-				}
+                    // LOGV("mismatch tag%d: 0x%04x 0x%04x\n", out_tag_indx++, tag_out, etag);
+                    refer += len_out;
+                    refer += 4;
+                }
 
-				if (found == 0) LOGV("mismatch tag%d: 0x%04x 0x%04x\n", out_tag_indx++, 0, etag);
-			}
-		} else {
-			memcpy(dest, p, len + 4);
-			dest += len;
-			dest += 4;
-		}
+                if (found == 0) LOGV("mismatch tag%d: 0x%04x 0x%04x\n", out_tag_indx++, 0, etag);
+            }
+        } else {
+            memcpy(dest, p, len + 4);
+            dest += len;
+            dest += 4;
+        }
 
-		last_tag = tag;
-		p += len;
-		p += 4;
-	}
+        last_tag = tag;
+        p += len;
+        p += 4;
+    }
 
-	int extlen = (dest - extention_lengthp - 2);
-	extention_lengthp[0] = extlen >> 8;
-	extention_lengthp[1] = extlen;
+    int extlen = (dest - extention_lengthp - 2);
+    extention_lengthp[0] = extlen >> 8;
+    extention_lengthp[1] = extlen;
 
-	assert(dest - decoded < ddsz);
-	*outlen = dest - decoded;
-	return 0;
+    assert(dest - decoded < ddsz);
+    *outlen = dest - decoded;
+    return 0;
 }
 
 int encode_client_hello(uint8_t *encoded, size_t ddsz, const uint8_t *plain, size_t len, size_t *outlen)
 {
-	int i, ret;
-	uint8_t *dest = encoded;
-	const uint8_t *p = plain;
-	uint8_t _hold[4096];
-	uint8_t *inner = _hold;
+    int i, ret;
+    uint8_t *dest = encoded;
+    const uint8_t *p = plain;
+    uint8_t _hold[4096];
+    uint8_t *inner = _hold;
 
-	// prepare outer variant value
-	uint8_t session_id[132];
+    // prepare outer variant value
+    uint8_t session_id[132];
 
-	const uint8_t *ech_start = p;
+    const uint8_t *ech_start = p;
 
-	inner[0] = p[0]; inner[1] = p[1];
-	inner += 2;
-	p += 2; // version;
+    inner[0] = p[0]; inner[1] = p[1];
+    inner += 2;
+    p += 2; // version;
 
-	memcpy(inner, p, 32);
-	inner += 32;
-	p += 32; //random;
+    memcpy(inner, p, 32);
+    inner += 32;
+    p += 32; //random;
 
-	// empty session_id
-	inner[0] = 0;
-	inner++;
+    // empty session_id
+    inner[0] = 0;
+    inner++;
 
-	memcpy(session_id + 1, p + 1, p[0]);
-	session_id[0] = p[0];
-	p += p[0];
-	p++;
+    memcpy(session_id + 1, p + 1, p[0]);
+    session_id[0] = p[0];
+    p += p[0];
+    p++;
 
-	int cipher_suite_length = p[1]|(p[0]<<8);
-	inner[0] = p[0];
-	inner[1] = p[1];
-	inner+=2;
-	p+=2;
+    int cipher_suite_length = p[1]|(p[0]<<8);
+    inner[0] = p[0];
+    inner[1] = p[1];
+    inner+=2;
+    p+=2;
 
-	memcpy(inner, p, cipher_suite_length);
-	inner += cipher_suite_length;
-	p += cipher_suite_length;
+    memcpy(inner, p, cipher_suite_length);
+    inner += cipher_suite_length;
+    p += cipher_suite_length;
 
-	int compress_method_len = *p;
-	*inner++ = *p++;
+    int compress_method_len = *p;
+    *inner++ = *p++;
 
-	memcpy(inner, p, compress_method_len);
-	inner += compress_method_len;
-	p += compress_method_len;
+    memcpy(inner, p, compress_method_len);
+    inner += compress_method_len;
+    p += compress_method_len;
 
-	int extention_length = p[1]|(p[0]<<8);
-	uint8_t *extention_lengthp = inner;
-	inner += 2;
-	p += 2;
+    int extention_length = p[1]|(p[0]<<8);
+    uint8_t *extention_lengthp = inner;
+    inner += 2;
+    p += 2;
 
-	const uint8_t *limit = p + extention_length;
+    const uint8_t *limit = p + extention_length;
 
-	int last_tag = -1;
-	char hostname[256] = "";
+    int last_tag = -1;
+    char hostname[256] = "";
 
-	int out_tag_indx = 0;
-	struct outer_extensions_t outter_ext;
+    int out_tag_indx = 0;
+    struct outer_extensions_t outter_ext;
 
-	outer_extensions_init(&outter_ext);
-	while (p < limit) {
-		uint16_t tag = p[1]|(p[0]<<8);
-		uint16_t len = p[3]|(p[2]<<8);
-		LOGV("ext tag: %d %d\n", tag, len);
+    outer_extensions_init(&outter_ext);
+    while (p < limit) {
+        uint16_t tag = p[1]|(p[0]<<8);
+        uint16_t len = p[3]|(p[2]<<8);
+        LOGV("ext tag: %d %d\n", tag, len);
 
-		if (!should_pullout(tag) || outer_extensions_add(&outter_ext, tag, p, len + 4) == 0) {
-			inner += outer_extensions_flush(&outter_ext, inner, 1024);
-			memcpy(inner, p, len + 4);
-			inner += len;
-			inner += 4;
-		}
+        if (!should_pullout(tag) || outer_extensions_add(&outter_ext, tag, p, len + 4) == 0) {
+            inner += outer_extensions_flush(&outter_ext, inner, 1024);
+            memcpy(inner, p, len + 4);
+            inner += len;
+            inner += 4;
+        }
 
-		last_tag = tag;
-		p += len;
-		p += 4;
-	}
-	assert (inner + 1024 < _hold + sizeof(_hold));
-	inner += outer_extensions_flush(&outter_ext, inner, 1024);
+        last_tag = tag;
+        p += len;
+        p += 4;
+    }
+    assert (inner + 1024 < _hold + sizeof(_hold));
+    inner += outer_extensions_flush(&outter_ext, inner, 1024);
 
-	int extlen = (inner - extention_lengthp - 2);
-	extention_lengthp[0] = extlen >> 8;
-	extention_lengthp[1] = extlen;
+    int extlen = (inner - extention_lengthp - 2);
+    extention_lengthp[0] = extlen >> 8;
+    extention_lengthp[1] = extlen;
 
-	word16 kemId = 0, kdfId = 0, aeadId =0;
+    word16 kemId = 0, kdfId = 0, aeadId =0;
 
-	kemId = DHKEM_X25519_HKDF_SHA256;
-	kdfId = HKDF_SHA256;
-	aeadId = HPKE_AES_128_GCM;
+    kemId = DHKEM_X25519_HKDF_SHA256;
+    kdfId = HKDF_SHA256;
+    aeadId = HPKE_AES_128_GCM;
 
-	Hpke hpke[1];
-	void *heap = NULL;
-	curve25519_key ephemeralKey[1];
-	curve25519_key receiverPrivkey0[1];
-	ret = wc_HpkeInit(hpke, kemId, kdfId, aeadId, heap);
+    Hpke hpke[1];
+    void *heap = NULL;
+    curve25519_key ephemeralKey[1];
+    curve25519_key receiverPrivkey0[1];
+    ret = wc_HpkeInit(hpke, kemId, kdfId, aeadId, heap);
 
-	wc_curve25519_init(receiverPrivkey0);
-	wc_curve25519_import_public_ex(pub, sizeof(pub), receiverPrivkey0, 0);
-	wc_curve25519_import_private_raw_ex(priv, sizeof(priv), pub, sizeof(pub), receiverPrivkey0, EC25519_LITTLE_ENDIAN);
+    wc_curve25519_init(receiverPrivkey0);
+    wc_curve25519_import_public_ex(pub, sizeof(pub), receiverPrivkey0, 0);
+    wc_curve25519_import_private_raw_ex(priv, sizeof(priv), pub, sizeof(pub), receiverPrivkey0, EC25519_LITTLE_ENDIAN);
 
-	dest[0] = 0x03;
-	dest[1] = 0x03;
-	dest += 2;
+    dest[0] = 0x03;
+    dest[1] = 0x03;
+    dest += 2;
 
-	setrandomize(dest, 32);
-	dest += 32;
+    setrandomize(dest, 32);
+    dest += 32;
 
-	dest[0] = session_id[0];
-	memcpy(dest + 1, session_id + 1, session_id[0]);
-	dest+= dest[0];
-	dest++;
+    dest[0] = session_id[0];
+    memcpy(dest + 1, session_id + 1, session_id[0]);
+    dest+= dest[0];
+    dest++;
 
-	uint8_t cipher_suites[] = {
-		0x3a, 0x3a, 0x13, 0x01, 0x13, 0x02, 0x13, 0x03, 0xc0, 0x2b, 0xc0, 0x2f, 0xc0, 0x2c, 0xc0, 0x30,
-		0xcc, 0xa9, 0xcc, 0xa8, 0xc0, 0x13, 0xc0, 0x14, 0x00, 0x9c, 0x00, 0x9d, 0x00, 0x2f, 0x00, 0x35
-	};
+    uint8_t cipher_suites[] = {
+        0x3a, 0x3a, 0x13, 0x01, 0x13, 0x02, 0x13, 0x03, 0xc0, 0x2b, 0xc0, 0x2f, 0xc0, 0x2c, 0xc0, 0x30,
+        0xcc, 0xa9, 0xcc, 0xa8, 0xc0, 0x13, 0xc0, 0x14, 0x00, 0x9c, 0x00, 0x9d, 0x00, 0x2f, 0x00, 0x35
+    };
 
-	dest[0] = sizeof(cipher_suites) >> 8;
-	dest[1] = sizeof(cipher_suites);
-	dest += 2;
-	memcpy(dest, cipher_suites, sizeof(cipher_suites));
-	dest += sizeof(cipher_suites);
+    dest[0] = sizeof(cipher_suites) >> 8;
+    dest[1] = sizeof(cipher_suites);
+    dest += 2;
+    memcpy(dest, cipher_suites, sizeof(cipher_suites));
+    dest += sizeof(cipher_suites);
 
-	dest[0] = 1;
-	dest[1] = 0;
-	dest += 2;
+    dest[0] = 1;
+    dest[1] = 0;
+    dest += 2;
 
-	uint8_t *extention_start = dest;
-	uint8_t *pubKey = NULL;
-	uint8_t *ciphertext_start = NULL;
-	size_t payload_len = 0;
-	word16 pubKeySz = 0;
+    uint8_t *extention_start = dest;
+    uint8_t *pubKey = NULL;
+    uint8_t *ciphertext_start = NULL;
+    size_t payload_len = 0;
+    word16 pubKeySz = 0;
 
-	dest += 2;
-	for (i = 0; i < countof(outter_ext.tags); i++) {
-		uint8_t *p = outter_ext.tags[i];
+    dest += 2;
+    for (i = 0; i < countof(outter_ext.tags); i++) {
+        uint8_t *p = outter_ext.tags[i];
 
-		uint16_t tag = p[1]|(p[0] << 8);
-		uint16_t len = p[3]|(p[2] << 8);
+        uint16_t tag = p[1]|(p[0] << 8);
+        uint16_t len = p[3]|(p[2] << 8);
 
-		if (tag == TAG_ENCRYPT_CLIENT_HELLO) {
-			uint8_t *start = p = dest;
-			start += 4;
-			pubKey = start + 8;
+        if (tag == TAG_ENCRYPT_CLIENT_HELLO) {
+            uint8_t *start = p = dest;
+            start += 4;
+            pubKey = start + 8;
 
-			pubKeySz = 32;
-			ret = wc_HpkeSerializePublicKey(hpke, receiverPrivkey0, pubKey, &pubKeySz);
-			start[6] = (pubKeySz >> 8);
-			start[7] = (pubKeySz);
+            pubKeySz = 32;
+            ret = wc_HpkeSerializePublicKey(hpke, receiverPrivkey0, pubKey, &pubKeySz);
+            start[6] = (pubKeySz >> 8);
+            start[7] = (pubKeySz);
 
-			start = start + 8 + pubKeySz;
+            start = start + 8 + pubKeySz;
 
-			payload_len = inner - _hold + 16;
-			start[0] = (payload_len >> 8);
-			start[1] = (payload_len);
+            payload_len = inner - _hold + 16;
+            start[0] = (payload_len >> 8);
+            start[1] = (payload_len);
 
-			ciphertext_start = start + 2;
-			memset(start + 2, 0, payload_len);
-			start += (2 + payload_len);
+            ciphertext_start = start + 2;
+            memset(start + 2, 0, payload_len);
+            start += (2 + payload_len);
 
-			dest[0] = (TAG_ENCRYPT_CLIENT_HELLO >> 8);
-			dest[1] = (TAG_ENCRYPT_CLIENT_HELLO & 0xff);
-			dest[2] = (start - dest - 4) >> 8;
-			dest[3] = (start - dest - 4);
+            dest[0] = (TAG_ENCRYPT_CLIENT_HELLO >> 8);
+            dest[1] = (TAG_ENCRYPT_CLIENT_HELLO & 0xff);
+            dest[2] = (start - dest - 4) >> 8;
+            dest[3] = (start - dest - 4);
 
-			dest[4] = 0;
-			dest[4] = 0; // avoid GFW
-			dest[5] = 0;
-			dest[6] = 1;
-			dest[7] = 0;
-			dest[8] = 1;
-			dest[9] = 0x95;
-			len = (start - dest - 4);
-		}
+            dest[4] = 0;
+            dest[4] = 0; // avoid GFW
+            dest[5] = 0;
+            dest[6] = 1;
+            dest[7] = 0;
+            dest[8] = 1;
+            dest[9] = 0x95;
+            len = (start - dest - 4);
+        }
 
-		memmove(dest, p, len + 4);
-		dest += (len + 4);
-	}
+        memmove(dest, p, len + 4);
+        dest += (len + 4);
+    }
 
-	uint16_t extlen0 = (dest - extention_start - 2);
-	extention_start[0] = (extlen0 >> 8);
-	extention_start[1] = (extlen0);
+    uint16_t extlen0 = (dest - extention_start - 2);
+    extention_start[0] = (extlen0 >> 8);
+    extention_start[1] = (extlen0);
 
-	uint8_t ciphertext[4096];
-	assert(payload_len < sizeof(ciphertext));
+    uint8_t ciphertext[4096];
+    assert(payload_len < sizeof(ciphertext));
 #if 0
-	WC_RNG rng[1];
-	ret = wc_InitRng(rng);
-	assert(ret == 0);
+    WC_RNG rng[1];
+    ret = wc_InitRng(rng);
+    assert(ret == 0);
 
-	void *ephemeralKey1 = 0, * receiverPrivkey1 = 0;
-	ret = wc_HpkeGenerateKeyPair(hpke, &ephemeralKey1, rng);
-	assert(ret == 0);
+    void *ephemeralKey1 = 0, * receiverPrivkey1 = 0;
+    ret = wc_HpkeGenerateKeyPair(hpke, &ephemeralKey1, rng);
+    assert(ret == 0);
 #endif
 
-	LOGV("payload_len=%d infoLen %d %d\n", payload_len, infoLen, dest - encoded);
-	ret = wc_HpkeSealBase(hpke, receiverPrivkey0, receiverPrivkey0,
-			(byte*)info, (word32)infoLen,
-			(byte*)encoded, (word32)(dest - encoded),
-			(byte*)_hold, payload_len - 16,
-			ciphertext);
+    LOGV("payload_len=%d infoLen %d %d\n", payload_len, infoLen, dest - encoded);
+    ret = wc_HpkeSealBase(hpke, receiverPrivkey0, receiverPrivkey0,
+            (byte*)info, (word32)infoLen,
+            (byte*)encoded, (word32)(dest - encoded),
+            (byte*)_hold, payload_len - 16,
+            ciphertext);
 
-	if (ret) {
-		xxdump("info", info, infoLen);
-		xxdump("aad", encoded, dest - encoded);
-		xxdump("cipher", ciphertext, payload_len);
-		xxdump("priv", priv, sizeof(priv));
-		xxdump("pub", pub, sizeof(pub));
-		xxdump("enc", pubKey, pubKeySz);
-	}
+    if (ret) {
+        xxdump("info", info, infoLen);
+        xxdump("aad", encoded, dest - encoded);
+        xxdump("cipher", ciphertext, payload_len);
+        xxdump("priv", priv, sizeof(priv));
+        xxdump("pub", pub, sizeof(pub));
+        xxdump("enc", pubKey, pubKeySz);
+    }
 
-	uint8_t plaintext0[4096];
-	assert(payload_len < sizeof(plaintext0));
-	int retval = wc_HpkeOpenBase(hpke, receiverPrivkey0, pubKey, pubKeySz,
-			(byte*)info, (word32)infoLen,
-			(byte*)encoded, (word32)(dest - encoded),
-			ciphertext, payload_len - 16,
-			plaintext0);
+    uint8_t plaintext0[4096];
+    assert(payload_len < sizeof(plaintext0));
+    int retval = wc_HpkeOpenBase(hpke, receiverPrivkey0, pubKey, pubKeySz,
+            (byte*)info, (word32)infoLen,
+            (byte*)encoded, (word32)(dest - encoded),
+            ciphertext, payload_len - 16,
+            plaintext0);
 
 
-	memcpy(ciphertext_start, ciphertext, payload_len);
+    memcpy(ciphertext_start, ciphertext, payload_len);
 
-	LOGV("outter length: %d ret=%d, retval=%d, payload_len=%d, infoLen=%d aadlen=%d\n", dest - encoded, ret, retval, payload_len, infoLen, dest - encoded);
-	assert(dest - encoded < ddsz);
-	*outlen = dest - encoded;
-	assert(ret == 0);
-	return 0;
+    LOGV("outter length: %d ret=%d, retval=%d, payload_len=%d, infoLen=%d aadlen=%d\n", dest - encoded, ret, retval, payload_len, infoLen, dest - encoded);
+    assert(dest - encoded < ddsz);
+    *outlen = dest - encoded;
+    assert(ret == 0);
+    return 0;
 }
 
 int rewind_encrypt_client_hello(uint8_t *snibuff, size_t length)
@@ -1058,7 +1058,7 @@ int rewind_encrypt_client_hello(uint8_t *snibuff, size_t length)
     newlen = outlen + 4;
     snibuff[3] = newlen >> 8;
     snibuff[4] = newlen;
-	assert(outlen + 9 < MAXSIZE);
+    assert(outlen + 9 < MAXSIZE);
     return outlen + 9;
 }
 
@@ -1143,7 +1143,7 @@ int unwind_encrypt_client_hello(uint8_t *snibuff, size_t length)
             memcpy(hostname, sni + 5, fqdn_name_len);
             hostname[fqdn_name_len] = 0;
             LOGI("source: %s\n", hostname);
-	} else if (tag == TAG_ENCRYPT_CLIENT_HELLO) {
+        } else if (tag == TAG_ENCRYPT_CLIENT_HELLO) {
             const uint8_t *start = (p + 4);
             LOGI("TAG_ENCRYPT_CLIENT_HELLO:\n");
             LOGV("client hello type: %d\n", start[0]);
@@ -1152,34 +1152,34 @@ int unwind_encrypt_client_hello(uint8_t *snibuff, size_t length)
             LOGV("config id: %d\n", start[5]);
             int enclen = (start[6] << 8) | start[7];
             LOGV("enclen: %d\n", enclen);
-	    // dumpData("enc", start + 8, enclen);
+            // dumpData("enc", start + 8, enclen);
             int payload_len = (start[8 + enclen] << 8) | start[8 + enclen +1];
             LOGV("payload_len: %d\n", payload_len);
-	    // dumpData("payload", start + 8 + enclen + 2, payload_len);
+            // dumpData("payload", start + 8 + enclen + 2, payload_len);
             // dumpAadData("aad", ech_start, snibuff + length - ech_start, start + 8 + enclen + 2, payload_len);
 
-	    uint8_t plain[4096], decoded[4096];
+            uint8_t plain[4096], decoded[4096];
             size_t outlen = 0;
             int ret = load_encrypt_client_hello(ech_start, snibuff + length - ech_start, start + 8 + enclen + 2, payload_len, start + 8, enclen, plain, &outlen);
-	    if (ret == 0) {
+            if (ret == 0) {
                 decode_client_hello(decoded, 4096, plain, outlen, snibuff + 9, length - 9, &outlen);
-		memcpy(snibuff + 9, decoded, outlen);
-		int newlen = outlen;
-		snibuff[6] = newlen >> 16;
-		snibuff[7] = newlen >> 8;
-		snibuff[8] = newlen;
+                memcpy(snibuff + 9, decoded, outlen);
+                int newlen = outlen;
+                snibuff[6] = newlen >> 16;
+                snibuff[7] = newlen >> 8;
+                snibuff[8] = newlen;
 
-		newlen = outlen + 4;
-		snibuff[3] = newlen >> 8;
-		snibuff[4] = newlen;
+                newlen = outlen + 4;
+                snibuff[3] = newlen >> 8;
+                snibuff[4] = newlen;
 
                 return outlen + 9;
-	    }
-	} else {
-	    memcpy(dest, p, len + 4);
-	    dest += len;
-	    dest += 4;
-	}
+            }
+        } else {
+            memcpy(dest, p, len + 4);
+            dest += len;
+            dest += 4;
+        }
 
         last_tag = tag;
         p += len;
@@ -1208,154 +1208,154 @@ int unwind_encrypt_client_hello(uint8_t *snibuff, size_t length)
     set_hook_name = 0;
     if (modify == 0 && strcmp(YOUR_DOMAIN, hostname)) { set_hook_name = 1; }
     if (modify == 0) return length;
-	assert(dest - hold < MAXSIZE);
+    assert(dest - hold < MAXSIZE);
     memcpy(snibuff, hold, dest - hold);
     return dest - hold;
 }
 
 int unwind_client_hello(uint8_t *snibuff, size_t length)
 {
-	int i;
-	int modify = 0;
-	int mylength = 0;
-	uint8_t hold[4096];
-	uint8_t *p = snibuff + 5;
-	uint8_t *dest = hold + 5;
+    int i;
+    int modify = 0;
+    int mylength = 0;
+    uint8_t hold[4096];
+    uint8_t *p = snibuff + 5;
+    uint8_t *dest = hold + 5;
 
-	memcpy(hold, snibuff, 5);
-	if (*p != HANDSHAKE_TYPE_CLIENT_HELLO) {
-		LOG("bad\n");
-		return 0;
-	}
+    memcpy(hold, snibuff, 5);
+    if (*p != HANDSHAKE_TYPE_CLIENT_HELLO) {
+        LOG("bad\n");
+        return 0;
+    }
 
-	*dest++ = *p++;
+    *dest++ = *p++;
 
-	uint8_t *lengthp = dest;
-	mylength = p[2]|(p[1]<<8)|(p[0]<<16);
-	dest += 3;
-	p += 3;
+    uint8_t *lengthp = dest;
+    mylength = p[2]|(p[1]<<8)|(p[0]<<16);
+    dest += 3;
+    p += 3;
 
-	dest[0] = p[0]; dest[1] = p[1];
-	dest += 2;
-	p += 2; // version;
+    dest[0] = p[0]; dest[1] = p[1];
+    dest += 2;
+    p += 2; // version;
 
-	memcpy(dest, p, 32);
-	dest += 32;
-	p += 32; //random;
+    memcpy(dest, p, 32);
+    dest += 32;
+    p += 32; //random;
 
-	dest[0] = p[0]; //session id length
-	memcpy(&dest[1], &p[1], *p);
-	dest += *p;
-	dest++;
+    dest[0] = p[0]; //session id length
+    memcpy(&dest[1], &p[1], *p);
+    dest += *p;
+    dest++;
 
-	p += *p;
-	p++;
+    p += *p;
+    p++;
 
-	int cipher_suite_length = p[1]|(p[0]<<8);
-	dest[0] = p[0];
-	dest[1] = p[1];
-	dest+=2;
-	p+=2;
+    int cipher_suite_length = p[1]|(p[0]<<8);
+    dest[0] = p[0];
+    dest[1] = p[1];
+    dest+=2;
+    p+=2;
 
-	memcpy(dest, p, cipher_suite_length);
-	dest += cipher_suite_length;
-	p += cipher_suite_length;
+    memcpy(dest, p, cipher_suite_length);
+    dest += cipher_suite_length;
+    p += cipher_suite_length;
 
-	int compress_method_len = *p;
-	*dest++ = *p++;
+    int compress_method_len = *p;
+    *dest++ = *p++;
 
-	memcpy(dest, p, compress_method_len);
-	dest += compress_method_len;
-	p += compress_method_len;
+    memcpy(dest, p, compress_method_len);
+    dest += compress_method_len;
+    p += compress_method_len;
 
-	int extention_length = p[1]|(p[0]<<8);
-	uint8_t *extention_lengthp = dest;
-	dest += 2;
-	p += 2;
+    int extention_length = p[1]|(p[0]<<8);
+    uint8_t *extention_lengthp = dest;
+    dest += 2;
+    p += 2;
 
-	const uint8_t *limit = p + extention_length;
+    const uint8_t *limit = p + extention_length;
 
-	int last_tag = -1;
-	char hostname[256] = "";
-	while (p < limit) {
-		uint16_t tag = p[1]|(p[0]<<8);
-		uint16_t len = p[3]|(p[2]<<8);
-		LOGV("ext tag: %d %d\n", tag, len);
-		uint16_t fqdn_name_len = 0;
+    int last_tag = -1;
+    char hostname[256] = "";
+    while (p < limit) {
+        uint16_t tag = p[1]|(p[0]<<8);
+        uint16_t len = p[3]|(p[2]<<8);
+        LOGV("ext tag: %d %d\n", tag, len);
+        uint16_t fqdn_name_len = 0;
 
-		if (tag == TAG_SNI) {
-			const uint8_t *sni = (p + 4);
-			assert (sni[2] == 0);
-			uint16_t list_name_len = sni[1]|(sni[0] << 8);
-			fqdn_name_len = sni[4]|(sni[3] << 8);
-			assert (fqdn_name_len + 3 == list_name_len);
-			memcpy(hostname, sni + 5, fqdn_name_len);
-			hostname[fqdn_name_len] = 0;
-			LOGI("source: %s\n", hostname);
-		} else if (tag == TAG_SESSION_TICKET && last_tag == TAG_SNI) {
-			if (strcmp(hostname, YOUR_DOMAIN) == 0) {
-				memcpy(hostname, p + 4, len);
-				hostname[len] = 0;
-				fqdn_name_len = strlen(hostname);
-				for (i = 0; i < fqdn_name_len; i++) hostname[i] ^= 0xf;
-				LOGI("target: %s\n", hostname);
-			}
-		}
+        if (tag == TAG_SNI) {
+            const uint8_t *sni = (p + 4);
+            assert (sni[2] == 0);
+            uint16_t list_name_len = sni[1]|(sni[0] << 8);
+            fqdn_name_len = sni[4]|(sni[3] << 8);
+            assert (fqdn_name_len + 3 == list_name_len);
+            memcpy(hostname, sni + 5, fqdn_name_len);
+            hostname[fqdn_name_len] = 0;
+            LOGI("source: %s\n", hostname);
+        } else if (tag == TAG_SESSION_TICKET && last_tag == TAG_SNI) {
+            if (strcmp(hostname, YOUR_DOMAIN) == 0) {
+                memcpy(hostname, p + 4, len);
+                hostname[len] = 0;
+                fqdn_name_len = strlen(hostname);
+                for (i = 0; i < fqdn_name_len; i++) hostname[i] ^= 0xf;
+                LOGI("target: %s\n", hostname);
+            }
+        }
 
-		if (strcmp(hostname, YOUR_DOMAIN) == 0 && tag == TAG_SNI) {
+        if (strcmp(hostname, YOUR_DOMAIN) == 0 && tag == TAG_SNI) {
 
-		} else if (tag != TAG_SESSION_TICKET || last_tag != TAG_SNI) {
-			memcpy(dest, p, len + 4);
-			dest += len;
-			dest += 4;
-		} else if (tag == TAG_SESSION_TICKET) {
-			dest[0] = 0; dest[1] = 0;
-			dest[2] = 0; dest[3] = 0;
-			size_t namelen = strlen(hostname);
+        } else if (tag != TAG_SESSION_TICKET || last_tag != TAG_SNI) {
+            memcpy(dest, p, len + 4);
+            dest += len;
+            dest += 4;
+        } else if (tag == TAG_SESSION_TICKET) {
+            dest[0] = 0; dest[1] = 0;
+            dest[2] = 0; dest[3] = 0;
+            size_t namelen = strlen(hostname);
 
-			strcpy((char *)dest + 4 + 5, hostname);
-			dest[4 + 4] = namelen;
-			dest[4 + 3] = (namelen >> 8);
-			dest[4 + 2] = 0;
-			dest[4 + 1] = (namelen + 3);
-			dest[4 + 0] = (namelen + 3) >> 8;
-			dest[3] = namelen + 5;
-			dest[2] = (namelen + 5) >> 8;
+            strcpy((char *)dest + 4 + 5, hostname);
+            dest[4 + 4] = namelen;
+            dest[4 + 3] = (namelen >> 8);
+            dest[4 + 2] = 0;
+            dest[4 + 1] = (namelen + 3);
+            dest[4 + 0] = (namelen + 3) >> 8;
+            dest[3] = namelen + 5;
+            dest[2] = (namelen + 5) >> 8;
 
-			dest += (namelen + 4 + 5);
-			modify = 1;
-		}
+            dest += (namelen + 4 + 5);
+            modify = 1;
+        }
 
-		last_tag = tag;
-		p += len;
-		p += 4;
-	}
+        last_tag = tag;
+        p += len;
+        p += 4;
+    }
 
-	int extlen = (dest - extention_lengthp - 2);
-	extention_lengthp[0] = extlen >> 8;
-	extention_lengthp[1] = extlen;
-	LOGV("extlen: %d %d\n", extlen, extention_length);
+    int extlen = (dest - extention_lengthp - 2);
+    extention_lengthp[0] = extlen >> 8;
+    extention_lengthp[1] = extlen;
+    LOGV("extlen: %d %d\n", extlen, extention_length);
 
-	int newlen = dest - lengthp - 3;
-	lengthp[0] = newlen >> 16;
-	lengthp[1] = newlen >> 8;
-	lengthp[2] = newlen;
-	LOGV("newlen: %d %d\n", newlen, mylength);
+    int newlen = dest - lengthp - 3;
+    lengthp[0] = newlen >> 16;
+    lengthp[1] = newlen >> 8;
+    lengthp[2] = newlen;
+    LOGV("newlen: %d %d\n", newlen, mylength);
 
-	memcpy(hold, snibuff, 5);
-	int fulllength = (dest - hold - 5);
-	hold[3] = fulllength >> 8;
-	hold[4] = fulllength;
+    memcpy(hold, snibuff, 5);
+    int fulllength = (dest - hold - 5);
+    hold[3] = fulllength >> 8;
+    hold[4] = fulllength;
 
-	int oldlen = (snibuff[3] << 8) | snibuff[4];
-	LOGV("fulllen: %d %d %ld\n", fulllength, oldlen, length);
+    int oldlen = (snibuff[3] << 8) | snibuff[4];
+    LOGV("fulllen: %d %d %ld\n", fulllength, oldlen, length);
 
-	set_hook_name = 0;
-	if (modify == 0 && strcmp(YOUR_DOMAIN, hostname)) { set_hook_name = 1; }
-	if (modify == 0) return length;
-	memcpy(snibuff, hold, dest - hold);
-	assert(dest - hold < MAXSIZE);
-	return dest - hold;
+    set_hook_name = 0;
+    if (modify == 0 && strcmp(YOUR_DOMAIN, hostname)) { set_hook_name = 1; }
+    if (modify == 0) return length;
+    memcpy(snibuff, hold, dest - hold);
+    assert(dest - hold < MAXSIZE);
+    return dest - hold;
 }
 
 void dump(char *buff, size_t len, struct tls_header *header, const char *title)
@@ -1368,7 +1368,7 @@ void dump(char *buff, size_t len, struct tls_header *header, const char *title)
             LOGV("certificate\n");
             return ;
         }
-		int type = *p++;
+        int type = *p++;
         LOGV("type: %x\n", type);
         length = p[2]|(p[1]<<8)|(p[0]<<16); p+=3;
         LOGV("length: %d\n", length);
@@ -1506,27 +1506,27 @@ int push(int connfd, int remotefd, int *direct)
 
     l = read_flush(connfd, buff + 5, header.length);
 
-		fprintf(stderr, "TODO:XXX tag=%x %x\n", header.type, buff[5]);
-	if (header.type == APPLICATION_DATA_TYPE) {
-		fprintf(stderr, "set redirect TODO:XXX\n");
-		*direct = 1;
-	} else
-    if (header.type == HANDSHAKE_TYPE && l == header.length && HANDSHAKE_TYPE_CLIENT_HELLO == (buff[5] & 0xff)) {
+    fprintf(stderr, "TODO:XXX tag=%x %x\n", header.type, buff[5]);
+    if (header.type == APPLICATION_DATA_TYPE) {
+        fprintf(stderr, "set redirect TODO:XXX\n");
+        *direct = 1;
+    } else
+        if (header.type == HANDSHAKE_TYPE && l == header.length && HANDSHAKE_TYPE_CLIENT_HELLO == (buff[5] & 0xff)) {
 
-        char hostname[128];
-        get_sni_name(buff + 5, header.length, hostname);
-        LOGI("rehandshake origin hostname: %s: %s\n", hostname, "");
+            char hostname[128];
+            get_sni_name(buff + 5, header.length, hostname);
+            LOGI("rehandshake origin hostname: %s: %s\n", hostname, "");
 
-        int newlen = unwind_rewind_client_hello(buff, header.length + 5);
-        l = header.length = newlen - 5;
+            int newlen = unwind_rewind_client_hello(buff, header.length + 5);
+            l = header.length = newlen - 5;
 
-        get_sni_name(buff + 5, header.length, hostname);
-        LOGI("rehandshake convert hostname: %s %s\n", hostname, "");
-        if (*hostname == 0) {
-            LOGI("rehandshake failure: %s %s tag=%x\n", hostname, "", buff[5]);
+            get_sni_name(buff + 5, header.length, hostname);
+            LOGI("rehandshake convert hostname: %s %s\n", hostname, "");
+            if (*hostname == 0) {
+                LOGI("rehandshake failure: %s %s tag=%x\n", hostname, "", buff[5]);
+            }
+
         }
-		
-    }
 
     // dump(buff + 5, l, &header, "PUSH");
     int ignore;
@@ -1564,6 +1564,62 @@ int mptcp_enable(int sockfd)
     return 0;
 }
 
+struct dns_fixup_entry {
+    char name[128];
+
+};
+
+static int fixup_len = 0;
+static char fixup_buf[32 * 1024];
+
+static int dns_resolver_fixup_add(const char *entry)
+{
+    size_t len = strlen(entry);
+
+    assert(len < 128);
+    assert(fixup_len + len + 1 < sizeof(fixup_buf));
+
+    fixup_buf[fixup_len++] = len;
+    strncpy(fixup_buf + fixup_len, entry, len);
+    fixup_len += len;
+
+    return 0;
+}
+
+static const char * dns_resolver_fixup_find(const char *host, int *port)
+{
+    int offset = 0;
+    int hostlen = strlen(host);
+    char *dus_ptr = NULL;
+    static char static_host_buf[256];
+
+    while (offset < fixup_len) {
+        int size = fixup_buf[offset++];
+        assert (size > 0);
+
+        if (size > hostlen &&
+                !memcmp(host, fixup_buf + offset, hostlen) &&
+                fixup_buf[hostlen + offset] == ':') {
+            size_t itemlen = size - hostlen - 1;
+            memcpy(static_host_buf, fixup_buf + hostlen + offset + 1, itemlen);
+            static_host_buf[itemlen] = 0;
+
+            dus_ptr = strchr(static_host_buf, ':');
+
+            if (dus_ptr) {
+                *dus_ptr++ = 0;
+                *port = atoi(dus_ptr);
+            }
+
+            return static_host_buf;
+        }
+
+        offset += size;
+    }
+
+    return host;
+}
+
 int setup_remote(struct sockaddr_in6 *cli, char *hostname)
 {
     int i;
@@ -1575,7 +1631,7 @@ int setup_remote(struct sockaddr_in6 *cli, char *hostname)
         remotefd = socket(AF_INET6, SOCK_STREAM, IPPROTO_MPTCP);
 
         inet_pton(AF_INET6, YOUR_ADDRESS, &cli->sin6_addr);
-		
+
         mptcp_enable(remotefd);
         rc = connect(remotefd, (struct sockaddr *)cli, sizeof(*cli));
         if (rc == -1) {
@@ -1601,8 +1657,11 @@ int setup_remote(struct sockaddr_in6 *cli, char *hostname)
     hints.ai_flags = 0;
     hints.ai_protocol = 0;          /* Any protocol */
 
-    int sfd, s;
-    s = getaddrinfo(hostname, YOUR_PORT_TEXT, &hints, &result);
+    int sfd, s, port = 0;
+	char buf[256];
+	const char *host = dns_resolver_fixup_find(hostname, &port);
+    s = getaddrinfo(host, YOUR_PORT_TEXT, &hints, &result);
+
     if (s != 0) {
         fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(s));
         return -1;
@@ -1614,15 +1673,15 @@ int setup_remote(struct sockaddr_in6 *cli, char *hostname)
             continue;
 
         if (rp->ai_family == AF_INET) {
-           char buf[256];
-           struct sockaddr_in *info = (struct sockaddr_in *)rp->ai_addr;
-           LOGI("sfd=%d -> %s\n", sfd, inet_ntop(AF_INET, &info->sin_addr, buf, sizeof(buf)));
+            struct sockaddr_in *info = (struct sockaddr_in *)rp->ai_addr;
+            if (port) info->sin_port = htons(port);
+            LOGI("sfd=%d -> %s:%d\n", sfd, inet_ntop(AF_INET, &info->sin_addr, buf, sizeof(buf)), htons(info->sin_port));
         }
 
         if (rp->ai_family == AF_INET6) {
-           char buf[256];
-           struct sockaddr_in6 *info = (struct sockaddr_in6 *)rp->ai_addr;
-           LOGI("sfd=%d -> %s\n", sfd, inet_ntop(AF_INET6, &info->sin6_addr, buf, sizeof(buf)));
+            struct sockaddr_in6 *info = (struct sockaddr_in6 *)rp->ai_addr;
+            if (port) info->sin6_port = htons(port);
+            LOGI("sfd=%d -> [%s]:%d\n", sfd, inet_ntop(AF_INET6, &info->sin6_addr, buf, sizeof(buf)), htons(info->sin6_port));
         }
 
         if (connect(sfd, rp->ai_addr, rp->ai_addrlen) != -1)
@@ -1632,7 +1691,7 @@ int setup_remote(struct sockaddr_in6 *cli, char *hostname)
         sfd = -1;
     }
 
-    LOGI("fd=%d, %s\n", sfd, hostname);
+    LOGI("fd=%d, %s %s\n", sfd, hostname, host);
     freeaddrinfo(result);           /* No longer needed */
     return sfd;
 #endif
@@ -1680,143 +1739,143 @@ static int setkeepalive(int sockfd)
 
 void func(int connfd)
 {
-	int rc;
-	int n, l, i;
-	fd_set test, wtest;
-	uint8_t snibuff[MAXSIZE];
-	struct tls_header header;
-	int remotefd = -1;
+    int rc;
+    int n, l, i;
+    fd_set test, wtest;
+    uint8_t snibuff[MAXSIZE];
+    struct tls_header header;
+    int remotefd = -1;
 
 #if 0
-	struct timeval tv;
-	tv.tv_sec = 30;  /* 30 Secs Timeout */
-	int ret = setsockopt(connfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-	assert(ret == 0);
+    struct timeval tv;
+    tv.tv_sec = 30;  /* 30 Secs Timeout */
+    int ret = setsockopt(connfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    assert(ret == 0);
 #endif
 
-	l = read(connfd, snibuff, 5);
-	assert (l == 5);
+    l = read(connfd, snibuff, 5);
+    assert (l == 5);
 
-	header.type = snibuff[0];
-	header.major = snibuff[1];
-	header.major = snibuff[2];
-	memcpy(&header.length, &snibuff[3], 2);
-	header.length = htons(header.length);
+    header.type = snibuff[0];
+    header.major = snibuff[1];
+    header.major = snibuff[2];
+    memcpy(&header.length, &snibuff[3], 2);
+    header.length = htons(header.length);
 
-	if (header.type != HANDSHAKE_TYPE) {
-		close(remotefd);
-		close(connfd);
-		return;
-	}
+    if (header.type != HANDSHAKE_TYPE) {
+        close(remotefd);
+        close(connfd);
+        return;
+    }
 
-	if (header.length + 5 > sizeof(snibuff))
-		LOGI("len: %d\n", header.length);
-	assert(header.length + 5 < sizeof(snibuff));
+    if (header.length + 5 > sizeof(snibuff))
+        LOGI("len: %d\n", header.length);
+    assert(header.length + 5 < sizeof(snibuff));
 
-	int nbyte = read_flush(connfd, snibuff + 5, header.length);
-	assert (nbyte == header.length);
+    int nbyte = read_flush(connfd, snibuff + 5, header.length);
+    assert (nbyte == header.length);
 
-	char hostname[128];
-	get_sni_name(snibuff + 5, header.length, hostname);
-	LOGI("origin hostname: %s\n", hostname);
+    char hostname[128];
+    get_sni_name(snibuff + 5, header.length, hostname);
+    LOGI("origin hostname: %s\n", hostname);
 
-	int newlen = unwind_rewind_client_hello(snibuff, header.length + 5);
-	header.length = newlen - 5;
+    int newlen = unwind_rewind_client_hello(snibuff, header.length + 5);
+    header.length = newlen - 5;
 
-	get_sni_name(snibuff + 5, header.length, hostname);
-	LOGI("target hostname: %s\n", hostname);
-	if (*hostname == 0) {
-		close(connfd);
-		return;
-	}
+    get_sni_name(snibuff + 5, header.length, hostname);
+    LOGI("target hostname: %s\n", hostname);
+    if (*hostname == 0) {
+        close(connfd);
+        return;
+    }
 
-	struct sockaddr_in6 cli;
-	cli.sin6_family = AF_INET6;
-	cli.sin6_port   = htons(YOUR_PORT);
-	remotefd = setup_remote(&cli, hostname);
+    struct sockaddr_in6 cli;
+    cli.sin6_family = AF_INET6;
+    cli.sin6_port   = htons(YOUR_PORT);
+    remotefd = setup_remote(&cli, hostname);
 
-	if (remotefd == -1) {
-		close(connfd);
-		return;
-	}
+    if (remotefd == -1) {
+        close(connfd);
+        return;
+    }
 
-	rc = write(remotefd, snibuff, newlen);
-	assert(rc == newlen);
-	int stat = 0;
-	int wstat = 3;
-	int keepaliveset = 0;
-	int maxfd = connfd > remotefd? connfd: remotefd;
+    rc = write(remotefd, snibuff, newlen);
+    assert(rc == newlen);
+    int stat = 0;
+    int wstat = 3;
+    int keepaliveset = 0;
+    int maxfd = connfd > remotefd? connfd: remotefd;
 
-	int direct = 0;
-	int pull_direct = 0;
-	time_t uptime = time(NULL);
-	do {
-		FD_ZERO(&test);
-		if (~stat & 1) FD_SET(connfd, &test);
-		if (~stat & 2) FD_SET(remotefd, &test);
-		assert(stat != 3);
+    int direct = 0;
+    int pull_direct = 0;
+    time_t uptime = time(NULL);
+    do {
+        FD_ZERO(&test);
+        if (~stat & 1) FD_SET(connfd, &test);
+        if (~stat & 2) FD_SET(remotefd, &test);
+        assert(stat != 3);
 
-		FD_ZERO(&wtest);
-		if (wstat & 1) FD_SET(connfd, &wtest);
-		if (wstat & 2) FD_SET(remotefd, &wtest);
+        FD_ZERO(&wtest);
+        if (wstat & 1) FD_SET(connfd, &wtest);
+        if (wstat & 2) FD_SET(remotefd, &wtest);
 
-		struct timeval timeo = {50, 26};
-		n = select(maxfd + 1, &test, &wtest, NULL, &timeo);
-		if (n == 0 && !(stat & 0x3) && uptime + 1888 > time(NULL)) {
-			switch (keepaliveset? MODE_RELAY_NONE: RELAY_MODE) {
-				case MODE_RELAY_CLIENT:
-					setkeepalive(remotefd);
-					keepaliveset = 1;
-					break;
+        struct timeval timeo = {50, 26};
+        n = select(maxfd + 1, &test, &wtest, NULL, &timeo);
+        if (n == 0 && !(stat & 0x3) && uptime + 1888 > time(NULL)) {
+            switch (keepaliveset? MODE_RELAY_NONE: RELAY_MODE) {
+                case MODE_RELAY_CLIENT:
+                    setkeepalive(remotefd);
+                    keepaliveset = 1;
+                    break;
 
-				case MODE_RELAY_SERVER:
-					setkeepalive(connfd);
-					keepaliveset = 1;
-					break;
-			}
+                case MODE_RELAY_SERVER:
+                    setkeepalive(connfd);
+                    keepaliveset = 1;
+                    break;
+            }
 
-			n = 1;
-			continue;
-		}
+            n = 1;
+            continue;
+        }
 
 
-		if (n == 0) break;
-		assert(n > 0);
+        if (n == 0) break;
+        assert(n > 0);
 
-		if (FD_ISSET(connfd, &wtest)) {
-			wstat &= ~1;
-		}
+        if (FD_ISSET(connfd, &wtest)) {
+            wstat &= ~1;
+        }
 
-		if (FD_ISSET(remotefd, &wtest)) {
-			wstat &= ~2;
-		}
+        if (FD_ISSET(remotefd, &wtest)) {
+            wstat &= ~2;
+        }
 
-		int half = 0;
-		if (!direct && FD_ISSET(connfd, &test) && !(wstat & 2)) {
-			if (push(connfd, remotefd, &direct) <= 0) stat |= 1;
-		} else if (FD_ISSET(connfd, &test) && !(wstat & 2)) {
-			half = 0;
-			if (pipling(connfd, remotefd, &half) <= 0) stat |= 1;
-			if (half) wstat |= 2;
-		}
+        int half = 0;
+        if (!direct && FD_ISSET(connfd, &test) && !(wstat & 2)) {
+            if (push(connfd, remotefd, &direct) <= 0) stat |= 1;
+        } else if (FD_ISSET(connfd, &test) && !(wstat & 2)) {
+            half = 0;
+            if (pipling(connfd, remotefd, &half) <= 0) stat |= 1;
+            if (half) wstat |= 2;
+        }
 
-		if (!pull_direct && FD_ISSET(remotefd, &test) && !(wstat & 1)) {
-			if (pull(remotefd, connfd, &pull_direct) <= 0) stat |= 2;
-		} else if (FD_ISSET(remotefd, &test) && !(wstat & 1)) {
-			half = 0;
-			if (pipling(remotefd, connfd, &half) <= 0) stat |= 2;
-			if (half) wstat |= 1;
-		}
+        if (!pull_direct && FD_ISSET(remotefd, &test) && !(wstat & 1)) {
+            if (pull(remotefd, connfd, &pull_direct) <= 0) stat |= 2;
+        } else if (FD_ISSET(remotefd, &test) && !(wstat & 1)) {
+            half = 0;
+            if (pipling(remotefd, connfd, &half) <= 0) stat |= 2;
+            if (half) wstat |= 1;
+        }
 
-		uptime = time(NULL);
-		if (stat != 0 || n  <= 0)
-			LOG("stat=%x n=%d\n", stat, n);
-	} while (n > 0 && stat != 3);
+        uptime = time(NULL);
+        if (stat != 0 || n  <= 0)
+            LOG("stat=%x n=%d\n", stat, n);
+    } while (n > 0 && stat != 3);
 
-	LOGD("release connection\n");
-	close(remotefd);
-	close(connfd);
-	return;
+    LOGD("release connection\n");
+    close(remotefd);
+    close(connfd);
+    return;
 }
 
 static int sigchild = 0;
@@ -1841,100 +1900,93 @@ void parse_argopt(int argc, char *argv[])
 
     LOGI("parse_argopt>");
     for (i = 1; i < argc; i++) {
-	const char *optname = argv[i];
-	if (strcmp(optname, "-p") == 0) {
-	    assert(i + 1 < argc);
-	    YOUR_PORT = atoi(argv[++i]);
+        const char *optname = argv[i];
+        if (strcmp(optname, "-p") == 0) {
+            assert(i + 1 < argc);
+            YOUR_PORT = atoi(argv[++i]);
             sprintf(YOUR_PORT_TEXT, "%d", YOUR_PORT);
-	} else
-	if (strcmp(optname, "-l") == 0) {
-	    assert(i + 1 < argc);
-	    PORT = atoi(argv[++i]);
-	} else
-	if (strcmp(optname, "-d") == 0) {
-	    assert(i + 1 < argc);
-	    strcpy(YOUR_DOMAIN, argv[++i]);
-	} else
-	if (strcmp(optname, "-s") == 0) {
-	    RELAY_MODE = MODE_RELAY_SERVER;
-	    unwind_rewind_client_hello = unwind_client_hello;
-	} else
-	if (strcmp(optname, "-e") == 0) {
-	    RELAY_MODE = MODE_RELAY_SERVER;
-	    unwind_rewind_client_hello = unwind_encrypt_client_hello;
-	} else
-	if (strcmp(optname, "-r") == 0) {
-	    RELAY_MODE = MODE_RELAY_CLIENT;
-	    unwind_rewind_client_hello = rewind_encrypt_client_hello;
-	} else
-	if (strcmp(optname, "-c") == 0) {
-	    RELAY_MODE = MODE_RELAY_CLIENT;
-	    unwind_rewind_client_hello = rewind_client_hello;
-	} else
-	if (strncmp(optname, "ech=", 4) == 0) {
+        } else if (strcmp(optname, "-l") == 0) {
+            assert(i + 1 < argc);
+            PORT = atoi(argv[++i]);
+        } else if (strcmp(optname, "-d") == 0) {
+            assert(i + 1 < argc);
+            strcpy(YOUR_DOMAIN, argv[++i]);
+        } else if (strcmp(optname, "-s") == 0) {
+            RELAY_MODE = MODE_RELAY_SERVER;
+            unwind_rewind_client_hello = unwind_client_hello;
+        } else if (strcmp(optname, "-e") == 0) {
+            RELAY_MODE = MODE_RELAY_SERVER;
+            unwind_rewind_client_hello = unwind_encrypt_client_hello;
+        } else if (strcmp(optname, "-r") == 0) {
+            RELAY_MODE = MODE_RELAY_CLIENT;
+            unwind_rewind_client_hello = rewind_encrypt_client_hello;
+        } else if (strcmp(optname, "--dns-add-fixup") == 0 && i + 1 < argc) {
+            i++;
+            dns_resolver_fixup_add(argv[i]);
+        } else if (strcmp(optname, "-c") == 0) {
+            RELAY_MODE = MODE_RELAY_CLIENT;
+            unwind_rewind_client_hello = rewind_client_hello;
+        } else if (strncmp(optname, "ech=", 4) == 0) {
             optname += 4;
 
-	    infoLen = sizeof(info) - 6;
+            infoLen = sizeof(info) - 6;
             byte info_head[] = "tls ech";
-	    Base64_Decode((const byte*)optname, strlen(optname), info + 6, &infoLen);
+            Base64_Decode((const byte*)optname, strlen(optname), info + 6, &infoLen);
             memcpy(info, info_head, sizeof(info_head));
-	    infoLen += 6;
-	} else
-	if (strncmp(optname, "pub=", 4) == 0) {
+            infoLen += 6;
+        } else if (strncmp(optname, "pub=", 4) == 0) {
             optname += 4;
             byte mypub[33];
             word32 publen = sizeof(mypub);
             Base64_Decode((byte*)optname, strlen(optname), mypub, &publen);
-	    memcpy(pub, mypub, sizeof(pub));
-	} else
-	if (strncmp(optname, "priv=", 5) == 0) {
+            memcpy(pub, mypub, sizeof(pub));
+        } else if (strncmp(optname, "priv=", 5) == 0) {
             optname += 5;
             byte mypriv[33];
             word32 privlen = sizeof(mypriv);
             Base64_Decode((byte*)optname, strlen(optname), mypriv, &privlen);
-	    memcpy(priv, mypriv, sizeof(priv));
-	} else
-	if (strcmp(optname, "-z") == 0) {
-	    RELAY_MODE = MODE_RELAY_SERVER;
-	    unwind_rewind_client_hello = rewind_client_zero;
-	} else
-	if (strcmp(optname, "-h") == 0) {
-		fprintf(stderr, "%s [options] [destination]\n", argv[0]);
-		fprintf(stderr, "\t -p -l -d -s -e -r -c -z -h\n");
-		exit(0);
-	} else
-	if (*optname != '-') {
-	    strcpy(YOUR_ADDRESS, argv[i]);
-	}
+            memcpy(priv, mypriv, sizeof(priv));
+        } else if (strcmp(optname, "-z") == 0) {
+            RELAY_MODE = MODE_RELAY_SERVER;
+            unwind_rewind_client_hello = rewind_client_zero;
+        } else if (strcmp(optname, "-h") == 0 || strcmp(optname, "-help") == 0 || strcmp(optname, "--help") == 0) {
+            fprintf(stderr, "%s [options] [destination]\n", argv[0]);
+            fprintf(stderr, "\t -p -l -d -s -e -r -c -z -h\n");
+            fprintf(stderr, "\t --dns-add-fixup host:address:port\n");
+            exit(0);
+        } else
+            if (*optname != '-') {
+                strcpy(YOUR_ADDRESS, argv[i]);
+            }
     }
     LOGI("<parse_argopt\n");
 
 
     fprintf(stderr, "ech=");
     for (int i = 0; i < infoLen; i++)
-	    fprintf(stderr, "%02x ", info[i] & 0xff);
+        fprintf(stderr, "%02x ", info[i] & 0xff);
     fprintf(stderr, "\n");
 
     fprintf(stderr, "pub=");
     for (int i = 0; i < 32; i++)
-	    fprintf(stderr, "%02x ", priv[i] & 0xff);
+        fprintf(stderr, "%02x ", priv[i] & 0xff);
     fprintf(stderr, "\n");
 
     fprintf(stderr, "priv=");
     for (int i = 0; i < 32; i++)
-	    fprintf(stderr, "%02x ", priv[i] & 0xff);
+        fprintf(stderr, "%02x ", priv[i] & 0xff);
     fprintf(stderr, "\n");
     if (unwind_rewind_client_hello == rewind_encrypt_client_hello) {
-	size_t domainlen = strlen(YOUR_DOMAIN);
-	TAGS_07[0] = TAGS_07[1] = 0; // TAG_SNI;
-	TAGS_07[2] = (domainlen + 5) >> 8;
-	TAGS_07[3] = (domainlen + 5);
-	TAGS_07[4] = (domainlen + 3) >> 8;
-	TAGS_07[5] = (domainlen + 3);
-	TAGS_07[6] = 0;
-	TAGS_07[7] = (domainlen) >> 8;
-	TAGS_07[8] = (domainlen);
-	memmove(TAGS_07 + 9, YOUR_DOMAIN, domainlen);
+        size_t domainlen = strlen(YOUR_DOMAIN);
+        TAGS_07[0] = TAGS_07[1] = 0; // TAG_SNI;
+        TAGS_07[2] = (domainlen + 5) >> 8;
+        TAGS_07[3] = (domainlen + 5);
+        TAGS_07[4] = (domainlen + 3) >> 8;
+        TAGS_07[5] = (domainlen + 3);
+        TAGS_07[6] = 0;
+        TAGS_07[7] = (domainlen) >> 8;
+        TAGS_07[8] = (domainlen);
+        memmove(TAGS_07 + 9, YOUR_DOMAIN, domainlen);
     }
 
     assert(RELAY_MODE != MODE_RELAY_NONE);
@@ -2007,12 +2059,12 @@ int main(int argc, char *argv[])
         // Accept the data packet from client and verification
         connfd = accept(sockfd, (SA*)&cli, &len);
         if (sigchild) {
-	    sigprocmask(SIG_BLOCK, &set, &save);
+            sigprocmask(SIG_BLOCK, &set, &save);
             sigchild = 0;
-	    while (waitpid(-1, &st, WNOHANG) > 0)
-		nsession--;
-	    sigprocmask(SIG_UNBLOCK, &set, &save);
-	    if (connfd < 0 ) continue;
+            while (waitpid(-1, &st, WNOHANG) > 0)
+                nsession--;
+            sigprocmask(SIG_UNBLOCK, &set, &save);
+            if (connfd < 0 ) continue;
         }
 
         if (connfd < 0) {
@@ -2021,28 +2073,28 @@ int main(int argc, char *argv[])
         }
         else {
             char tobuf[64], cmdline[2048];
-	    inet_ntop(AF_INET6, &cli.sin6_addr, tobuf, sizeof(tobuf));
+            inet_ntop(AF_INET6, &cli.sin6_addr, tobuf, sizeof(tobuf));
             LOGI("server accept the client %s...\n", tobuf);
-	    snprintf(cmdline, sizeof(cmdline), "ip -6 n s |grep %s", tobuf);
-	    system(cmdline);
-	}
+            snprintf(cmdline, sizeof(cmdline), "ip -6 n s |grep %s", tobuf);
+            system(cmdline);
+        }
 
         pid_t child = 0;
-	struct sockaddr_in6 mime;
-	socklen_t mimelen = sizeof(mime);
+        struct sockaddr_in6 mime;
+        socklen_t mimelen = sizeof(mime);
 
         if (nsession > 1024) {
             LOGI("two many fork");
         } else if (getsockname(sockfd, (SA*)&mime, &mimelen) != 0 && (IN6_ARE_ADDR_EQUAL(&cli.sin6_addr, &mime.sin6_addr))) {
             LOGI("disable connect self from local host to avoid loop");
-	} else if ((child = fork()) == 0) {
-	    close(sockfd);
-	    func(connfd);
-	    exit(0); 
-	} else if (child > 0) {
-	    sigprocmask(SIG_BLOCK, &set, &save);
+        } else if ((child = fork()) == 0) {
+            close(sockfd);
+            func(connfd);
+            exit(0); 
+        } else if (child > 0) {
+            sigprocmask(SIG_BLOCK, &set, &save);
             nsession++;
-	    sigprocmask(SIG_UNBLOCK, &set, &save);
+            sigprocmask(SIG_UNBLOCK, &set, &save);
         }
         close(connfd);
         // Function for chatting between client and server
