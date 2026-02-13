@@ -88,6 +88,8 @@ uint32_t csum_fold(uint32_t check)
 
 struct session_tracker {
     int sockfd;
+    int count_outing;
+    time_t last_outing;
     time_t last_active;
 
     uint32_t ident;
@@ -403,13 +405,14 @@ static int reinitfd(struct session_tracker *tracker, struct sockaddr_in6 *dest)
 {
     int sockfd = tracker->sockfd;
 
-    if (tracker->last_active + 1000 <  time(NULL)) {
+    if (tracker->last_active + 1000 < time(NULL) || tracker->last_outing + 2 < time(NULL) && tracker->count_outing > 10) {
         sockfd = socket(AF_INET6, SOCK_DGRAM, 0);
         if (dest) connect(sockfd, (struct sockaddr *)dest, sizeof(*dest));
         update_bufsize(sockfd);
         setblockopt(sockfd, 0);
         close(tracker->sockfd);
         tracker->sockfd = sockfd;
+        tracker->count_outing = 0;
         assert(sockfd != -1);
     }
 
@@ -443,17 +446,17 @@ static int lockfd(struct session_tracker **list, int *pcount, size_t size, void 
         dlist = (uint32_t *)(v4v6 + 12);
         ident = dlist[2] + v4v6[9];
         ident ^= (dlist[0] ^ dlist[1]);
-	} else {
-		return defaultfd;
-	}
+    } else {
+        return defaultfd;
+    }
 
     for (int cc = 0; cc < count; cc++) {
         tracker = list[cc];
 
         if (tracker->ident == ident) {
             reinitfd(tracker, dest);
-            if (tracker->last_active < time(NULL))
-                tracker->last_active = time(NULL) - 1;
+            tracker->count_outing++;
+            tracker->last_outing = time(NULL);
             return tracker->sockfd;
         }
 
@@ -489,6 +492,9 @@ static int lockfd(struct session_tracker **list, int *pcount, size_t size, void 
         update_bufsize(tracker->sockfd);
         tracker->ident = ident;
         tracker->last_active = time(NULL) - 1;
+        tracker->count_outing = 0;
+        tracker->count_outing++;
+        tracker->last_outing = time(NULL);
         assert(tracker->sockfd != -1);
         *pcount = count;
         return tracker->sockfd;
@@ -499,8 +505,10 @@ static int lockfd(struct session_tracker **list, int *pcount, size_t size, void 
         tracker->ident = ident;
         tracker->last_active = 0;
         reinitfd(tracker, dest);
-        tracker->last_active = time(NULL) - 1;
+        tracker->count_outing = 0;
         assert(tracker->sockfd != -1);
+        tracker->count_outing++;
+        tracker->last_outing = time(NULL);
         return tracker->sockfd;
     }
 
@@ -538,15 +546,15 @@ int main(int argc, char *argv[])
             if (i >= argc) continue;
             port = atoi(argv[++i]);
         } else if (strcmp(arg, "-help") == 0) {
-			fprintf(stderr, "%s [options] target\n", argv[0]);
-			fprintf(stderr, "\t -dev <tun>   tun device name\n");
-			fprintf(stderr, "\t -port <port> destination port\n");
-			fprintf(stderr, "\t -passive     use passive mode, accept client to connect\n");
-			fprintf(stderr, "\t              act as a server\n");
-			fprintf(stderr, "\t -help        print this usage\n");
-			fprintf(stderr, "\t target       destination ipv6 address\n");
-			fprintf(stderr, "\n");
-			exit(0);
+            fprintf(stderr, "%s [options] target\n", argv[0]);
+            fprintf(stderr, "\t -dev <tun>   tun device name\n");
+            fprintf(stderr, "\t -port <port> destination port\n");
+            fprintf(stderr, "\t -passive     use passive mode, accept client to connect\n");
+            fprintf(stderr, "\t              act as a server\n");
+            fprintf(stderr, "\t -help        print this usage\n");
+            fprintf(stderr, "\t target       destination ipv6 address\n");
+            fprintf(stderr, "\n");
+            exit(0);
         } else if (*arg != '-') {
             strncpy(thepeer, arg, 63);
         }
@@ -667,10 +675,11 @@ again:
 
                 if (nbytes > 0) {
                     _tracker_list[cc]->last_active = time(NULL);
+                    _tracker_list[cc]->count_outing = 0;
                     error = write(tunoutfd, buffer, nbytes);
                     assert (error == nbytes);
                     more_todo++;
-				} else if (nbytes == -1 && errno == EAGAIN) {
+                } else if (nbytes == -1 && errno == EAGAIN) {
                     FD_CLR(sockfd, &readfds);
                 } else {
                     fprintf(stderr, "ready tunnelfd=%d nbytes=%d\n", sockfd, nbytes);
