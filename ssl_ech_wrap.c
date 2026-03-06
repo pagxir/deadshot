@@ -73,6 +73,9 @@ static byte _mypriv[] = {
     0x9a, 0x4f, 0x05, 0xed, 0xde, 0xdd, 0xf3, 0x5e
 };
 
+static WC_RNG _g_rng_0[1];
+static curve25519_key _g_ephemeralKey[1], *_p_ephemeralKey = NULL;
+
 static uint8_t ConfigId = 0;
 static uint8_t CipherSuitesData[4] = {0x00, 0x01, 0x00, 0x01};
 
@@ -583,15 +586,20 @@ int encode_client_hello(struct ssl_parse_ctx *ctx, uint8_t *encoded, size_t ddsz
 
     Hpke hpke[1];
     void *heap = NULL;
-    curve25519_key ephemeralKey[1];
-    curve25519_key receiverPrivkey0[1];
+    curve25519_key receiverkey0[1];
     int ret = wc_HpkeInit(hpke, kemId, kdfId, aeadId, heap);
 
-    wc_curve25519_init(receiverPrivkey0);
-    wc_curve25519_import_public_ex(pub, sizeof(pub), receiverPrivkey0, EC25519_LITTLE_ENDIAN);
+    wc_curve25519_init(receiverkey0);
+    wc_curve25519_import_public_ex(pub, sizeof(pub), receiverkey0, EC25519_LITTLE_ENDIAN);
 
-    wc_curve25519_init(ephemeralKey);
-    wc_curve25519_import_private_raw_ex(_mypriv, sizeof(_mypriv), _mypub, sizeof(_mypub), ephemeralKey, EC25519_LITTLE_ENDIAN);
+    void *ephemeralKey = 0;
+    if (_p_ephemeralKey) {
+        ephemeralKey = _p_ephemeralKey;
+        assert(ephemeralKey != 0);
+    } else {
+        ret = wc_HpkeGenerateKeyPair(hpke, &ephemeralKey, _g_rng_0);
+        assert(ret == 0);
+    }
 
     *dest++ = 0x03;
     *dest++ = 0x03;
@@ -705,18 +713,8 @@ int encode_client_hello(struct ssl_parse_ctx *ctx, uint8_t *encoded, size_t ddsz
     lpext[0] = (extsz >> 8);
     lpext[1] = (extsz);
 
-#if 0
-    WC_RNG rng[1];
-    ret = wc_InitRng(rng);
-    assert(ret == 0);
-
-    void *ephemeralKey1 = 0, * receiverPrivkey1 = 0;
-    ret = wc_HpkeGenerateKeyPair(hpke, &ephemeralKey1, rng);
-    assert(ret == 0);
-#endif
-
     _ciphertext = dest;
-    ret = wc_HpkeSealBase(hpke, ephemeralKey, receiverPrivkey0,
+    ret = wc_HpkeSealBase(hpke, ephemeralKey, receiverkey0,
             (byte *)info, (word32)infoLen,
             (byte *)encoded, (word32)(dest - encoded),
             (byte *)embeddedclienthello, payload_len,
@@ -730,6 +728,8 @@ int encode_client_hello(struct ssl_parse_ctx *ctx, uint8_t *encoded, size_t ddsz
         xxdump("pub", pub, sizeof(pub));
         xxdump("pub", _mypub, sizeof(_mypub));
         xxdump("enc", pubKey, pubKeySz);
+        LOG_INFO("wc_HpkeSealBase error: %d %p\n", ret, ephemeralKey);
+        assert(0);
     }
 
 #if 0
@@ -742,11 +742,15 @@ int encode_client_hello(struct ssl_parse_ctx *ctx, uint8_t *encoded, size_t ddsz
             plaintext0);
     memcpy(ciphertext, _ciphertext, payload_len + 16);
 
-    LOGV("outter length: %d ret=%d, retval=%d, payload_len=%d, infoLen=%d aadlen=%d retval=%d\n", dest - encoded, ret, 0, payload_len, infoLen, dest - encoded, retval);
+    LOG_INFO("outter length: %d ret=%d, retval=%d, payload_len=%d, infoLen=%d aadlen=%d retval=%d\n", dest - encoded, ret, 0, payload_len, infoLen, dest - encoded, retval);
 #endif
     memcpy(ciphertext, _ciphertext, payload_len + 16);
     assert(dest - encoded < ddsz);
     *outlen = dest - encoded;
+
+    if (ephemeralKey && ephemeralKey != _p_ephemeralKey) {
+        wc_HpkeFreeKey(hpke, hpke->kem, ephemeralKey, hpke->heap);
+    }
 
     return 0;
 }
@@ -921,8 +925,7 @@ const char *ssl_parse_get_sni(struct ssl_parse_ctx *ctx, char *buf)
 
 void parse_argopt(int argc, char *argv[])
 {
-    int i;
-
+    int i, use_stick_key = 0, stick_key_flag = 0;
     byte info_default[] = "dGxzIGVjaAD+DQA8MwAgACB/7ou2XMG9sumfvTITnVG/L6mNzCOqPpivAfQwzWjUFgAEAAEAAQANd3d3LmJhaWR1LmNvbQAA";
     infoLen = sizeof(info);
     Base64_Decode(info_default, sizeof(info_default) -1, info, &infoLen);
@@ -936,6 +939,9 @@ void parse_argopt(int argc, char *argv[])
         } else if (strcmp(optname, "-l") == 0) {
             assert(i + 1 < argc);
             i++;
+        } else if (strcmp(optname, "-S") == 0) {
+            assert(i + 1 < argc);
+            use_stick_key = 1;
         } else if (strcmp(optname, "-d") == 0) {
             assert(i + 1 < argc);
             strcpy(YOUR_DOMAIN, argv[++i]);
@@ -952,13 +958,15 @@ void parse_argopt(int argc, char *argv[])
             byte mypub[33];
             word32 publen = sizeof(mypub);
             Base64_Decode((byte*)optname, strlen(optname), mypub, &publen);
-            memcpy(_mypub, mypub, sizeof(pub));
+            memcpy(_mypub, mypub, sizeof(_mypub));
+            stick_key_flag |= 1;
         } else if (strncmp(optname, "priv=", 5) == 0) {
             optname += 5;
             byte mypriv[33];
             word32 privlen = sizeof(mypriv);
             Base64_Decode((byte*)optname, strlen(optname), mypriv, &privlen);
             memcpy(_mypriv, mypriv, sizeof(_mypriv));
+            stick_key_flag |= 2;
         } else if (*optname != '-') {
             // strcpy(YOUR_ADDRESS, argv[i]);
         }
@@ -970,29 +978,29 @@ void parse_argopt(int argc, char *argv[])
     xxdump("priv=", _mypriv, 32);
 
 #if 0
-/*
+    /*
 magic: "tls ech\0" // 8 byte
 verion: 0xfe0d     // 2 byte
 cfglen: 0x003c     // 2 byte
 
 HPKEkeycfg:
-    configId: 0x33 // 1 byte
-    KEMId: 0x0020  // 2 byte
-    PubKeyLen: 0x0020 // 2 byte
-    PubKeyData: 0x7fee8bb65cc1bdb2e99fbd32139d51bf2fa98dcc23aa3e98af01f430cd68d416 // PubKeyLen byte
-    CipherSuitesLen: 0x0004 // 2 byte
-    CipherSuitesData: 0x00010001 // CipherSuitesLen byte
-    MaxNameLen: 0x00 // 1 byte
-    PubNameLen: 0x0d // 1 byte
-    PubNameData: www.baidu.com // PubNameLen byte
-    ExtionsionLen: 0x0000 // 2 byte
+configId: 0x33 // 1 byte
+KEMId: 0x0020  // 2 byte
+PubKeyLen: 0x0020 // 2 byte
+PubKeyData: 0x7fee8bb65cc1bdb2e99fbd32139d51bf2fa98dcc23aa3e98af01f430cd68d416 // PubKeyLen byte
+CipherSuitesLen: 0x0004 // 2 byte
+CipherSuitesData: 0x00010001 // CipherSuitesLen byte
+MaxNameLen: 0x00 // 1 byte
+PubNameLen: 0x0d // 1 byte
+PubNameData: www.baidu.com // PubNameLen byte
+ExtionsionLen: 0x0000 // 2 byte
 
 00000000: 746c 7320 6563 6800 fe0d 003c 3300 2000  tls ech....<3. .
 00000010: 207f ee8b b65c c1bd b2e9 9fbd 3213 9d51   ....\......2..Q
 00000020: bf2f a98d cc23 aa3e 98af 01f4 30cd 68d4  ./...#.>....0.h.
 00000030: 1600 0400 0100 0100 0d77 7777 2e62 6169  .........www.bai
 00000040: 6475 2e63 6f6d 0000                      du.com..
-*/
+     */
 #endif
 
     uint16_t len;
@@ -1029,4 +1037,26 @@ HPKEkeycfg:
     TAGS_LEN[6] = 4 + domainlen + 5;
 
     LOG_INFO("domainlen %d domain %s\n", domainlen, YOUR_DOMAIN);
+
+    Hpke hpke[1];
+    int ret = wc_InitRng(_g_rng_0);
+    assert(ret == 0);
+
+    if (stick_key_flag == 3) {
+        _p_ephemeralKey = _g_ephemeralKey;
+        ret = wc_curve25519_init(_p_ephemeralKey);
+        assert(ret == 0);
+
+        wc_curve25519_make_key(_g_rng_0, 32, (curve25519_key*)_p_ephemeralKey);
+        ret = wc_curve25519_import_private_raw_ex(_mypriv, sizeof(_mypriv), _mypub, sizeof(_mypub), _p_ephemeralKey, EC25519_LITTLE_ENDIAN);
+        assert(ret == 0);
+
+    } else if (use_stick_key) {
+        word16 kemId = DHKEM_X25519_HKDF_SHA256, kdfId = HKDF_SHA256, aeadId = HPKE_AES_128_GCM;
+        ret = wc_HpkeInit(hpke, kemId, kdfId, aeadId, NULL);
+        ret = wc_HpkeGenerateKeyPair(hpke, (void **)&_p_ephemeralKey, _g_rng_0);
+        assert(ret == 0);
+    }
+
+    // wc_HpkeFreeKey(hpke, hpke->kem, ephemeralKey, hpke->heap);
 }

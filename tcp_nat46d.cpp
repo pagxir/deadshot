@@ -356,6 +356,7 @@ static int session_release(nat_conntrack_t *up, cache_t *d)
 
         context_refer_dec(up->parent);
         free(up);
+if (getenv("RUN_ONCE")) exit(0);
     }
 
     return 0;
@@ -657,7 +658,7 @@ static void do_tcp_exchange_backward_stage(void *upp)
         unlockbuf(d);
         session_release(up, d);
         return;
-    } else {
+    } else if (d->off == d->len) {
         unlockbuf(d);
         tx_aincb_active(filp, &up->task);
         return;
